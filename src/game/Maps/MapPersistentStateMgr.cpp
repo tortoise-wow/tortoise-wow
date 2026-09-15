@@ -501,7 +501,24 @@ void DungeonResetScheduler::ScheduleReset(bool add, time_t time, DungeonResetEve
 {
     MapPersistentStateManager::PersistentStateMap::iterator itr = m_InstanceSaves.m_instanceSaveByInstanceId.find(event.instanceId);
     if (itr == m_InstanceSaves.m_instanceSaveByInstanceId.end())
-        sLog.outInfo("[DungeonReset] Instance %u [map %u]: ScheduleReset %u for unknown instance.", event.instanceId, event.mapid, event.type);
+    {
+        // instanceId 0 is the sentinel for a map-wide global reset (raid lockout warning),
+        // not a real instance id - it never has a loaded save, so there is nothing to report.
+        if (event.instanceId != 0)
+        {
+            // A normal dungeon save is only loaded lazily when a player actually enters
+            // (group-bound saves are preloaded at startup via ObjectMgr::LoadGroups, solo
+            // ones are not), so this is routinely "missing" here and not a sign of trouble.
+            // A raid save missing here is worth keeping visible: it can mean a bound group
+            // failed to load (broken `groups`/`group_instance` data), and its reset warning
+            // will not reach anyone.
+            MapEntry const* mapEntry = sMapStorage.LookupEntry<MapEntry>(event.mapid);
+            if (mapEntry && mapEntry->IsRaid())
+                sLog.outInfo("[DungeonReset] Instance %u [map %u]: ScheduleReset %u for unknown instance.", event.instanceId, event.mapid, event.type);
+            else
+                sLog.outDetail("[DungeonReset] Instance %u [map %u]: ScheduleReset %u for unknown instance.", event.instanceId, event.mapid, event.type);
+        }
+    }
     else if (itr->second->GetMapId() != event.mapid)
         sLog.outInfo("[DungeonReset] Instance %u [map %u]: ScheduleReset %u for wrong instance [map %u]", event.instanceId, event.mapid, event.type, itr->second->GetMapId());
 
