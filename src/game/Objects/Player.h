@@ -1405,6 +1405,14 @@ class Player final: public Unit
         Player* GetTrader() const { return m_trade ? m_trade->GetTrader() : nullptr; }
         TradeData* GetTradeData() const { return m_trade; }
         void TradeCancel(bool sendback, TradeStatus status = TRADE_STATUS_TRADE_CANCELED);
+        // Headless entry to the trade window: the full initiate validation
+        // shared with CMSG_INITIATE_TRADE (same statuses, same packets),
+        // plus a TradeScript::OnTradeRequest observe hook. Returns the
+        // status reported to the requester (CANCELED when refused silently).
+        TradeStatus InitiateTradeWith(Player* other);
+        // Answer an incoming request (m_trade already set): open both
+        // windows, mirroring CMSG_BEGIN_TRADE.
+        void BeginTrade();
 
         uint32 GetTimeLoggedIn() const { return m_timeLoggedIn; }
         void AddLoggedInTime(uint32 diff) { m_timeLoggedIn += diff; }

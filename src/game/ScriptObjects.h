@@ -740,6 +740,17 @@ class GuildScript : public ScriptObject
         virtual void OnGuildInvite(Player* /*invited*/) {}
 };
 
+class TradeScript : public ScriptObject
+{
+    protected:
+        explicit TradeScript(char const* name) : ScriptObject(name) { ScriptRegistry<TradeScript>::AddScript(this); }
+    public:
+        // Observe-only: a managed bot has no client to click the trade
+        // window; the module answers through Player::BeginTrade a moment
+        // later. Mirrors GuildScript::OnGuildInvite.
+        virtual void OnTradeRequest(Player* /*requester*/, Player* /*target*/) {}
+};
+
 class MailScript : public ScriptObject
 {
     protected:

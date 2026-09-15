@@ -32,6 +32,7 @@
 #include "SocialMgr.h"
 #include "Language.h"
 #include "Chat.h"
+#include "ScriptObjects.h"
 
 void WorldSession::SendTradeStatus(TradeStatus status)
 {
@@ -610,106 +611,135 @@ void WorldSession::HandleInitiateTradeOpcode(WorldPacket& recvPacket)
     ObjectGuid otherGuid;
     recvPacket >> otherGuid;
 
-    if (IsFingerprintBanned())
-        return;
-
-    if (GetPlayer()->m_trade)
-        return;
-
-    if (!GetPlayer()->IsAlive())
-    {
-        SendTradeStatus(TRADE_STATUS_YOU_DEAD);
-        return;
-    }
-
-    if (GetPlayer()->HasUnitState(UNIT_STAT_STUNNED | UNIT_STAT_PENDING_STUNNED))
-    {
-        SendTradeStatus(TRADE_STATUS_YOU_STUNNED);
-        return;
-    }
-
-    if (isLogingOut())
-    {
-        SendTradeStatus(TRADE_STATUS_YOU_LOGOUT);
-        return;
-    }
-
-    if (GetPlayer()->IsTaxiFlying() || !GetPlayer()->FindMap())
-    {
-        SendTradeStatus(TRADE_STATUS_TARGET_TO_FAR);
-        return;
-    }
-
     Player* pOther = GetPlayer()->GetMap()->GetPlayer(otherGuid);
-
     if (!pOther)
     {
         SendTradeStatus(TRADE_STATUS_NO_TARGET);
         return;
     }
 
-    if (pOther == GetPlayer() || pOther->m_trade)
+    GetPlayer()->InitiateTradeWith(pOther);
+}
+
+TradeStatus Player::InitiateTradeWith(Player* pOther)
+{
+    if (GetSession()->IsFingerprintBanned())
+        return TRADE_STATUS_TRADE_CANCELED;
+
+    if (m_trade)
+        return TRADE_STATUS_TRADE_CANCELED;
+
+    if (!IsAlive())
     {
-        SendTradeStatus(TRADE_STATUS_BUSY);
-        return;
+        GetSession()->SendTradeStatus(TRADE_STATUS_YOU_DEAD);
+        return TRADE_STATUS_YOU_DEAD;
+    }
+
+    if (HasUnitState(UNIT_STAT_STUNNED | UNIT_STAT_PENDING_STUNNED))
+    {
+        GetSession()->SendTradeStatus(TRADE_STATUS_YOU_STUNNED);
+        return TRADE_STATUS_YOU_STUNNED;
+    }
+
+    if (GetSession()->isLogingOut())
+    {
+        GetSession()->SendTradeStatus(TRADE_STATUS_YOU_LOGOUT);
+        return TRADE_STATUS_YOU_LOGOUT;
+    }
+
+    if (IsTaxiFlying() || !FindMap())
+    {
+        GetSession()->SendTradeStatus(TRADE_STATUS_TARGET_TO_FAR);
+        return TRADE_STATUS_TARGET_TO_FAR;
+    }
+
+    if (!pOther)
+    {
+        GetSession()->SendTradeStatus(TRADE_STATUS_NO_TARGET);
+        return TRADE_STATUS_NO_TARGET;
+    }
+
+    if (pOther == this || pOther->m_trade)
+    {
+        GetSession()->SendTradeStatus(TRADE_STATUS_BUSY);
+        return TRADE_STATUS_BUSY;
     }
 
     if (!pOther->IsAlive())
     {
-        SendTradeStatus(TRADE_STATUS_TARGET_DEAD);
-        return;
+        GetSession()->SendTradeStatus(TRADE_STATUS_TARGET_DEAD);
+        return TRADE_STATUS_TARGET_DEAD;
     }
 
     if (pOther->IsTaxiFlying())
     {
-        SendTradeStatus(TRADE_STATUS_TARGET_TO_FAR);
-        return;
+        GetSession()->SendTradeStatus(TRADE_STATUS_TARGET_TO_FAR);
+        return TRADE_STATUS_TARGET_TO_FAR;
     }
 
     if (pOther->HasUnitState(UNIT_STAT_STUNNED | UNIT_STAT_PENDING_STUNNED))
     {
-        SendTradeStatus(TRADE_STATUS_TARGET_STUNNED);
-        return;
+        GetSession()->SendTradeStatus(TRADE_STATUS_TARGET_STUNNED);
+        return TRADE_STATUS_TARGET_STUNNED;
     }
 
     if (pOther->GetSession()->isLogingOut())
     {
-        SendTradeStatus(TRADE_STATUS_TARGET_LOGOUT);
-        return;
+        GetSession()->SendTradeStatus(TRADE_STATUS_TARGET_LOGOUT);
+        return TRADE_STATUS_TARGET_LOGOUT;
     }
 
-    if (!sWorld.getConfig(CONFIG_BOOL_ALLOW_TWO_SIDE_INTERACTION_TRADE) && pOther->GetTeam() != _player->GetTeam())
+    if (!sWorld.getConfig(CONFIG_BOOL_ALLOW_TWO_SIDE_INTERACTION_TRADE) && pOther->GetTeam() != GetTeam())
     {
-        SendTradeStatus(TRADE_STATUS_WRONG_FACTION);
-        return;
+        GetSession()->SendTradeStatus(TRADE_STATUS_WRONG_FACTION);
+        return TRADE_STATUS_WRONG_FACTION;
     }
 
-    if (_player->GetDistance3dToCenter(pOther) > TRADE_DISTANCE)
+    if (GetDistance3dToCenter(pOther) > TRADE_DISTANCE)
     {
-        SendTradeStatus(TRADE_STATUS_TARGET_TO_FAR);
-        return;
+        GetSession()->SendTradeStatus(TRADE_STATUS_TARGET_TO_FAR);
+        return TRADE_STATUS_TARGET_TO_FAR;
     }
 
     // Only non MM or MM players can trade between them
-    if (auto hardcoreResult = _player->HandleHardcoreInteraction(pOther, true); hardcoreResult != Player::HardcoreInteractionResult::Allowed)
+    if (auto hardcoreResult = HandleHardcoreInteraction(pOther, true); hardcoreResult != Player::HardcoreInteractionResult::Allowed)
     {
-        _player->GetSession()->SendNotification(Player::HardcoreResultToString(hardcoreResult).c_str());
-        SendTradeStatus(TRADE_STATUS_TRIAL_ACCOUNT);
-        return;
+        GetSession()->SendNotification(Player::HardcoreResultToString(hardcoreResult).c_str());
+        GetSession()->SendTradeStatus(TRADE_STATUS_TRIAL_ACCOUNT);
+        return TRADE_STATUS_TRIAL_ACCOUNT;
     }
 
     // OK start trade
-    _player->m_trade = new TradeData(_player, pOther);
-    pOther->m_trade = new TradeData(pOther, _player);
-    
+    m_trade = new TradeData(this, pOther);
+    pOther->m_trade = new TradeData(pOther, this);
+
     // Set the scam prevention, a delay  of 200 ms should suffice
-    _player->m_trade->SetScamPreventionDelay(200);
+    m_trade->SetScamPreventionDelay(200);
     pOther->m_trade->SetScamPreventionDelay(200);
 
     WorldPacket data(SMSG_TRADE_STATUS, 12);
     data << uint32(TRADE_STATUS_BEGIN_TRADE);
-    data << ObjectGuid(_player->GetObjectGuid());
+    data << ObjectGuid(GetObjectGuid());
     pOther->GetSession()->SendPacket(&data);
+
+    // Module hook: a managed bot has no client to click the request window;
+    // the module answers through BeginTrade a moment later.
+    ScriptRegistry<TradeScript>::ForEach([&](TradeScript* s) { s->OnTradeRequest(this, pOther); });
+
+    return TRADE_STATUS_BEGIN_TRADE;
+}
+
+void Player::BeginTrade()
+{
+    if (GetSession()->IsFingerprintBanned())
+        return;
+
+    TradeData* my_trade = m_trade;
+    if (!my_trade)
+        return;
+
+    my_trade->GetTrader()->GetSession()->SendTradeStatus(TRADE_STATUS_OPEN_WINDOW);
+    GetSession()->SendTradeStatus(TRADE_STATUS_OPEN_WINDOW);
 }
 
 void WorldSession::HandleSetTradeGoldOpcode(WorldPacket& recvPacket)
