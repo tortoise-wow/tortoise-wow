@@ -271,7 +271,13 @@ if(WIN32)
   set(MYSQL_INCLUDE_DIR ${CMAKE_SOURCE_DIR}/dep/windows/include/mysql)
   set(MYSQL_LIBRARY ${CMAKE_SOURCE_DIR}/dep/windows/lib/${DEP_ARCH}_release/libmySQL.lib)
   set(MYSQL_DEBUG_LIBRARY ${CMAKE_SOURCE_DIR}/dep/windows/lib/${DEP_ARCH}_debug/libmySQL.lib)
-  set(OPENSSL_INCLUDE_DIR ${CMAKE_SOURCE_DIR}/dep/windows/include/openssl)
+  # The parent of dep/windows/include/openssl, not that folder itself: every file that
+  # touches OpenSSL here (src/shared/Auth/ARC4.cpp, BigNumber.cpp, the HTTP API's
+  # httplib.h) uses the "#include <openssl/x.h>" form, which needs the *parent* on the
+  # include path to resolve at all. This alone is not sufficient by itself - see the
+  # include_directories() ordering note in src/shared, src/game, src/mangosd and
+  # src/realmd's own CMakeLists.txt, which is the other half of this fix.
+  set(OPENSSL_INCLUDE_DIR ${CMAKE_SOURCE_DIR}/dep/windows/include)
   set(OPENSSL_LIBRARIES ${CMAKE_SOURCE_DIR}/dep/windows/lib/${DEP_ARCH}_release/libssl.lib ${CMAKE_SOURCE_DIR}/dep/windows/lib/${DEP_ARCH}_release/libcrypto.lib)
   set(OPENSSL_DEBUG_LIBRARIES ${CMAKE_SOURCE_DIR}/dep/windows/lib/${DEP_ARCH}_debug/libssl.lib ${CMAKE_SOURCE_DIR}/dep/windows/lib/${DEP_ARCH}_debug/libcrypto.lib)
   set(ZLIB_INCLUDE_DIRS ${CMAKE_SOURCE_DIR}/dep/windows/include/zlib)
@@ -530,6 +536,51 @@ if(WIN32)
     DESTINATION ${LIBS_DIR}
     CONFIGURATIONS Debug
   )
+
+  # mangosd.exe/realmd.exe only need the OpenSSL 1.1 pair above, not a second OpenSSL 3.x
+  # family. That used to not be true - OPENSSL_INCLUDE_DIR being set correctly was not
+  # sufficient on its own, because src/shared, src/game, src/mangosd and src/realmd's own
+  # include_directories() all listed ACE_INCLUDE_DIR before OPENSSL_INCLUDE_DIR: with
+  # -DACE_ROOT pointed at a vcpkg installed tree (this project's own pipeline), ACE_INCLUDE_DIR
+  # IS that tree's shared include/ folder, which also holds vcpkg's own OpenSSL 3.x headers -
+  # so "#include <openssl/x.h>" resolved through those first, no matter what
+  # OPENSSL_INCLUDE_DIR itself was set to. Fixed by reordering those four
+  # include_directories() calls so OPENSSL_INCLUDE_DIR comes first - confirmed with
+  # dumpbin /dependents against a real build: mangosd.exe/realmd.exe no longer import
+  # libcrypto-3-x64.dll or libssl-3-x64.dll at all, and both still start and run past DLL
+  # loading with neither DLL present on disk anywhere.
+  if(ACE_ROOT)
+    # ACE_ROOT commonly arrives with Windows backslashes (-DACE_ROOT=C:\path\to\vcpkg, which
+    # is exactly how this project's own pipeline passes it). file(GLOB) matches fine against
+    # that, but embeds whatever it matched verbatim into the generated cmake_install.cmake -
+    # and an unescaped backslash there is a syntax error the moment it precedes a letter CMake
+    # does not recognise as an escape (\b, \t, \n, ...). Normalizing first is what the rest of
+    # this file already relies on CMake doing for CMAKE_SOURCE_DIR-based paths automatically.
+    file(TO_CMAKE_PATH "${ACE_ROOT}" ACE_ROOT_NORMALIZED)
+
+    # ACE.dll itself. mangosd.exe and realmd.exe both import it unconditionally (confirmed
+    # with dumpbin /dependents, and by actually running an installed build with it missing:
+    # STATUS_DLL_NOT_FOUND at startup, immediately), and nothing else in this file installs
+    # it - ACE is never bundled under dep/windows the way OpenSSL/MySQL are, so a build that
+    # only goes through this install() step ends up with a server directory that cannot start
+    # at all. vcpkg's own applocal-deps step (active when "vcpkg integrate install" has been
+    # run) copies it into the raw build output next to the freshly linked .exe, which masks
+    # this in that one specific setup - but that copy never reaches CMAKE_INSTALL_PREFIX, so
+    # it does not help here.
+    #
+    # file(GLOB), not a hard requirement: ACE can also be linked statically, in which case
+    # there is no ACE.dll under ACE_ROOT/bin at all, and that is a legitimate build this
+    # should not fail over.
+    file(GLOB ACE_RELEASE_DLL "${ACE_ROOT_NORMALIZED}/bin/ACE.dll")
+    file(GLOB ACE_DEBUG_DLL   "${ACE_ROOT_NORMALIZED}/debug/bin/ACE.dll")
+    if(ACE_RELEASE_DLL)
+      install(FILES ${ACE_RELEASE_DLL} DESTINATION ${LIBS_DIR} CONFIGURATIONS Release)
+    endif()
+    if(ACE_DEBUG_DLL)
+      install(FILES ${ACE_DEBUG_DLL} DESTINATION ${LIBS_DIR} CONFIGURATIONS Debug)
+    endif()
+  endif()
+
   if(PLATFORM MATCHES X86)
     # Copy dll's Windows needs
     install(

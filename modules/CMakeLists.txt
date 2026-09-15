@@ -70,6 +70,28 @@ set(MODULES_COMMON_INCLUDES
   ${CMAKE_BINARY_DIR}
   ${CMAKE_BINARY_DIR}/src/shared
   ${TBB_INCLUDE_DIRS}
+  # OPENSSL_INCLUDE_DIR was missing from this list entirely, not just ordered after
+  # ACE_INCLUDE_DIR (see the ordering note in src/mangosd, src/shared, src/game and
+  # src/realmd's own CMakeLists.txt) - so a module #including <openssl/x.h> directly
+  # (TortoiseBots' ai/playerbot/PlayerbotLLMInterface.cpp does, for dead code per
+  # Sagiroth/TortoiseBots#166) had no way to resolve it through dep/windows's bundled 1.1 at
+  # all, on a Windows build with -DACE_ROOT pointed at a vcpkg installed tree: ACE_INCLUDE_DIR
+  # is that tree's shared include/ folder, which also holds vcpkg's own OpenSSL 3.x headers,
+  # so that was the only copy this target's own include path ever offered it.
+  #
+  # Correct on its own merits, but worth being honest about what it did and did not fix:
+  # dep/windows's bundled 1.1 import library turns out not to export ERR_get_error or
+  # ERR_error_string_n either (confirmed with dumpbin /symbols) - the same functions
+  # PlayerbotLLMInterface.cpp's dead GetSSLError() calls - so this alone does not make that
+  # file resolve cleanly against the 1.1 library. It stays link-clean today only because
+  # nothing calls GetSSLError, so the linker never pulls the object code containing those
+  # references in at all (confirmed with dumpbin /imports on the actual mangosd.exe: no
+  # libcrypto-3-x64.dll, right up until something makes GetSSLError reachable, at which
+  # point relying on dead-code elimination stops being enough). The actual, load-bearing fix
+  # for the -WithPlayerBots libcrypto-3-x64.dll dependency was a different, already-reachable
+  # symbol entirely - RAND_bytes in TortoiseBots' RandomBotService.cpp, fixed in
+  # Sagiroth/TortoiseBots#170 - not this.
+  ${OPENSSL_INCLUDE_DIR}
   ${ACE_INCLUDE_DIR}
   ${MYSQL_INCLUDE_DIR}
 )

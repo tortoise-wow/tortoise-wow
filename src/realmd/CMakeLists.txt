@@ -45,8 +45,14 @@ include_directories(
   ${CMAKE_BINARY_DIR}
   ${CMAKE_BINARY_DIR}/src/shared
   ${MYSQL_INCLUDE_DIR}
-  ${ACE_INCLUDE_DIR}
+  # OPENSSL_INCLUDE_DIR before ACE_INCLUDE_DIR, not after: on a Windows build with -DACE_ROOT
+  # pointed at a vcpkg installed tree, ACE_INCLUDE_DIR IS that tree's shared include/ folder -
+  # vcpkg lays every package for a triplet under one include/ directory, so it also contains
+  # vcpkg's own OpenSSL 3.x headers, not just ACE's. The compiler searches -I paths in the
+  # order given, so with ACE_INCLUDE_DIR first, "#include <openssl/x.h>" always resolved
+  # through vcpkg's 3.x headers there, no matter what OPENSSL_INCLUDE_DIR itself pointed at.
   ${OPENSSL_INCLUDE_DIR}
+  ${ACE_INCLUDE_DIR}
 )
 
 if(WIN32)
