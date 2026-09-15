@@ -255,6 +255,34 @@ AccountTypes AccountMgr::GetSecurity(uint32 acc_id)
     return it->second;
 }
 
+AccountTypes AccountMgr::GetSecurityFromDatabase(uint32 acc_id)
+{
+    std::unique_ptr<QueryResult> result(LoginDatabase.PQuery("SELECT `rank` FROM `account` WHERE `id` = '%u'", acc_id));
+    if (!result)
+        return SEC_PLAYER;
+
+    AccountTypes const secu = AccountTypes(result->Fetch()[0].GetUInt32());
+    switch (secu)
+    {
+    case SEC_OBSERVER:
+    case SEC_MODERATOR:
+    case SEC_DEVELOPER:
+    case SEC_ADMINISTRATOR:
+    case SEC_SIGMACHAD:
+        return secu;
+    default:
+        // Same set LoadGmLevels accepts; any other value is a player.
+        return SEC_PLAYER;
+    }
+}
+
+bool AccountMgr::IsAccountBannedInDatabase(uint32 acc_id)
+{
+    std::unique_ptr<QueryResult> result(LoginDatabase.PQuery(
+        "SELECT 1 FROM `account_banned` WHERE `id` = '%u' AND `active` = 1 AND (`unbandate` > UNIX_TIMESTAMP() OR `unbandate` = `bandate`) LIMIT 1", acc_id));
+    return result != nullptr;
+}
+
 void AccountMgr::SetSecurity(uint32 accId, AccountTypes sec)
 {
     m_accountSecurity[accId] = sec;

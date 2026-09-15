@@ -2111,3 +2111,15 @@ Perf.Enable = 1
 
 # Report to logs DB. Time in seconds
 Perf.ReportInterval = 600
+
+########################################
+# SOAP remote-command interface
+#   SOAP.Enabled - 1 = enable, 0 = disable (default). Off unless set to 1.
+#   SOAP.IP      - bind address (default 127.0.0.1, localhost only)
+#   SOAP.Port    - bind port (default 7878)
+# Requires a SEC_ADMINISTRATOR account. One command per request; the
+# command's output is returned as the response.
+########################################
+SOAP.Enabled = 0
+SOAP.IP = 127.0.0.1
+SOAP.Port = 7878

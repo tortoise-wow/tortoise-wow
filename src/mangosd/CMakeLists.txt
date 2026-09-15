@@ -16,6 +16,16 @@
 # Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
 
 set(EXECUTABLE_NAME mangosd)
+
+# SOAP remote-command interface. The gsoap C++ runtime is vendored as a Linux
+# static lib (dep/lib/gsoap/libgsoap++.a), so SOAP does not build on Windows.
+# Default: ON for Linux, OFF for Windows. Override with -DENABLE_SOAP=ON/OFF.
+if(WIN32)
+  set(_ENABLE_SOAP_DEFAULT OFF)
+else()
+  set(_ENABLE_SOAP_DEFAULT ON)
+endif()
+option(ENABLE_SOAP "Build the SOAP remote-command interface (vendored gsoap, Linux only)" ${_ENABLE_SOAP_DEFAULT})
 set (EXECUTABLE_SRCS 
 	CliRunnable.h
 	DynamicModules.h
@@ -29,6 +39,17 @@ set (EXECUTABLE_SRCS
 
 )
 
+
+if(ENABLE_SOAP)
+  list(APPEND EXECUTABLE_SRCS
+    MaNGOSsoap.h
+    MaNGOSsoap.cpp
+    soap/soapStub.h
+    soap/soapH.h
+    soap/soapC.cpp
+    soap/soapServer.cpp
+  )
+endif()
 
 if(WIN32)
   list(APPEND EXECUTABLE_SRCS
@@ -68,6 +89,9 @@ include_directories(
   ${CMAKE_SOURCE_DIR}/src/game/Threat
   ${CMAKE_SOURCE_DIR}/src/game/Transports
   ${CMAKE_SOURCE_DIR}/src/game/vmap
+  ${CMAKE_CURRENT_SOURCE_DIR}
+  ${CMAKE_CURRENT_SOURCE_DIR}/soap
+  ${CMAKE_SOURCE_DIR}/dep/include/gsoap
   ${CMAKE_BINARY_DIR}/src/shared
   ${CMAKE_BINARY_DIR}
   ${ACE_INCLUDE_DIR}
@@ -127,6 +151,15 @@ endif()
 target_link_libraries(${EXECUTABLE_NAME}
     libdeflate
 )
+
+# SOAP remote-command interface: vendored gsoap C++ runtime (2.8.135).
+# Linux-only (vendored static lib); guard behind ENABLE_SOAP so Windows can build.
+if(ENABLE_SOAP)
+  target_compile_definitions(${EXECUTABLE_NAME} PRIVATE ENABLE_SOAP)
+  target_link_libraries(${EXECUTABLE_NAME}
+      ${CMAKE_SOURCE_DIR}/dep/lib/gsoap/libgsoap++.a
+  )
+endif()
 
 
 if(WIN32)

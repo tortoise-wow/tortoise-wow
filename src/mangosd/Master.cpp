@@ -35,6 +35,10 @@
 #include "Master.h"
 #include "WorldSocket.h"
 #include "WorldRunnable.h"
+#ifdef ENABLE_SOAP
+#include "MaNGOSsoap.h"
+#endif
+#include <memory>
 #include "World.h"
 #include "Log.h"
 #include "ScriptObjects.h"
@@ -207,6 +211,14 @@ int Master::Run()
 
     ///- Launch WorldRunnable thread
     std::thread world_thread{WorldRunnable()};
+
+#ifdef ENABLE_SOAP
+    ///- Start the SOAP remote command interface (off unless SOAP.Enabled = 1)
+    std::unique_ptr<SOAPThread> soapThread;
+    if (sConfig.GetBoolDefault("SOAP.Enabled", false))
+        soapThread.reset(new SOAPThread(sConfig.GetStringDefault("SOAP.IP", "127.0.0.1"),
+                                        sConfig.GetIntDefault("SOAP.Port", 7878)));
+#endif
 
     // set realmbuilds depend on mangosd expected builds, and set server online
     {
