@@ -3096,7 +3096,8 @@ bool Map::GetWalkHitPosition(Transport* transport, float srcX, float srcY, float
     }
 
     MMAP::MMapManager* mmap = MMAP::MMapFactory::createOrGetMMapManager();
-    const dtNavMeshQuery* m_navMeshQuery = transport ? mmap->GetModelNavMeshQuery(transport->GetDisplayId()) : mmap->GetNavMeshQuery(GetId());
+    MMAP::NavMeshQueryHandle navMeshQueryHandle = transport ? mmap->AcquireModelNavMeshQuery(transport->GetDisplayId()) : mmap->AcquireNavMeshQuery(GetId());
+    const dtNavMeshQuery* m_navMeshQuery = navMeshQueryHandle.get();
     if (!m_navMeshQuery)
     {
         DETAIL_LOG("WalkHitPos: No nav mesh loaded !");
@@ -3160,6 +3161,11 @@ bool Map::GetWalkHitPosition(Transport* transport, float srcX, float srcY, float
         DT_STRAIGHTPATH_ALL_CROSSINGS);
     if (dtStatusFailed(result))
         return false;
+
+    // All Detour refs have been converted to copied path points. Do not keep
+    // the reader gate across dynamic collision/VMap/terrain operations.
+    navMeshQueryHandle = MMAP::NavMeshQueryHandle();
+
     // Add 1y height, because navmesh height is not very precise.
     Vector3 dstPos = Vector3(srcX, srcY, srcZ + 1.0f);
     for (int i = 0; i < pointCount; ++i)
@@ -3228,7 +3234,8 @@ bool Map::GetWalkRandomPosition(Transport* transport, float& x, float& y, float&
 
     // Find the navMeshQuery.
     MMAP::MMapManager* mmap = MMAP::MMapFactory::createOrGetMMapManager();
-    dtNavMeshQuery const* m_navMeshQuery = transport ? mmap->GetModelNavMeshQuery(transport->GetDisplayId()) : mmap->GetNavMeshQuery(GetId());
+    MMAP::NavMeshQueryHandle navMeshQueryHandle = transport ? mmap->AcquireModelNavMeshQuery(transport->GetDisplayId()) : mmap->AcquireNavMeshQuery(GetId());
+    dtNavMeshQuery const* m_navMeshQuery = navMeshQueryHandle.get();
     float radius = maxRadius * rand_norm_f();
 
     // Find a valid position nearby.
@@ -3289,6 +3296,10 @@ bool Map::GetWalkRandomPosition(Transport* transport, float& x, float& y, float&
             }
         } while (false);
     }
+
+    // The fallback below may choose an unloaded terrain grid and GetHeight()
+    // is allowed to lazy-load it. Release the navmesh reader before that path.
+    navMeshQueryHandle = MMAP::NavMeshQueryHandle();
 
     if (!mmapsCorrect)
     {
