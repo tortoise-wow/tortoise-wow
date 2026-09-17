@@ -486,6 +486,12 @@ WorldLogTimestamp = 0
 
 DBErrorLogFile = "errors.log"
 
+# DBErrorLogTimestamp. Logfile with timestamp of server start in name.
+#     This log is opened in append mode, so without a timestamp every startup
+#     adds to the same file and the warnings of several runs sit side by side.
+
+DBErrorLogTimestamp = 0
+
 # DBErrorFixFile. Log file of SQL requests to apply to fix detected database errors.
 
 DBErrorFixFile = ""
