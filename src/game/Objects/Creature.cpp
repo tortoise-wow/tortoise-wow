@@ -1592,6 +1592,14 @@ void Creature::SelectLevel(const CreatureInfo *cinfo, float percentHealth, float
     uint32 maxhealth = std::max(cinfo->health_max, cinfo->health_min);
     uint32 health = uint32(healthmod * (minhealth + uint32(rellevel * (maxhealth - minhealth))));
 
+    // A health rate below 1 truncates a 1 HP creature to 0 max health, and a
+    // creature that spawns at 0 health is alive and unkillable: the client
+    // draws it as a corpse, Unit::Kill returns early on a victim already at 0,
+    // and a creature that cannot die never schedules a respawn. Only rescue
+    // templates that asked for health; one that really says 0 keeps it.
+    if (!health && maxhealth)
+        health = 1;
+
     if (sWorld.IsAprilFools())
     {
         if (cinfo->type == CREATURE_TYPE_CRITTER)
