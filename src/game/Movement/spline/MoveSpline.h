@@ -109,6 +109,7 @@ namespace Movement
             Location ComputePosition() const;
 
             uint32 GetId() const { return m_Id;}
+            uint32 GetFlags() const { return splineflags.raw(); }
             bool Finalized() const { return splineflags.done; }
             bool isCyclic() const { return splineflags.cyclic;}
             bool IsUninterruptible() const { return m_uninterruptible; }
