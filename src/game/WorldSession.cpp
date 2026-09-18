@@ -1073,6 +1073,14 @@ void WorldSession::ExecuteOpcode(OpcodeHandler const& opHandle, WorldPacket* pac
 
     (this->*opHandle.handler)(*packet);
 
+    // Modules that mirror or react to a player's action need the completed
+    // handler result. The existing receive hook runs before dispatch and can
+    // suppress a packet, so it cannot safely serve this purpose.
+    ScriptRegistry<ServerScript>::ForEachEnabledHook(SERVERHOOK_ON_PACKET_HANDLED, [&](ServerScript* script)
+    {
+        script->OnPacketHandled(this, *packet);
+    });
+
     if (_player)
     {
         // can be not set in fact for login opcode, but this not create porblems.
