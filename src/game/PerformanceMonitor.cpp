@@ -10,6 +10,15 @@ PerformanceMonitor::PerformanceMonitor()
 	gPerfMonitorInterface = this;
 }
 
+PerformanceMonitor::~PerformanceMonitor()
+{
+    // Other global containers can be destroyed after this monitor. Unpublish
+    // before MemBytes/its mutex are destroyed, so their allocator callbacks do
+    // not enter an already-destroyed map (also affects the --version exit).
+    if (gPerfMonitorInterface == this)
+        gPerfMonitorInterface = nullptr;
+}
+
 void PerformanceMonitor::Initialize()
 {
 	// in seconds

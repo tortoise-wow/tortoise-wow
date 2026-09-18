@@ -6200,12 +6200,29 @@ void ObjectMgr::LoadPetNames()
 
 void ObjectMgr::LoadPetNumber()
 {
-    m_NextPetNumber = 1;
+    // Like CMaNGOS, allocate above persisted pet identities. Include dependent
+    // tables: historical replacement can leave rows without character_pet,
+    // and reusing their identity would attach old spells to an unrelated pet.
+    QueryResult* result = CharacterDatabase.Query(
+        "SELECT MAX(pet_id) FROM ("
+        "SELECT COALESCE(MAX(id),0) AS pet_id FROM character_pet UNION ALL "
+        "SELECT COALESCE(MAX(guid),0) FROM pet_spell UNION ALL "
+        "SELECT COALESCE(MAX(guid),0) FROM pet_spell_cooldown UNION ALL "
+        "SELECT COALESCE(MAX(guid),0) FROM pet_aura) persisted_pets");
+    if (!result)
+        sLog.outError("Cannot initialize pet identities from the character database.");
+    MANGOS_ASSERT(result);
+    const uint32 highest = result->Fetch()[0].GetUInt32();
+    delete result;
+    MANGOS_ASSERT(highest < ObjectGuid::GetMaxCounter(HIGHGUID_PET));
+    m_NextPetNumber = highest + 1;
+    sLog.outString(">> Next pet number: %u", m_NextPetNumber);
 }
 
 uint32 ObjectMgr::GeneratePetNumber()
 {
     m_NextPetNumber = sCharacterDatabaseCache.GetNextAvailablePetNumber(m_NextPetNumber);
+    MANGOS_ASSERT(m_NextPetNumber && m_NextPetNumber <= ObjectGuid::GetMaxCounter(HIGHGUID_PET));
     return m_NextPetNumber++;
 }
 
@@ -9365,9 +9382,8 @@ void ObjectMgr::LoadAreaTemplate()
 {
     sAreaStorage.Load();
 
-    for (auto itr = sAreaStorage.begin<AreaEntry>(); itr != sAreaStorage.end<AreaEntry>() ; ++itr)
-        if (itr->IsZone() && itr->MapId != 0 && itr->MapId != 1)
-            sAreaFlagByMapId.insert(AreaFlagByMapId::value_type(itr->MapId, itr->ExploreFlag));
+    // World initialization only: immutable indexed reads once map workers run.
+    AreaEntry::RebuildLookupIndex();
 }
 
 void ObjectMgr::LoadAreaLocales()

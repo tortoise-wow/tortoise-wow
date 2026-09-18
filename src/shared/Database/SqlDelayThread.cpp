@@ -1,3 +1,4 @@
+#include "Util/DevDiagnostics.h"
 /*
  * Copyright (C) 2005-2011 MaNGOS <http://getmangos.com/>
  * Copyright (C) 2009-2011 MaNGOSZero <https://github.com/mangos/zero>
@@ -24,14 +25,14 @@
 #include "DatabaseEnv.h"
 
 SqlDelayThread::SqlDelayThread(const char* InName, Database* db, SqlConnection* conn)
-    : m_dbEngine(db), m_dbConnection(conn), m_running(true), Name(InName)
+    : m_dbEngine(db), m_dbConnection(conn), m_running(true), Name(InName ? InName : "")
 {
 }
 
 SqlDelayThread::~SqlDelayThread()
 {
     //process all requests which might have been queued while thread was stopping
-    ProcessRequests();
+    while (ProcessRequests()) {}
     delete m_dbConnection;
 }
 
@@ -42,7 +43,7 @@ void SqlDelayThread::addSerialOperation(SqlOperation *op)
 
 bool SqlDelayThread::HasAsyncQuery()
 {
-    return !m_serialDelayQueue.empty_unsafe();
+    return PendingCount() != 0;
 }
 
 void SqlDelayThread::run()
@@ -52,7 +53,11 @@ void SqlDelayThread::run()
     #endif
 
     char ThreadName[128];
-    sprintf(ThreadName, "SqlDelay %s", Name);
+    // snprintf, not sprintf: the source used to be a dangling pointer, so
+    // whether this overflowed came down to where the next zero byte happened
+    // to sit in a reused stack frame. The name is owned now, but a bounded
+    // write costs nothing and closes the door.
+    snprintf(ThreadName, sizeof(ThreadName), "SqlDelay %s", Name.c_str());
 
     thread_name(ThreadName);
     const uint32 loopSleepms = 10;
@@ -60,7 +65,7 @@ void SqlDelayThread::run()
     const uint32 pingEveryLoop = m_dbEngine->GetPingIntervall() / loopSleepms;
 
     uint32 loopCounter = 0;
-    while (m_running)
+    while (m_running.load(std::memory_order_acquire))
     {
         // if the running state gets turned off while sleeping
         // empty the queue before exiting
@@ -77,6 +82,8 @@ void SqlDelayThread::run()
         }
     }
 
+    // Preserve every accepted operation, not just one capped batch, on shutdown.
+    while (ProcessRequests()) {}
     #ifndef DO_POSTGRESQL
     mysql_thread_end();
     #endif
@@ -84,14 +91,31 @@ void SqlDelayThread::run()
 
 void SqlDelayThread::Stop()
 {
-    m_running = false;
+    m_running.store(false, std::memory_order_release);
 }
 
-void SqlDelayThread::ProcessRequests()
+size_t SqlDelayThread::ProcessRequests()
 {
+    MANTECH_DIAG_SCOPE(DbExecute, 1, nullptr);
+
     SqlOperation* s = nullptr;
-    while (m_dbEngine->NextDelayedOperation(s))
+    size_t processed = 0;
+
+    uint32 priorityProcessed = 0;
+    while (priorityProcessed++ < 32 && (m_prioritySerialDelayQueue.next(s) || m_priorityQueue.next(s)))
     {
+        ++processed;
+        bool result = s->Execute(m_dbConnection);
+        const auto& callback = s->GetCallback();
+        if (callback)
+            (*callback)(result);
+        delete s;
+    }
+
+    uint32 normalProcessed = 0;
+    while (normalProcessed++ < 64 && m_dbEngine->NextDelayedOperation(s))
+    {
+        ++processed;
         bool result = s->Execute(m_dbConnection);
         const auto& callback = s->GetCallback();
         if (callback)
@@ -100,12 +124,15 @@ void SqlDelayThread::ProcessRequests()
     }
 
     // Process any serial operations for this worker
-    while (m_serialDelayQueue.next(s))
+    uint32 serialProcessed = 0;
+    while (serialProcessed++ < 64 && m_serialDelayQueue.next(s))
     {
+        ++processed;
         bool result = s->Execute(m_dbConnection);
         const auto& callback = s->GetCallback();
         if (callback)
             (*callback)(result);
         delete s;
     }
+    return processed;
 }

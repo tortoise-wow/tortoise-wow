@@ -55,6 +55,10 @@ class LootTemplate::LootGroup                               // A set of loot def
 {
 public:
     LootGroup() : hasConditionalEqualChancedItem(false) {}
+    void VisitEntries(std::function<void(LootEntryView, LootEntryView)> const& visitor) const
+    {
+        visitor({ExplicitlyChanced.data(), ExplicitlyChanced.size()}, {EqualChanced.data(), EqualChanced.size()});
+    }
     void AddEntry(LootStoreItem& item);                 // Adds an entry to the group (at loading stage)
     bool HasQuestDrop() const;                          // True if group includes at least 1 quest drop entry
     bool HasQuestDropForPlayer(Player const * player) const;
@@ -73,6 +77,18 @@ private:
     LootStoreItem const * Roll(Loot const& loot, Player const* lootOwner) const; // Rolls an item from the group, returns nullptr if all miss their chances
     bool hasConditionalEqualChancedItem;
 };
+
+LootEntryView LootTemplate::GetEntries() const
+{
+    return {Entries.data(), Entries.size()};
+}
+
+void LootTemplate::VisitGroups(std::function<void(LootEntryView, LootEntryView)> const& visitor) const
+{
+    if (visitor)
+        for (LootGroup const& group : Groups)
+            group.VisitEntries(visitor);
+}
 
 //Remove all data and free all memory
 void LootStore::Clear()

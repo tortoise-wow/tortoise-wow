@@ -1,220 +1,78 @@
 /*
  * Copyright (C) 2017 Elysium Project <https://github.com/elysium-project>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
+ * Distributed under the GNU General Public License, version 2 or later.
  */
-
 #ifndef THREADPOOL_H
 #define THREADPOOL_H
-
-#include <vector>
-#include <thread>
-#include <shared_mutex>
-#include <condition_variable>
-#include <functional>
 #include <atomic>
+#include <condition_variable>
+#include <exception>
+#include <functional>
 #include <future>
-
+#include <memory>
+#include <mutex>
+#include <string>
+#include <thread>
+#include <vector>
 #ifdef WIN32
 #undef ERROR
 #undef IGNORE
 #endif
-
+// Publish immutable work, join ALL workers, then permit reuse. Captured game
+// objects must remain alive until the returned batch future has completed.
 class ThreadPool
 {
-private:
-    struct worker_sq;
-    struct worker_mq;
-    template <class T = worker_sq>
-    struct worker_mysql;
 public:
-    using SingleQueue = worker_sq;
-    using MultiQueue = worker_mq;
-    template <class T = SingleQueue>
-    using MySQL = worker_mysql<T>;
-
+    struct SingleQueue { static constexpr bool mysql = false, multi = false; };
+    struct MultiQueue { static constexpr bool mysql = false, multi = true; };
+    template<class T = SingleQueue>
+    struct MySQL { static constexpr bool mysql = true, multi = T::multi; };
     using Callable = std::function<void()>;
-
     using workload_t = std::vector<Callable>;
-
-    enum class Status {
-        ERROR = -1,
-        STOPPED,
-        STARTING,
-        READY,
-        PROCESSING,
-        TERMINATING
-    };
-
-    enum class ClearMode {
-        NEVER,
-        UPPON_COMPLETION,
-        AT_NEXT_WORKLOAD
-    };
-
-    /**
-     * @brief The ErrorHandling enum defines how the workers will manage tasks generating exceptions
-     *  NONE:       the error will propagate
-     *  IGNORE:     skip the current task
-     *  LOG:        skip the current task, logs the error
-     *  TERMINATE:  skip all remaning tasks
-     */
-    enum class ErrorHandling {
-        NONE,
-        IGNORE,
-        LOG,
-        TERMINATE
-    };
-
-    /**
-     * @brief ThreadPool allocates memory, use ThreadPool::start() to spawn the threads.
-     * @param numThreads the number of threads that will be created.
-     */
-    ThreadPool(int numThreads, std::string InName, ClearMode when = ClearMode::AT_NEXT_WORKLOAD, ErrorHandling mode = ErrorHandling::NONE);
-
-    ThreadPool() = delete;
-
+    enum class Status { ERROR = -1, STOPPED, STARTING, READY, PROCESSING, TERMINATING };
+    enum class ClearMode { NEVER, UPPON_COMPLETION, AT_NEXT_WORKLOAD };
+    enum class ErrorHandling { NONE, IGNORE, LOG, TERMINATE };
+    ThreadPool(int numThreads, std::string name,
+        ClearMode when = ClearMode::AT_NEXT_WORKLOAD, ErrorHandling mode = ErrorHandling::NONE);
     ~ThreadPool();
-
-    /**
-     * @brief start creates and start the treads.
-     */
-    template<class WORKER_T = SingleQueue>
-    void start()
-    {
-        if (m_status != Status::STOPPED || !m_size)
-            return;
-        m_status = Status::STARTING;
-        for (int i = 0; i < m_size; i++)
-            m_workers.emplace_back(new WORKER_T(this, Name, i, m_errorHandling));
-        m_status = Status::READY;
-    }
-
-    /**
-     * @brief processWorkload notify the threads that the workload is ready.
-     */
-    std::future<void> processWorkload(Callable pre = Callable(), Callable post = Callable());
-
-    /**
-     * @brief setWorkload set the next workload
-     * @param workload
-     * @param safe if true, it will wait for previous workload to be done
-     */
-    std::future<void> processWorkload(workload_t &workload, Callable pre = Callable(), Callable post = Callable());
-    std::future<void> processWorkload(workload_t &&workload,Callable pre = Callable(), Callable post = Callable());
-
-    /**
-     * @brief status
-     * @return the current status
-     */
-    Status status() const;
-
-    /**
-     * @brief size
-     * @return the number of threads that are/will be created
-     */
-    size_t size() const;
-
-    /**
-     * @brief taskErrors always return an empty vector if ErrorHandling was set to IGNORE
-     * @return a vector containing all task exceptions generated during last processed workload
-     */
+    ThreadPool(ThreadPool const&) = delete;
+    ThreadPool& operator=(ThreadPool const&) = delete;
+    template<class T = SingleQueue> void start() { StartWorkers(T::mysql, T::multi); }
+    std::future<void> processWorkload(Callable pre = {}, Callable post = {});
+    std::future<void> processWorkload(workload_t& workload, Callable pre = {}, Callable post = {});
+    std::future<void> processWorkload(workload_t&& workload, Callable pre = {}, Callable post = {});
+    Status status() const { return m_status.load(std::memory_order_acquire); }
+    size_t size() const { return m_size; }
     std::vector<std::exception_ptr> taskErrors() const;
-
-    /**
-     * @brief operator << add a task to the workload
-     * NOT threadsafe
-     * @param function
-     * @return
-     */
     ThreadPool& operator<<(Callable function);
-
-    /**
-     * @brief clearWorkload
-     *  clear the current workload
-     *  WARNING: NOT threadsafe, call waitForFinished() first
-     */
     void clearWorkload();
-
 private:
-    struct worker {
-        worker(ThreadPool *pool, std::string InName, int id, ErrorHandling mode);
-        ~worker();
-
-        void loop_wrapper();
-        void loop();
-        virtual void doWork() = 0;
-        virtual void prepare(Callable pre, Callable post);
-        void waitForWork();
-
-        int id;
-        std::string Name;
-        ErrorHandling errorHandling;
-        volatile bool busy = false;
-        ThreadPool *pool;
-        std::thread thread;
-        Callable pre, post;
-
-    };
-
-    struct worker_sq : public worker{
-        worker_sq(ThreadPool *pool, std::string InName, int id, ErrorHandling mode);
-
-        void doWork() override;
-    };
-
-    struct worker_mq : public worker{
-        worker_mq(ThreadPool *pool, std::string InName, int id, ErrorHandling mode);
-
-        void doWork() override;
-        void prepare(Callable pre, Callable post) override;
-
-        int it;
-    };
-
-    template <class T>
-    struct worker_mysql : public T
-    {
-        worker_mysql(ThreadPool *tp, std::string InName, int id, ErrorHandling e);
-
-        void doWork() override;
-    };
-
-    using workers_t = std::vector<std::unique_ptr<worker>>;
-
-    std::string Name;
-    Status m_status = Status::STOPPED;
-    ErrorHandling m_errorHandling;
-    size_t m_size;
-    std::shared_mutex m_mutex;
-    std::condition_variable_any m_waitForWork;
+    void StartWorkers(bool mysql, bool multi);
+    void RunWorker(size_t id, bool mysql, bool multi);
+    void Execute(Callable const& function);
+    std::future<void> Publish(Callable pre, Callable post);
+    void RequireIdle() const;
+    std::string const m_name;
+    size_t const m_size;
+    ClearMode const m_clearMode;
+    ErrorHandling const m_errorHandling;
+    std::atomic<Status> m_status{Status::STOPPED};
+    mutable std::mutex m_mutex;
+    std::condition_variable m_ready, m_idle;
     workload_t m_workload;
-    ClearMode m_clearMode;
-    bool m_dirty = false;
-    std::atomic<int> m_active;
-    std::atomic<int> m_index;
+    std::vector<std::thread> m_workers;
     std::vector<std::exception_ptr> m_errors;
     std::promise<void> m_result;
-    workers_t m_workers;
+    Callable m_pre, m_post;
+    std::atomic<size_t> m_index{0};
+    std::atomic<bool> m_failed{false};
+    size_t m_generation = 0, m_active = 0, m_participants = 0;
+    bool m_dirty = false, m_stopping = false;
 };
-
 template<typename T>
-std::unique_ptr<ThreadPool> & operator<<(std::unique_ptr<ThreadPool> & tp, T &&f)
+std::unique_ptr<ThreadPool>& operator<<(std::unique_ptr<ThreadPool>& pool, T&& function)
 {
-    (*tp) << std::forward<T>(f);
-    return tp;
+    (*pool) << std::forward<T>(function);
+    return pool;
 }
-
 #endif

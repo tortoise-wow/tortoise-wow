@@ -1,3 +1,4 @@
+#include "Util/DevDiagnostics.h"
 /*
  * Copyright (C) 2005-2011 MaNGOS <http://getmangos.com/>
  * Copyright (C) 2009-2011 MaNGOSZero <https://github.com/mangos/zero>
@@ -20,11 +21,13 @@
  */
 
 #include "Creature.h"
+#include "ArchitectureDiagnostics.h"
 #include "Database/DatabaseEnv.h"
 #include "WorldPacket.h"
 #include "World.h"
 #include "ObjectMgr.h"
 #include "ScriptMgr.h"
+#include "ScriptObjects.h"
 #include "ObjectGuid.h"
 #include "SpellMgr.h"
 #include "QuestDef.h"
@@ -62,6 +65,7 @@
 #include "GuardMgr.h"
 #include "GuidObjectScaling.h"
 #include "PerfStats.h"
+#include "Autoscaling/AutoScaler.hpp"
 
 // apply implementation of the singletons
 #include "Policies/SingletonImp.h"
@@ -266,6 +270,18 @@ void Creature::AddToWorld()
         AIM_Initialize();
     if (!bWasInWorld && m_zoneScript)
         m_zoneScript->OnCreatureCreate(this);
+
+    // The backported AllCreatureScript surface never had a caller for
+    // OnCreatureAddWorld - modules registering it were silently dead. Fire it
+    // where AzerothCore does: creature fully in the world, first entry only.
+    // (AllCreatureScript has no per-hook registry; ForEach walks all scripts.)
+    if (!bWasInWorld && IsInWorld())
+    {
+        ScriptRegistry<AllCreatureScript>::ForEach([&](AllCreatureScript* script)
+        {
+            script->OnCreatureAddWorld(this);
+        });
+    }
 }
 
 void Creature::RemoveFromWorld()
@@ -273,6 +289,11 @@ void Creature::RemoveFromWorld()
     ///- Remove the creature from the accessor
     if (IsInWorld())
     {
+        ScriptRegistry<AllCreatureScript>::ForEach([&](AllCreatureScript* script)
+        {
+            script->OnCreatureRemoveWorld(this);
+        });
+
         if (AI())
             AI()->OnRemoveFromWorld();
         if (GetObjectGuid().GetHigh() == HIGHGUID_UNIT)
@@ -695,9 +716,18 @@ uint32 Creature::ChooseDisplayId(CreatureInfo const* cinfo, CreatureData const* 
 
 void Creature::Update(uint32 update_diff, uint32 diff)
 {
+    MANTECH_DIAG_SCOPE(Creature, 32, nullptr);
+    TurtleDiagnostics::CreatureProbe diagnosticCreature(this, GetGUIDLow(), GetEntry(),
+        uint32(m_deathState), IsInCombat(), update_diff);
     update_diff *= sWorld.GetTimeRate();
     diff *= sWorld.GetTimeRate();
 
+    ScriptRegistry<AllCreatureScript>::ForEach([&](AllCreatureScript* script)
+    {
+        script->OnAllCreatureUpdate(this, update_diff);
+    });
+
+    TurtleDiagnostics::CreatureProbe::Stage(this, TurtleDiagnostics::CreatureState);
     // AI was locked and switch was delayed to next update.
     if (HasCreatureState(CSTATE_INIT_AI_ON_UPDATE))
     {
@@ -786,6 +816,15 @@ void Creature::Update(uint32 update_diff, uint32 diff)
                 if (!IsLikePlayer())
                     SetTempPacified(5000);
 
+                // Scaling: apply to all dungeon/raid instances, linear vs. 40-player baseline
+                if (GetMap()->IsDungeon())
+                {
+                    uint32 playerCount = GetMap()->GetPlayersCountExceptGMs();
+                    uint32 maxCount = ((DungeonMap*)GetMap())->GetMaxPlayers();
+                    if (playerCount > 0)
+                        sAutoScaler->ScaleCreature(this, playerCount, maxCount, GetMap());
+                }
+                
                 GetMap()->Add(this);
 
                 if (uint16 poolid = sPoolMgr.IsPartOfAPool<Creature>(GetGUIDLow()))
@@ -800,6 +839,7 @@ void Creature::Update(uint32 update_diff, uint32 diff)
         case CORPSE:
         {
             Unit::Update(update_diff, diff);
+            TurtleDiagnostics::CreatureProbe::Stage(this, TurtleDiagnostics::CreatureState);
             if (IsDeadByDefault())
                 break;
 
@@ -870,6 +910,7 @@ void Creature::Update(uint32 update_diff, uint32 diff)
             }
 
             Unit::Update(update_diff, diff);
+            TurtleDiagnostics::CreatureProbe::Stage(this, TurtleDiagnostics::CreatureCombat);
 
             // creature can be dead after Unit::Update call
             // CORPSE/DEAD state will processed at next tick (in other case death timer will be updated unexpectedly)
@@ -892,7 +933,7 @@ void Creature::Update(uint32 update_diff, uint32 diff)
                         UpdateLeashExtensionTime();
 
                     // Leash prevents mobs from chasing any further than specified range
-                    if (m_leashDistance && !IsWithinDist3d(m_combatStartX, m_combatStartY, m_combatStartZ, m_leashDistance))
+                    if (!m_leashingDisabled && m_leashDistance && !IsWithinDist3d(m_combatStartX, m_combatStartY, m_combatStartZ, m_leashDistance))
                         leash = true;
                     // Raid bosses do a periodic combat pulse
                     else if (HasCreatureState(CSTATE_COMBAT_WITH_ZONE))
@@ -919,7 +960,14 @@ void Creature::Update(uint32 update_diff, uint32 diff)
                         !i_motionMaster.GetCurrent()->IsReachable() &&
                         !HasDistanceCasterMovement() && !GetCharmerOrOwnerGuid().IsPlayer() &&
                         (!CanReachWithMeleeAutoAttack(GetVictim()) || !IsWithinLOSInMap(GetVictim())) &&
-                        !(GetVictim()->IsPlayer() && static_cast<Player*>(GetVictim())->GetSession()->GetAntiCheat()->IsInKnockBack());
+                        // GetAntiCheat() is null for synthetic bot sessions;
+                        // unguarded, the dereference crashes whenever a creature
+                        // has a bot as its current victim. Treat null-anticheat
+                        // as "not in knockback" (the safer default for bots).
+                        !(GetVictim()->IsPlayer() && [&]() {
+                            auto* ac = static_cast<Player*>(GetVictim())->GetSession()->GetAntiCheat();
+                            return ac && ac->IsInKnockBack();
+                        }());
                 }
             }
 
@@ -934,6 +982,7 @@ void Creature::Update(uint32 update_diff, uint32 diff)
 
             if (AI())
             {
+                TurtleDiagnostics::CreatureProbe::Stage(this, TurtleDiagnostics::CreatureScriptAI);
                 // do not allow the AI to be changed during update
                 m_AI_locked = true;
                 try
@@ -942,7 +991,10 @@ void Creature::Update(uint32 update_diff, uint32 diff)
                     if (leash || (m_TargetNotReachableTimer > 24000))
                         AI()->EnterEvadeMode();
                     else if (!IsEvadeBecauseTargetNotReachable())
-                        AI()->UpdateAI(diff);   // AI not react good at real update delays (while freeze in non-active part of map)
+                    {
+                        TurtleDiagnostics::Scope diagnosticAI(TurtleDiagnostics::CreatureAI);
+                        AI()->UpdateAI(diff);
+                    }
                 }
                 catch (std::runtime_error& e)
                 {
@@ -952,6 +1004,7 @@ void Creature::Update(uint32 update_diff, uint32 diff)
                 m_AI_locked = false;
             }
 
+            TurtleDiagnostics::CreatureProbe::Stage(this, TurtleDiagnostics::CreatureRegen);
             // creature can be dead after UpdateAI call
             // CORPSE/DEAD state will processed at next tick (in other case death timer will be updated unexpectedly)
             if (!IsAlive())
@@ -2529,6 +2582,7 @@ void Creature::SaveRespawnTime()
 
 bool Creature::IsOutOfThreatArea(Unit* pVictim) const
 {
+    if (m_leashingDisabled) return false;
     if (HasExtraFlag(CREATURE_FLAG_EXTRA_NO_LEASH_EVADE))
         return false;
 

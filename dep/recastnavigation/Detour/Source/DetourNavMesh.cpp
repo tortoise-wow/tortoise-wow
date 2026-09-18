@@ -195,6 +195,8 @@ dtNavMesh::dtNavMesh() :
 	m_nextFree(0),
 	m_tiles(0)
 {
+	dtAccessGate::Write navWrite(&m_accessGate);
+	++m_revision;
 #ifndef DT_POLYREF64
 	m_saltBits = 0;
 	m_tileBits = 0;
@@ -223,6 +225,8 @@ dtNavMesh::~dtNavMesh()
 		
 dtStatus dtNavMesh::init(const dtNavMeshParams* params)
 {
+	dtAccessGate::Write navWrite(&m_accessGate);
+	++m_revision;
 	memcpy(&m_params, params, sizeof(dtNavMeshParams));
 	dtVcopy(m_orig, params->orig);
 	m_tileWidth = params->tileWidth;
@@ -266,6 +270,8 @@ dtStatus dtNavMesh::init(const dtNavMeshParams* params)
 
 dtStatus dtNavMesh::init(unsigned char* data, const int dataSize, const int flags)
 {
+	dtAccessGate::Write navWrite(&m_accessGate);
+	++m_revision;
 	// Make sure the data is in right format.
 	dtMeshHeader* header = (dtMeshHeader*)data;
 	if (header->magic != DT_NAVMESH_MAGIC)
@@ -727,6 +733,7 @@ bool dtNavMesh::getPolyHeight(const dtMeshTile* tile, const dtPoly* poly, const 
 
 void dtNavMesh::closestPointOnPoly(dtPolyRef ref, const float* pos, float* closest, bool* posOverPoly) const
 {
+	dtAccessGate::Read navRead(&m_accessGate);
 	const dtMeshTile* tile = 0;
 	const dtPoly* poly = 0;
 	getTileAndPolyByRefUnsafe(ref, &tile, &poly);
@@ -908,6 +915,8 @@ int dtNavMesh::queryPolygonsInTile(const dtMeshTile* tile, const float* qmin, co
 dtStatus dtNavMesh::addTile(unsigned char* data, int dataSize, int flags,
 							dtTileRef lastRef, dtTileRef* result)
 {
+	dtAccessGate::Write navWrite(&m_accessGate);
+	++m_revision;
 	// Make sure the data is in right format.
 	dtMeshHeader* header = (dtMeshHeader*)data;
 	if (header->magic != DT_NAVMESH_MAGIC)
@@ -1049,6 +1058,7 @@ dtStatus dtNavMesh::addTile(unsigned char* data, int dataSize, int flags,
 
 const dtMeshTile* dtNavMesh::getTileAt(const int x, const int y, const int layer) const
 {
+	dtAccessGate::Read navRead(&m_accessGate);
 	// Find tile based on hash.
 	int h = computeTileHash(x,y,m_tileLutMask);
 	dtMeshTile* tile = m_posLookup[h];
@@ -1086,6 +1096,7 @@ int dtNavMesh::getNeighbourTilesAt(const int x, const int y, const int side, dtM
 
 int dtNavMesh::getTilesAt(const int x, const int y, dtMeshTile** tiles, const int maxTiles) const
 {
+	dtAccessGate::Read navRead(&m_accessGate);
 	int n = 0;
 	
 	// Find tile based on hash.
@@ -1112,6 +1123,7 @@ int dtNavMesh::getTilesAt(const int x, const int y, dtMeshTile** tiles, const in
 /// entire result set.  It will simply fill the array to capacity.
 int dtNavMesh::getTilesAt(const int x, const int y, dtMeshTile const** tiles, const int maxTiles) const
 {
+	dtAccessGate::Read navRead(&m_accessGate);
 	int n = 0;
 	
 	// Find tile based on hash.
@@ -1135,6 +1147,7 @@ int dtNavMesh::getTilesAt(const int x, const int y, dtMeshTile const** tiles, co
 
 dtTileRef dtNavMesh::getTileRefAt(const int x, const int y, const int layer) const
 {
+	dtAccessGate::Read navRead(&m_accessGate);
 	// Find tile based on hash.
 	int h = computeTileHash(x,y,m_tileLutMask);
 	dtMeshTile* tile = m_posLookup[h];
@@ -1154,6 +1167,7 @@ dtTileRef dtNavMesh::getTileRefAt(const int x, const int y, const int layer) con
 
 const dtMeshTile* dtNavMesh::getTileByRef(dtTileRef ref) const
 {
+	dtAccessGate::Read navRead(&m_accessGate);
 	if (!ref)
 		return 0;
 	unsigned int tileIndex = decodePolyIdTile((dtPolyRef)ref);
@@ -1173,11 +1187,13 @@ int dtNavMesh::getMaxTiles() const
 
 dtMeshTile* dtNavMesh::getTile(int i)
 {
+	dtAccessGate::Read navRead(&m_accessGate);
 	return &m_tiles[i];
 }
 
 const dtMeshTile* dtNavMesh::getTile(int i) const
 {
+	dtAccessGate::Read navRead(&m_accessGate);
 	return &m_tiles[i];
 }
 
@@ -1189,6 +1205,7 @@ void dtNavMesh::calcTileLoc(const float* pos, int* tx, int* ty) const
 
 dtStatus dtNavMesh::getTileAndPolyByRef(const dtPolyRef ref, const dtMeshTile** tile, const dtPoly** poly) const
 {
+	dtAccessGate::Read navRead(&m_accessGate);
 	if (!ref) return DT_FAILURE;
 	unsigned int salt, it, ip;
 	decodePolyId(ref, salt, it, ip);
@@ -1207,6 +1224,7 @@ dtStatus dtNavMesh::getTileAndPolyByRef(const dtPolyRef ref, const dtMeshTile** 
 /// it does not validate the reference.
 void dtNavMesh::getTileAndPolyByRefUnsafe(const dtPolyRef ref, const dtMeshTile** tile, const dtPoly** poly) const
 {
+	dtAccessGate::Read navRead(&m_accessGate);
 	unsigned int salt, it, ip;
 	decodePolyId(ref, salt, it, ip);
 	*tile = &m_tiles[it];
@@ -1215,6 +1233,7 @@ void dtNavMesh::getTileAndPolyByRefUnsafe(const dtPolyRef ref, const dtMeshTile*
 
 bool dtNavMesh::isValidPolyRef(dtPolyRef ref) const
 {
+	dtAccessGate::Read navRead(&m_accessGate);
 	if (!ref) return false;
 	unsigned int salt, it, ip;
 	decodePolyId(ref, salt, it, ip);
@@ -1232,6 +1251,8 @@ bool dtNavMesh::isValidPolyRef(dtPolyRef ref) const
 /// @see #addTile
 dtStatus dtNavMesh::removeTile(dtTileRef ref, unsigned char** data, int* dataSize)
 {
+	dtAccessGate::Write navWrite(&m_accessGate);
+	++m_revision;
 	if (!ref)
 		return DT_FAILURE | DT_INVALID_PARAM;
 	unsigned int tileIndex = decodePolyIdTile((dtPolyRef)ref);
@@ -1369,6 +1390,7 @@ struct dtPolyState
 ///  @see #storeTileState
 int dtNavMesh::getTileStateSize(const dtMeshTile* tile) const
 {
+	dtAccessGate::Read navRead(&m_accessGate);
 	if (!tile) return 0;
 	const int headerSize = dtAlign4(sizeof(dtTileState));
 	const int polyStateSize = dtAlign4(sizeof(dtPolyState) * tile->header->polyCount);
@@ -1382,6 +1404,7 @@ int dtNavMesh::getTileStateSize(const dtMeshTile* tile) const
 /// @see #getTileStateSize, #restoreTileState
 dtStatus dtNavMesh::storeTileState(const dtMeshTile* tile, unsigned char* data, const int maxDataSize) const
 {
+	dtAccessGate::Read navRead(&m_accessGate);
 	// Make sure there is enough space to store the state.
 	const int sizeReq = getTileStateSize(tile);
 	if (maxDataSize < sizeReq)
@@ -1414,6 +1437,8 @@ dtStatus dtNavMesh::storeTileState(const dtMeshTile* tile, unsigned char* data, 
 /// @see #storeTileState
 dtStatus dtNavMesh::restoreTileState(dtMeshTile* tile, const unsigned char* data, const int maxDataSize)
 {
+	dtAccessGate::Write navWrite(&m_accessGate);
+	++m_revision;
 	// Make sure there is enough space to store the state.
 	const int sizeReq = getTileStateSize(tile);
 	if (maxDataSize < sizeReq)
@@ -1451,6 +1476,7 @@ dtStatus dtNavMesh::restoreTileState(dtMeshTile* tile, const unsigned char* data
 /// the prevRef parameter.
 dtStatus dtNavMesh::getOffMeshConnectionPolyEndPoints(dtPolyRef prevRef, dtPolyRef polyRef, float* startPos, float* endPos) const
 {
+	dtAccessGate::Read navRead(&m_accessGate);
 	unsigned int salt, it, ip;
 
 	if (!polyRef)
@@ -1494,6 +1520,7 @@ dtStatus dtNavMesh::getOffMeshConnectionPolyEndPoints(dtPolyRef prevRef, dtPolyR
 
 const dtOffMeshConnection* dtNavMesh::getOffMeshConnectionByRef(dtPolyRef ref) const
 {
+	dtAccessGate::Read navRead(&m_accessGate);
 	unsigned int salt, it, ip;
 	
 	if (!ref)
@@ -1519,6 +1546,8 @@ const dtOffMeshConnection* dtNavMesh::getOffMeshConnectionByRef(dtPolyRef ref) c
 
 dtStatus dtNavMesh::setPolyFlags(dtPolyRef ref, unsigned short flags)
 {
+	dtAccessGate::Write navWrite(&m_accessGate);
+	++m_revision;
 	if (!ref) return DT_FAILURE;
 	unsigned int salt, it, ip;
 	decodePolyId(ref, salt, it, ip);
@@ -1536,6 +1565,7 @@ dtStatus dtNavMesh::setPolyFlags(dtPolyRef ref, unsigned short flags)
 
 dtStatus dtNavMesh::getPolyFlags(dtPolyRef ref, unsigned short* resultFlags) const
 {
+	dtAccessGate::Read navRead(&m_accessGate);
 	if (!ref) return DT_FAILURE;
 	unsigned int salt, it, ip;
 	decodePolyId(ref, salt, it, ip);
@@ -1552,6 +1582,8 @@ dtStatus dtNavMesh::getPolyFlags(dtPolyRef ref, unsigned short* resultFlags) con
 
 dtStatus dtNavMesh::setPolyArea(dtPolyRef ref, unsigned char area)
 {
+	dtAccessGate::Write navWrite(&m_accessGate);
+	++m_revision;
 	if (!ref) return DT_FAILURE;
 	unsigned int salt, it, ip;
 	decodePolyId(ref, salt, it, ip);
@@ -1568,6 +1600,7 @@ dtStatus dtNavMesh::setPolyArea(dtPolyRef ref, unsigned char area)
 
 dtStatus dtNavMesh::getPolyArea(dtPolyRef ref, unsigned char* resultArea) const
 {
+	dtAccessGate::Read navRead(&m_accessGate);
 	if (!ref) return DT_FAILURE;
 	unsigned int salt, it, ip;
 	decodePolyId(ref, salt, it, ip);
@@ -1582,3 +1615,10 @@ dtStatus dtNavMesh::getPolyArea(dtPolyRef ref, unsigned char* resultArea) const
 	return DT_SUCCESS;
 }
 
+
+// ManTech diagnostics: inspect immutable allocation capacities on their owner.
+size_t dtNavMesh::getOwnedMemoryBytes() const
+{
+    return sizeof(*this) + (m_tiles ? sizeof(dtMeshTile) * size_t(m_maxTiles) : 0)
+        + (m_posLookup ? sizeof(dtMeshTile*) * size_t(m_tileLutSize) : 0);
+}

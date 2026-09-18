@@ -1,3 +1,4 @@
+#include "Util/DevDiagnostics.h"
 /*
  * Copyright (C) 2005-2011 MaNGOS <http://getmangos.com/>
  * Copyright (C) 2009-2011 MaNGOSZero <https://github.com/mangos/zero>
@@ -24,6 +25,7 @@
 */
 
 #include "WorldSocket.h"                                    // must be first to make ACE happy with ACE includes in it
+#include "ArchitectureDiagnostics.h"
 #include "Common.h"
 #include "Database/DatabaseEnv.h"
 #include "Log.h"
@@ -95,6 +97,13 @@ WorldSession::WorldSession(uint32 id, WorldSocket *sock, AccountTypes sec, time_
 {
     // A remote socket must never be routed through the trusted Headless path.
     MANGOS_ASSERT(!sock || transport == SessionTransport::Network);
+
+    // Headless sessions process only the world queue. Initialize every packet
+    // class before Map reads recent spell activity; allocator bytes must never
+    // promote an idle bot into the foreground scheduling lane.
+    for (bool& received : _receivedPacketType)
+        received = false;
+
 
     if (sock)
     {
@@ -188,6 +197,7 @@ char const* WorldSession::GetPlayerName() const
 /// Send a packet to the client
 void WorldSession::SendPacket(WorldPacket const* packet)
 {
+    MANTECH_DIAG_SCOPE(Packet, 32, "session_send_packet");
     bool handledByScript = ScriptRegistry<ServerScript>::ForEachEnabledHookWithReturn(SERVERHOOK_CAN_PACKET_SEND, [&](ServerScript* script)
     {
         return !script->CanPacketSend(this, *packet);
@@ -358,6 +368,7 @@ bool WorldSession::ForcePlayerLogoutDelay()
 /// Update the WorldSession (triggered by World update)
 bool WorldSession::Update(PacketFilter& updater)
 {
+    MANTECH_DIAG_SCOPE(Session, 32, nullptr);
     uint32 sessionUpdateTime = WorldTimer::getMSTime();
     for (uint32 & i : _floodPacketsCount)
         i = 0;
@@ -368,6 +379,11 @@ bool WorldSession::Update(PacketFilter& updater)
     // No idle kick and no socket-loss disconnect; lifetime is registry-owned.
     if (IsHeadless())
     {
+        // A real logout request still expires on the native world owner.
+        // Returning false lets HeadlessSessionMgr destroy/save the session;
+        // map packet passes cannot trigger teardown.
+        if (updater.ProcessLogout() && !m_playerLoading && ShouldLogOut(time(nullptr)))
+            return false;
         if (!_player && !m_playerLoading && m_headlessLoginRequested)
             return false;
         m_lastUpdateTime = WorldTimer::getMSTime();
@@ -452,7 +468,29 @@ bool WorldSession::CanProcessPackets() const
     return IsHeadless() || (m_Socket && !m_Socket->IsClosed());
 }
 
-void WorldSession::ProcessPackets(PacketFilter& updater)
+void WorldSession::HandleBotPackets()
+{
+    // Match ManTech's real queue handling, while retaining Turtle's opcode
+    // validation, script hooks and delayed-teleport boundary. Never run this
+    // from a map job: some queued bot actions change groups/guilds/other maps.
+    if (m_Socket || !_player || !_player->IsInWorld() || PlayerLoading())
+        return;
+    PacketFilter filter(this);
+    for (uint32 type = 0; type < PACKET_PROCESS_MAX_TYPE; ++type)
+    {
+        if (_recvQueue[type].empty())
+        {
+            _receivedPacketType[type] = false;
+            continue;
+        }
+        filter.SetProcessType(static_cast<PacketProcessing>(type));
+        ProcessPackets(filter, true);
+        if (!_player || !_player->IsInWorld())
+            break;
+    }
+}
+
+void WorldSession::ProcessPackets(PacketFilter& updater, bool botPackets, uint32 budgetMs)
 {
     WorldPacket* packet = nullptr;
     _receivedPacketType[updater.PacketProcessType()] = false;
@@ -461,17 +499,25 @@ void WorldSession::ProcessPackets(PacketFilter& updater)
 
     std::vector<WorldPacket*> requeuePackets;
 
-    constexpr uint32 MaxPacketsPerUpdate = 200;
+    if (botPackets) budgetMs = 2;
+    uint32 const MaxPacketsPerUpdate = botPackets || budgetMs ? 32 : 200;
     uint32 totalPackets = 0;
+    uint32 const start = WorldTimer::getMSTime();
 
-    while (CanProcessPackets() && _recvQueue[updater.PacketProcessType()].next(packet, updater))
+    while ((botPackets ? !m_Socket && _player && _player->IsInWorld() : CanProcessPackets()) &&
+        totalPackets < MaxPacketsPerUpdate &&
+        (!budgetMs || !totalPackets || WorldTimer::getMSTimeDiffToNow(start) < budgetMs) &&
+        _recvQueue[updater.PacketProcessType()].next(packet, updater))
     {
         ++totalPackets;
 
         _receivedPacketType[updater.PacketProcessType()] = true;
-        auto packetAllowed = AllowPacket(packet->GetOpcode(), timeNow);
+        auto packetAllowed = botPackets ? PacketAllowResult::Allowed : AllowPacket(packet->GetOpcode(), timeNow);
         if (packetAllowed == PacketAllowResult::Denied)
+        {
+            delete packet;
             break;
+        }
 
         if (packetAllowed == PacketAllowResult::Requeue)
         {
@@ -495,6 +541,8 @@ void WorldSession::ProcessPackets(PacketFilter& updater)
             }
 
             uint32 packetTime = WorldTimer::getMSTime();
+            uint32 const queueWaitMs = packet->GetPacketTime() ?
+                WorldTimer::getMSTimeDiff(packet->GetPacketTime(), packetTime) : 0;
             switch (opHandle.status)
             {
                 case STATUS_LOGGEDIN:
@@ -558,6 +606,40 @@ void WorldSession::ProcessPackets(PacketFilter& updater)
             packetTime = WorldTimer::getMSTimeDiffToNow(packetTime);
             if (sWorld.getConfig(CONFIG_UINT32_PERFLOG_SLOW_PACKET) && packetTime > sWorld.getConfig(CONFIG_UINT32_PERFLOG_SLOW_PACKET))
                 sLog.out(LOG_PERFORMANCE, "Slow packet opcode %s: %ums. Account %u on IP %s", opHandle.name, packetTime, GetAccountId(), GetRemoteAddress().c_str());
+
+            // Handler duration alone hides time spent waiting for the map tick.
+            // Report gameplay input only, at most once per second per client.
+            bool const gameplayInput = packet->GetOpcode() == CMSG_LOOT ||
+                packet->GetOpcode() == CMSG_AUTOSTORE_LOOT_ITEM ||
+                packet->GetOpcode() == CMSG_LOOT_MONEY ||
+                packet->GetOpcode() == CMSG_LOOT_RELEASE ||
+                packet->GetOpcode() == CMSG_ATTACKSWING ||
+                packet->GetOpcode() == CMSG_ATTACKSTOP ||
+                packet->GetOpcode() == CMSG_CAST_SPELL;
+            if (gameplayInput && !botPackets)
+            {
+                TurtleDiagnostics::Record(TurtleDiagnostics::InputQueue, uint64(queueWaitMs) * 1000);
+                TurtleDiagnostics::Record(TurtleDiagnostics::InputHandler, uint64(packetTime) * 1000);
+            }
+            uint32 const reportNow = WorldTimer::getMSTime();
+            static uint32 lastSlowBotHandler = 0; // synthetic dispatch is world-owned
+            if (botPackets && TurtleDiagnostics::enabled.load(std::memory_order_relaxed) &&
+                packetTime >= 25 && WorldTimer::getMSTimeDiff(lastSlowBotHandler, reportNow) >= 1000)
+            {
+                lastSlowBotHandler = reportNow;
+                sLog.out(LOG_PERFORMANCE, "TW_BOT_HANDLER_SLOW opcode=%s handler_ms=%u player=%u",
+                    opHandle.name, packetTime, _player ? _player->GetGUIDLow() : 0);
+            }
+            if (gameplayInput && !botPackets && sWorld.getConfig(CONFIG_UINT32_PERFLOG_SLOW_PACKET) &&
+                (queueWaitMs >= 250 || packetTime >= 250) &&
+                WorldTimer::getMSTimeDiff(m_lastGameplayDelayReportMs, reportNow) >= 1000)
+            {
+                m_lastGameplayDelayReportMs = reportNow;
+                sLog.out(LOG_PERFORMANCE, "GAMEPLAY_INPUT_DELAY opcode=%s queue_ms=%u handler_ms=%u map=%u player=%u diag_map=%u diag_inst=%u diag_tick=%llu",
+                    opHandle.name, queueWaitMs, packetTime, _player ? _player->GetMapId() : 0,
+                    _player ? _player->GetGUIDLow() : 0, TurtleDiagnostics::context.map,
+                    TurtleDiagnostics::context.instance, static_cast<unsigned long long>(TurtleDiagnostics::context.tick));
+            }
         }
         catch (ByteBufferException &)
         {
@@ -1072,6 +1154,14 @@ void WorldSession::ExecuteOpcode(OpcodeHandler const& opHandle, WorldPacket* pac
         DEBUG_UNIT(player, DEBUG_PACKETS_RECV, "[%s] Recvd packet : %u/0x%x (%s)", player->GetName(), packet->GetOpcode(), packet->GetOpcode(), LookupOpcodeName(packet->GetOpcode()));
 
     (this->*opHandle.handler)(*packet);
+
+    // Modules that mirror or react to a player's action need the completed
+    // handler result. The existing receive hook runs before dispatch and can
+    // suppress a packet, so it cannot safely serve this purpose.
+    ScriptRegistry<ServerScript>::ForEachEnabledHook(SERVERHOOK_ON_PACKET_HANDLED, [&](ServerScript* script)
+    {
+        script->OnPacketHandled(this, *packet);
+    });
 
     if (_player)
     {

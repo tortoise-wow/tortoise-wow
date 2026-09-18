@@ -22,6 +22,7 @@
 #pragma once
 
 #include "Common.h"
+#include "ArchitectureDiagnostics.h"
 #include "Platform/Define.h"
 #include "Policies/ThreadingModel.h"
 
@@ -42,9 +43,15 @@
 #include "SQLStorages.h"
 #include "CreatureLinkingMgr.h"
 
+#ifdef ENABLE_ELUNA
+#include "LuaValue.h"
+#include "ElunaMgr.h"
+#endif
+
 #include <bitset>
 #include <list>
 #include <set>
+#include <unordered_set>
 #include <mutex>
 #include <shared_mutex>
 
@@ -52,6 +59,9 @@ using Movement::Vector3;
 
 struct CreatureInfo;
 class Creature;
+#ifdef ENABLE_ELUNA
+class Eluna;
+#endif
 class Unit;
 class WorldPacket;
 class InstanceData;
@@ -59,6 +69,10 @@ class Group;
 
 class CreatureGroup;
 
+#include <memory>
+
+class dtNavMesh;
+class dtNavMeshQuery;
 class MapPersistentState;
 class WorldPersistentState;
 class DungeonPersistentState;
@@ -85,7 +99,8 @@ namespace VMAP
 
 struct MapEntry
 {
-    uint32 id;
+    // bot uses MapID (cmangos); Penqle uses id.
+    union { uint32 id; uint32 MapID; };
     uint32 parent;
     uint32 mapType;
     uint32 linkedZone;
@@ -107,19 +122,20 @@ struct MapEntry
     bool IsContinent() const { return id == 0 || id == 1; }
 };
 
-typedef std::map<uint32, uint32> AreaFlagByMapId;
-static AreaFlagByMapId sAreaFlagByMapId;
-
 struct AreaEntry
 {
-    uint32 Id;
+    // anonymous unions provide cmangos
+    // field-name aliases (area_level↔AreaLevel, area_name↔Name) sharing storage
+    // with Penqle's PascalCase names. Penqle code unchanged; bot module can use
+    // either name. Struct size unchanged.
+    union { uint32 Id; uint32 ID; };
     uint32 MapId;
-    uint32 ZoneId;
-    uint32 ExploreFlag;
-    uint32 Flags;
-    int32  AreaLevel;
-    char*  Name;
-    uint32 Team;
+    union { uint32 ZoneId; uint32 zone; };
+    union { uint32 ExploreFlag; uint32 exploreFlag; };
+    union { uint32 Flags; uint32 flags; };
+    union { int32  AreaLevel = 0;  int32  area_level; };
+    union { char*  Name = nullptr; char*  area_name; };
+    union { uint32 Team; uint32 team; };
     uint32 LiquidTypeId;
 
     bool IsZone() const { return ZoneId == 0; }
@@ -133,42 +149,15 @@ struct AreaEntry
         return areaEntry->ExploreFlag;
     }
 
-    static uint32 GetFlagByMapId(uint32 mapId)
-    {
-        auto itr = sAreaFlagByMapId.find(mapId);
-        if (itr == sAreaFlagByMapId.end())
-            return 0;
-        return itr->second;
-    }
+    static uint32 GetFlagByMapId(uint32 mapId);
+    static void RebuildLookupIndex();
 
     static const AreaEntry* GetById(uint32 id)
     {
         return sAreaStorage.LookupEntry<AreaEntry>(id);
     }
 
-    static const AreaEntry* GetByAreaFlagAndMap(uint32 areaFlag, uint32 mapId)
-    {
-        AreaEntry const* areaEntry = nullptr;
-        // 1.12.1 areatable have duplicates for areaflag
-        for (auto itr = sAreaStorage.begin<AreaEntry>(); itr < sAreaStorage.end<AreaEntry>(); ++itr)
-        {
-            if (areaFlag && areaFlag == itr->ExploreFlag)
-            {
-                if (itr->MapId == mapId)
-                    return *itr;
-
-                areaEntry = *itr;
-            }
-        }
-
-        if (areaEntry)
-            return areaEntry;
-
-        if (const auto *mapEntry = sMapStorage.LookupEntry<MapEntry>(mapId))
-            return sAreaStorage.LookupEntry<AreaEntry>(mapEntry->linkedZone);
-
-        return nullptr;
-    }
+    static const AreaEntry* GetByAreaFlagAndMap(uint32 areaFlag, uint32 mapId);
 };
 
 #if defined( __GNUC__ )
@@ -356,14 +345,16 @@ class Map : public GridRefManager<NGridType>
 
         static void DeleteFromWorld(Player* player);        // player object will deleted at call
 
-        inline void UpdateCellsAroundObject(uint32 now, uint32 diff, WorldObject const* object);
-        inline void UpdateActiveCellsSynch(uint32 now, uint32 diff);
+        void MarkUpdateQueued() { m_archQueuedAt = TurtleDiagnostics::enabled.load() ? TurtleDiagnostics::Micros() : 0; }
+        uint64 GetDiagnosticTick() const { return m_archTick; }
+        void UpdateDiscoveredCells(uint32 now, uint32 diff);
         inline void MarkCellsAroundObject(WorldObject const* object);
-        inline void UpdateActiveCellsAsynch(uint32 now, uint32 diff);
-        inline void UpdateActiveCellsCallback(uint32 diff, uint32 now, uint32 threadId, uint32 totalThreads, uint32 step);
         inline void UpdateCells(uint32 diff);
+        void MarkScheduledPlayerCells(std::vector<ObjectGuid> const& players, uint32 stride);
+        bool ShouldUpdateBotCells(Player const* player) const;
         void UpdateSync(const uint32);
-        void UpdatePlayers();
+        void UpdatePlayers(bool responsiveOnly = false);
+        void UpdatePlayerAI(bool responsiveOnly = false);
         void DoUpdate(uint32 maxDiff);
         virtual void Update(uint32);
         void UpdateSessionsMovementAndSpellsIfNeeded();
@@ -429,6 +420,96 @@ class Map : public GridRefManager<NGridType>
         static bool CheckGridIntegrity(Creature* c, bool moved);
 
         uint32 GetInstanceId() const { return i_InstanceId; }
+        // AzerothCore asks the map; here the terrain answers.
+        bool IsInWater(float x, float y, float z) const { return GetTerrain() && GetTerrain()->IsInWater(x, y, z); }
+        // AzerothCore threads a phase mask and a collision selector through the
+        // same question; one phase here, one backend, both drop. A template so
+        // this header stays ignorant of the module-declared selector type.
+        template<class TCollision>
+        bool IsInWater(uint32 /*phaseMask*/, float x, float y, float z, TCollision) const { return IsInWater(x, y, z); }
+        // Instanced dungeon maps are DungeonMap here; the AzerothCore name for
+        // the downcast. Nullptr outside instances, same as there.
+        class DungeonMap* ToInstanceMap() { return IsDungeon() ? reinterpret_cast<DungeonMap*>(this) : nullptr; }
+        // AzerothCore name; instance data IS the instance script here.
+        // Non-const out of a const map, deliberately: the script belongs to
+        // the running instance, not to this accessor, and AzerothCore hands it
+        // out mutable the same way.
+        InstanceData* GetInstanceScript() const { return const_cast<Map*>(this)->GetInstanceData(); }
+
+        // AzerothCore hands out the navmesh as a shared_ptr so a worker thread
+        // can pin it alive for the length of a job. This core owns its meshes
+        // through raw pointers in MMapData and unloads them on its own schedule,
+        // so there is no ownership to share.
+        //
+        // Returning an empty pointer is deliberate, and it is NOT a stub that
+        // silently does nothing: the one caller checks for empty and falls back
+        // to building the path synchronously, a path it documents as "sync (no
+        // navmesh)". So the behaviour is correct, at the cost of doing that work
+        // on the world thread instead of a worker.
+        //
+        // What must NOT be done here is wrap MMapManager's raw mesh in a
+        // shared_ptr with a no-op deleter. That satisfies the type and breaks the
+        // promise the type exists for - the worker would keep using a mesh this
+        // core is free to unload underneath it. Handing out a real one means
+        // giving MMapData shared ownership first.
+        struct MapCollisionData
+        {
+            uint32 mapId = 0;
+
+            // Real pass-through to the movemap manager: it owns one mesh per map
+            // and a per-thread query, which is exactly what these hand out on
+            // AzerothCore too. Bodies live in Map.cpp so this header stays free
+            // of the Detour and MoveMap includes.
+            struct MMapDataAccess
+            {
+                uint32 mapId = 0;
+                dtNavMesh const* GetNavMesh() const;
+                dtNavMeshQuery const* GetNavMeshQuery() const;
+            };
+            MMapDataAccess GetMMapData() const { return MMapDataAccess{ mapId }; }
+
+            // Deliberately empty - see the ownership note where the worker takes
+            // it: this core owns meshes through raw pointers and cannot promise a
+            // lifetime. The caller has a documented synchronous fallback.
+            std::shared_ptr<dtNavMesh> GetMMapNavMeshSharedPtr() const { return {}; }
+        };
+        MapCollisionData GetMapCollisionData() const { return MapCollisionData{ GetId() }; }
+
+        // AzerothCore keeps a live spawn-id index on the map. This core does
+        // not, so the call builds a snapshot from the object store - same
+        // contents, creatures in loaded grids, keyed by guid counter (the DB
+        // guid for a static spawn). Returned by value: callers range-for over
+        // it, and a snapshot cannot dangle when a grid unloads mid-iteration.
+        // Costs a copy per call; every caller is a per-decision path, not a
+        // per-tick one. Unlike upstream it also lists summons - their counter
+        // is from another guid space, and the callers filter by entry anyway.
+        // Same snapshot as the creature form below, for gameobjects.
+        std::unordered_map<uint32, GameObject*> GetGameObjectBySpawnIdStore()
+        {
+            std::unordered_map<uint32, GameObject*> store;
+            std::shared_lock<std::shared_mutex> lock(m_objectsStore_lock);
+            auto range = m_objectsStore.range<GameObject>();
+            for (auto it = range.first; it != range.second; ++it)
+                store.emplace(it->first.GetCounter(), it->second);
+            return store;
+        }
+        std::unordered_map<uint32, Creature*> GetCreatureBySpawnIdStore()
+        {
+            std::unordered_map<uint32, Creature*> store;
+            std::shared_lock<std::shared_mutex> lock(m_objectsStore_lock);
+            auto range = m_objectsStore.range<Creature>();
+            for (auto it = range.first; it != range.second; ++it)
+                store.emplace(it->first.GetCounter(), it->second);
+            return store;
+        }
+        std::vector<Creature*> GetCreatureSnapshot()
+        {
+            std::vector<Creature*> result;
+            std::shared_lock<std::shared_mutex> lock(m_objectsStore_lock);
+            auto range = m_objectsStore.range<Creature>();
+            for (auto it = range.first; it != range.second; ++it) result.push_back(it->second);
+            return result;
+        }
         virtual bool CanEnter(Player* /*player*/) { return true; }
         const char* GetMapName() const;
         time_t GetTime() const;
@@ -440,6 +521,29 @@ class Map : public GridRefManager<NGridType>
         bool IsRaid() const { return i_mapEntry && i_mapEntry->IsRaid(); }
         bool IsBattleGround() const { return i_mapEntry && i_mapEntry->IsBattleGround(); }
         bool IsContinent() const { return i_mapEntry && i_mapEntry->IsContinent(); }
+        // bot calls Map::IsMountAllowed.
+        bool IsMountAllowed() const { return i_mapEntry && i_mapEntry->IsMountAllowed(); }
+        // GetReachableRandomPointOnGround: cmangos has it; Penqle doesn't. Stub returns false.
+        bool GetReachableRandomPointOnGround(uint32 /*phase*/, float /*x*/, float /*y*/, float /*z*/, float /*dist*/, bool /*walk*/ = true) const { return false; }
+        bool GetReachableRandomPointOnGround(float& /*x*/, float& /*y*/, float& /*z*/, float /*dist*/, bool /*walk*/ = true) const { return false; }
+        // GraveyardManager: cmangos has Map::GetGraveyardManager(); Penqle has sObjectMgr.GetClosestGraveYard.
+        // Stub manager forwards to sObjectMgr.
+        struct GraveyardManagerStub {
+            WorldSafeLocsEntry const* GetClosestGraveYard(float x, float y, float z, uint32 MapId, Team team) const;
+        };
+        GraveyardManagerStub& GetGraveyardManager() { static GraveyardManagerStub s; return s; }
+        bool HasActiveZone(uint32 zoneId) const { return m_realPlayerZones.find(zoneId) != m_realPlayerZones.end(); }
+        bool HasActiveZones() const { return !m_realPlayerZones.empty(); }
+        bool HasRealPlayers() const { return m_hasRealPlayers; }
+        // GetTransports: cmangos has Map::GetTransports returning a set/vector.
+        // Note: GenericTransport is a typedef in shim; forward-decl as struct avoids "class" keyword conflict.
+        //
+        // This returned an empty vector for as long as it existed, while _transports
+        // right below was filled correctly all along - inserted in Add(Transport*),
+        // erased in Remove(Transport*, bool). Every caller asking the map for a live
+        // boat or zeppelin got nothing back, so no bot has ever boarded one: routed to
+        // a dock, it stands there while the vessel is moored ten yards away.
+        std::vector<class Transport*> GetTransports() const { return { _transports.begin(), _transports.end() }; }
 
         // can't be nullptr for loaded map
         MapPersistentState* GetPersistentState() const { return m_persistentState; }
@@ -567,8 +671,22 @@ class Map : public GridRefManager<NGridType>
         // GameObjectCollision
         float GetHeight(float x, float y, float z, bool vmap = true, float maxSearchDist = DEFAULT_HEIGHT_SEARCH) const;
         bool isInLineOfSight(float x1, float y1, float z1, float x2, float y2, float z2, bool checkDynLos = true) const;
+        // AzerothCore threads a phase mask, a backend selector and model-ignore
+        // flags through the same call. This core has one phase, one backend and
+        // ignores nothing, so all three are accepted and dropped.
+        // The ignore-flags argument is a template parameter because its type is
+        // declared by the module that needs this overload, not by the core - and
+        // the core has nothing to do with the value either way.
+        template<class TIgnoreFlags>
+        bool isInLineOfSight(float x1, float y1, float z1, float x2, float y2, float z2,
+                             uint32 /*phasemask*/, uint32 /*checks*/, TIgnoreFlags /*ignoreFlags*/) const
+        { return isInLineOfSight(x1, y1, z1, x2, y2, z2, true); }
         // First collision with object
         bool GetLosHitPosition(float srcX, float srcY, float srcZ, float& destX, float& destY, float& destZ, float modifyDist) const;
+        // cmangos calls this GetHitPosition.
+        bool GetHitPosition(float srcX, float srcY, float srcZ, float& destX, float& destY, float& destZ, uint32 /*phasemask*/ = 0, float modifyDist = -0.5f) const {
+            return GetLosHitPosition(srcX, srcY, srcZ, destX, destY, destZ, modifyDist);
+        }
         // Use navemesh to walk
         bool GetWalkHitPosition(Transport* t, float srcX, float srcY, float srcZ, float& destX, float& destY, float& destZ, 
             uint32 moveAllowedFlags = 0xF /*NAV_GROUND | NAV_WATER | NAV_MAGMA | NAV_SLIME*/, float zSearchDist = 20.0f, bool locatedOnSteepSlope = true) const;
@@ -589,6 +707,7 @@ class Map : public GridRefManager<NGridType>
         void CrashUnload();
         bool IsUpdateFinished() const { return m_updateFinished; }
         void MarkNotUpdated() { m_updateFinished = false; }
+        void CompleteUpdate();
         void SetUpdateDiffMod(int32 d) { m_updateDiffMod = d; }
         uint32 GetUpdateDiffMod() const { return m_updateDiffMod; }
         void BindToInstanceOrRaid(Player* player, time_t objectResetTime, bool permBindToRaid);
@@ -616,6 +735,11 @@ class Map : public GridRefManager<NGridType>
         uint32 GetLastMapUpdate() const { return _lastMapUpdate; }
         void RemoveBones(Corpse* corpse);
         void ScheduleCorpseRemoval();
+
+#ifdef ENABLE_ELUNA
+        Eluna* GetEluna() const { return sElunaMgr->Get(m_elunaInfo); }
+        LuaVal lua_data = LuaVal({});
+#endif
 
         XStatTimer MovementPerfTimer;
         XStatTimer SpellPerfTimer;
@@ -683,10 +807,14 @@ class Map : public GridRefManager<NGridType>
         void RemoveCorpses(bool unload = false);
         void RemoveOldBones(const uint32 diff);
 
-        std::unique_ptr<ThreadPool> m_objectThreads;
+        // Packet building uses MapManager::ObjectBuild().
         std::unique_ptr<ThreadPool> m_motionThreads;
         std::unique_ptr<ThreadPool> m_visibilityThreads;
-        std::unique_ptr<ThreadPool> m_cellThreads;
+        std::vector<Cell> m_discoveryCells;
+        uint32 m_cellFallbackStarted = 0;
+        TurtleDiagnostics::Summary m_archDiagnostics;
+        uint64 m_archTick = 0;
+        uint64 m_archQueuedAt = 0;
 
     protected:
         MapEntry const* i_mapEntry;
@@ -717,6 +845,7 @@ class Map : public GridRefManager<NGridType>
         TransportsContainer _transports;
         bool m_unloading = false;
         bool m_crashed = false;
+        uint32 m_pendingUpdateDiff = 0;
         bool m_updateFinished = false;
         uint32 m_updateDiffMod;
         uint32 m_lastMvtSpellsUpdate = 0;
@@ -759,8 +888,50 @@ class Map : public GridRefManager<NGridType>
         uint32 _lastMapUpdate = 0;
         uint32 _lastPlayerLeftTime = 0;
         uint32 _lastPlayersUpdate;
-        uint32 _inactivePlayersSkippedUpdates = 0;
+        uint32 m_lastAIUpdate = 0;
+        uint32 m_idleAICursorGuid = 0;
+        uint32 m_idleAIBudgetPercent = 100, m_idleAIRecoveryStreak = 0;
+        uint64 m_aiUpdates = 0, m_aiDeferred = 0, m_aiStale = 0;
+        std::bitset<TOTAL_NUMBER_OF_CELLS_PER_MAP*TOTAL_NUMBER_OF_CELLS_PER_MAP> m_realPlayerCells;
+        uint64 _playerUpdateSequence = 0;
+        uint64 _botCellUpdateSequence = 0;
         uint32 _lastCellsUpdate;
+
+        void RefreshRealPlayerActivity();
+        bool IsMachineDrivenPlayer(Player const* player) const;
+        bool IsResponsivePlayer(Player const* player) const;
+        bool IsAutonomousActivePlayer(Player const* player) const;
+
+        struct ModuleCriticalCacheEntry
+        {
+            uint32 lastCheck = 0;
+            bool critical = false;
+        };
+
+        bool m_hasRealPlayers = false;
+        std::unordered_set<uint32> m_realPlayerZones;
+        std::unordered_set<uint32> m_machineDrivenPlayers;
+        std::unordered_set<uint32> m_moduleCriticalPlayers;
+        std::unordered_map<uint32, ModuleCriticalCacheEntry> m_moduleCriticalCache;
+        std::vector<ObjectGuid> m_responsivePlayers;
+        std::vector<ObjectGuid> m_interactivePlayers;
+        std::vector<ObjectGuid> m_autonomousActivePlayers;
+        std::vector<ObjectGuid> m_activeZoneBackgroundPlayers;
+        std::vector<ObjectGuid> m_hibernatedBackgroundPlayers;
+        uint32 m_activeZoneBackgroundStride = 1;
+        uint32 m_hibernatedBackgroundStride = 1;
+        uint32 m_autonomousActiveStride = 1;
+        uint32 m_realPlayerPopulation = 0;
+        uint32 m_responsiveBotPopulation = 0;
+        uint32 m_interactiveBotPopulation = 0;
+
+        uint32 m_playerPerfReportStart = 0;
+        uint64 m_playerPerfRealUpdates = 0;
+        uint64 m_playerPerfBotUpdates = 0;
+        uint64 m_playerPerfRealMicros = 0;
+        uint64 m_playerPerfBotMicros = 0;
+        uint64 m_playerPerfDeferred = 0;
+        uint64 m_playerPerfHibernated = 0;
 
         int8 _updateIdx;
 
@@ -977,6 +1148,11 @@ class Map : public GridRefManager<NGridType>
     public:
         CreatureGroupHolderType CreatureGroupHolder;
         uint32 GetLastPlayerLeftTime() const { return _lastPlayerLeftTime; }
+
+    private:
+#ifdef ENABLE_ELUNA
+        ElunaInfo m_elunaInfo;
+#endif
 };
 
 class WorldMap : public Map

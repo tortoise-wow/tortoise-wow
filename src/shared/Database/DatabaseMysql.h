@@ -90,6 +90,7 @@ class MySQLConnection : public SqlConnection
         bool BeginTransaction() override;
         bool CommitTransaction() override;
         bool RollbackTransaction() override;
+        bool CanReplayTransaction() const override { return m_transactionalSchema; }
 
     protected:
         SqlPreparedStatement * CreateStatement(const std::string& fmt) override;
@@ -99,6 +100,7 @@ class MySQLConnection : public SqlConnection
         bool _Query(const char *sql, MYSQL_RES **pResult, MYSQL_FIELD **pFields, uint64* pRowCount, uint32* pFieldCount);
 
         MYSQL *mMysql;
+        bool m_transactionalSchema = false;
 };
 
 class DatabaseMysql : public Database

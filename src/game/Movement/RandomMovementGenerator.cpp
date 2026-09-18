@@ -23,9 +23,14 @@
 #include "Util.h"
 #include "MoveSplineInit.h"
 #include "MoveSpline.h"
+#include "DetailedWorkDiagnostics.h"
+#include "ExecutionWatch.h"
 
 void RandomMovementGenerator::_setRandomLocation(Creature &creature)
 {
+    // Failed destination selection must not retry an expensive terrain/navmesh
+    // query every tick. Success below retains the normal ten-second interval.
+    i_nextMoveTime.Reset(1000 + creature.GetGUIDLow() % 1000);
     // Don't move if invalid coordinates have been set somehow.
     if (i_positionX == 0.0f && i_positionY == 0.0f)
         return;
@@ -49,12 +54,28 @@ void RandomMovementGenerator::_setRandomLocation(Creature &creature)
     }
 
     float destX, destY, destZ;
+    DetailedWork::Scope pointWork(DetailedWork::RandomPoint, creature.GetGUIDLow());
+    ExecutionWatch::Scope pointWatch(ExecutionWatch::RandomDestination, creature.GetMapId(), creature.GetInstanceId(), creature.GetGUIDLow());
     if (!creature.GetRandomPoint(i_positionX, i_positionY, i_positionZ, i_wanderDistance, destX, destY, destZ))
         return;
+    pointWork.Finish();
+    pointWatch.Finish();
 
+    DetailedWork::Scope launchWork(DetailedWork::RandomLaunch, creature.GetGUIDLow());
     creature.AddUnitState(UNIT_STAT_ROAMING_MOVE);
     Movement::MoveSplineInit init(creature, "RandomMovementGenerator");
-    init.MoveTo(destX, destY, destZ, MOVE_PATHFINDING | MOVE_EXCLUDE_STEEP_SLOPES);
+    // Like the reference generator, retain path scratch storage for subsequent
+    // wander requests. Reset topology/filter context every time: Turtle map
+    // workers and tiles can change, and old polygon references must not survive.
+    if (!i_path)
+        i_path = std::make_unique<PathFinder>(&creature);
+    i_path->ResetForNewRequest();
+    i_path->ExcludeSteepSlopes();
+    {
+        DetailedWork::Scope pathWork(DetailedWork::RandomPath, creature.GetGUIDLow());
+        i_path->calculate(destX, destY, destZ);
+    }
+    init.Move(i_path.get());
     init.SetWalk(true);
     init.Launch();
 
@@ -97,30 +118,53 @@ bool RandomMovementGenerator::Update(Creature &creature, const uint32 &diff)
             i_expireTime -= diff;
     }
 
-    creature.GetMotionMaster()->SetNeedAsyncUpdate();
-    return true;
-}
-
-void RandomMovementGenerator::UpdateAsync(Creature &creature, uint32 diff)
-{
-    // Lock async updates for safety, see Unit::asyncMovesplineLock doc
-    std::unique_lock<std::mutex> guard(creature.asyncMovesplineLock);
+    // Most random movers spend their time either following an active spline or
+    // waiting for the next wander timer.  Scheduling the asynchronous half on
+    // every map update made every such creature take asyncMovesplineLock and
+    // enter the deferred-motion pipeline even though there was no work to do.
+    //
+    // Keep the inexpensive state/timer checks on the map owner thread and only
+    // defer the operation which can actually be expensive: selecting and
+    // launching a new random path.
     if (creature.HasUnitState(UNIT_STAT_CAN_NOT_MOVE | UNIT_STAT_DISTRACTED))
     {
-        i_nextMoveTime.Reset(0);  // Expire the timer
+        i_nextMoveTime.Reset(0);
         creature.ClearUnitState(UNIT_STAT_ROAMING_MOVE);
+        return true;
     }
-    else if (creature.IsNoMovementSpellCasted())
+
+    if (creature.IsNoMovementSpellCasted())
     {
         if (!creature.IsStopped())
             creature.StopMoving();
+        return true;
     }
-    else if (creature.movespline->Finalized())
+
+    if (creature.movespline->Finalized())
     {
         i_nextMoveTime.Update(diff);
         if (i_nextMoveTime.Passed())
-            _setRandomLocation(creature);
+            creature.GetMotionMaster()->SetNeedAsyncUpdate();
     }
+
+    return true;
+}
+
+void RandomMovementGenerator::UpdateAsync(Creature &creature, uint32 /*diff*/)
+{
+    // Lock async updates for safety, see Unit::asyncMovesplineLock doc
+    DetailedWork::Scope lockWork(DetailedWork::RandomLock, creature.GetGUIDLow());
+    ExecutionWatch::Scope lockWatch(ExecutionWatch::RandomMotionLock, creature.GetMapId(), creature.GetInstanceId(), creature.GetGUIDLow());
+    std::unique_lock<std::mutex> guard(creature.asyncMovesplineLock);
+    lockWork.Finish();
+    lockWatch.Finish();
+    // Revalidate after dispatch because threaded motion may run later in the
+    // same map update.  The timer is advanced by Update(); doing it again here
+    // would double-count elapsed time when motion workers are enabled.
+    if (!creature.HasUnitState(UNIT_STAT_CAN_NOT_MOVE | UNIT_STAT_DISTRACTED) &&
+        !creature.IsNoMovementSpellCasted() && creature.movespline->Finalized() &&
+        i_nextMoveTime.Passed())
+        _setRandomLocation(creature);
 }
 
 bool RandomMovementGenerator::GetResetPosition(Creature& c, float& x, float& y, float& z)

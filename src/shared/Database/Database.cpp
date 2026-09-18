@@ -20,9 +20,11 @@
  */
 
 #include "Util.h"
+#include "ArchitectureDiagnostics.h"
 #include "DatabaseEnv.h"
 #include "Config/Config.h"
 #include "Database/SqlOperations.h"
+#include "WorkMetrics.h"
 
 #include <ctime>
 #include <iostream>
@@ -120,6 +122,7 @@ bool SqlConnection::Initialize(const char *infoString)
 
 bool SqlConnection::ExecuteStmt(int nIndex, const SqlStmtParameters& id )
 {
+    SetStatementDeadlock(false);
     if(nIndex == -1)
         return false;
 
@@ -224,7 +227,10 @@ bool Database::InitDelayThread(const char* Name, std::string const& infoString)
 
     SqlConnection* threadConnection = CreateConnection();
     if(!threadConnection->Initialize(infoString.c_str()))
+    {
+        delete threadConnection;
         return false;
+    }
 
     std::shared_ptr<SqlDelayThread> tbody = std::make_shared<SqlDelayThread>(Name, this, threadConnection);
     m_threadsBodies.emplace_back(tbody);
@@ -237,14 +243,23 @@ bool Database::InitDelayThread(const char* Name, std::string const& infoString)
 
 void Database::HaltDelayThread()
 {
-    if (m_delayThreads.empty() || m_threadsBodies.empty())
-        return;
+    // Initialization can fail after only part of the configured pool starts.
+    // Stop/join the objects we own, not the requested worker count.
+    for (auto const& worker : m_threadsBodies)
+        worker->Stop();
 
-    for (uint32 i = 0; i < m_numAsyncWorkers; ++i)
-        m_threadsBodies[i]->Stop();
+    for (auto& thread : m_delayThreads)
+        if (thread.joinable()) thread.join();
 
-    for (uint32 i = 0; i < m_numAsyncWorkers; ++i)
-        m_delayThreads[i].join();
+    // A final callback may have queued work to a worker that already exited.
+    // Keep all worker/connection objects alive until that tail also drains.
+    size_t drained;
+    do
+    {
+        drained = 0;
+        for (auto const& worker : m_threadsBodies)
+            drained += worker->DrainRequests();
+    } while (drained);
 
     m_threadsBodies.clear();
     m_delayThreads.clear();
@@ -264,6 +279,19 @@ void Database::ProcessResultQueue(uint32 maxTime)
 {
     if (m_pResultQueue)
         m_pResultQueue->Update(maxTime);
+}
+
+size_t Database::GetPendingResultCount() const
+{
+    return m_pResultQueue ? m_pResultQueue->PendingCount() : 0;
+}
+
+size_t Database::GetPendingAsyncOperationCount() const
+{
+    size_t pending = m_delayQueue ? m_delayQueue->size() : 0;
+    for (auto const& worker : m_threadsBodies)
+        pending += worker->PendingCount();
+    return pending;
 }
 
 void Database::escape_string(std::string& str)
@@ -352,6 +380,15 @@ bool Database::PExecuteLog(const char * format,...)
     return Execute(szQuery);
 }
 
+QueryResult* Database::Query(const char* sql)
+{
+    TurtleDiagnostics::Scope wait(TurtleDiagnostics::DatabaseWait);
+    SqlConnection::Lock guard(getQueryConnection());
+    wait.Finish();
+    TurtleDiagnostics::Scope execution(TurtleDiagnostics::DatabaseRead);
+    return guard->Query(sql);
+}
+
 QueryResult* Database::PQuery(const char *format,...)
 {
     if(!format) return nullptr;
@@ -371,7 +408,7 @@ QueryResult* Database::PQuery(const char *format,...)
     return Query(szQuery);
 }
 
-QueryNamedResult* Database::PQueryNamed(const char *format,...)
+std::shared_ptr<QueryNamedResult> Database::PQueryNamed(const char *format,...)
 {
     if(!format) return nullptr;
 
@@ -483,7 +520,7 @@ bool Database::DirectPExecute(const char * format,...)
     return DirectExecute(szQuery);
 }
 
-bool Database::BeginTransaction(uint32 serialId)
+bool Database::BeginTransaction(uint32 serialId, bool retryDeadlock)
 {
     if (!m_pAsyncConn)
     {
@@ -498,7 +535,7 @@ bool Database::BeginTransaction(uint32 serialId)
     }
 
     //initiate transaction on current thread
-    m_TransStorage->init(serialId);
+    m_TransStorage->init(serialId, retryDeadlock);
     return true;
 }
 
@@ -583,6 +620,16 @@ bool Database::RollbackTransaction()
     return true;
 }
 
+void Database::AddToDelayQueue(SqlOperation* op)
+{
+    // Unkeyed writes have one FIFO lane. Reads can use all workers. Keep
+    // Turtle's explicit serial-ID affinity for keyed read-after-write chains.
+    if (m_numAsyncWorkers && !op->IsReadOnly())
+        m_threadsBodies[0]->addSerialOperation(op);
+    else
+        m_delayQueue->add(op);
+}
+
 void Database::AddToSerialDelayQueue(SqlOperation *op)
 {
     if (op->GetSerialId() == 0 || m_numAsyncWorkers == 0)
@@ -596,6 +643,18 @@ void Database::AddToSerialDelayQueue(SqlOperation *op)
     // executed sequentially, however
     int worker = op->GetSerialId() % m_numAsyncWorkers;
     m_threadsBodies[worker]->addSerialOperation(op);
+}
+
+void Database::AddToPrioritySerialDelayQueue(SqlOperation* op)
+{
+    if (op->GetSerialId() == 0 || m_numAsyncWorkers == 0)
+    {
+        AddToPriorityDelayQueue(op);
+        return;
+    }
+
+    int const worker = op->GetSerialId() % m_numAsyncWorkers;
+    m_threadsBodies[worker]->addPrioritySerialOperation(op);
 }
 
 bool Database::HasAsyncQuery()
@@ -692,10 +751,10 @@ Database::TransHelper::~TransHelper()
     reset();
 }
 
-SqlTransaction * Database::TransHelper::init(uint32 serialId)
+SqlTransaction * Database::TransHelper::init(uint32 serialId, bool retryDeadlock)
 {
     MANGOS_ASSERT(!m_pTrans);   //if we will get a nested transaction request - we MUST fix code!!!
-    m_pTrans = new SqlTransaction(serialId);
+    m_pTrans = new SqlTransaction(serialId, retryDeadlock);
 
     return m_pTrans;
 }
