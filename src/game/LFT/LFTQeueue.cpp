@@ -263,6 +263,24 @@ void LFTManager::StartRolecheck(Player* leader, std::vector<std::string> const& 
                 if (uint8 roles = sScriptMgr.GetBotRoles(member))
                     m_rolechecks[rolecheck.leaderGuid].responses[guid] = roles;
 
+                // The addon dialog otherwise never shows the confirmation:
+                // mirror the human HandleRolecheckResponse broadcast so the
+                // party sees the managed bot as confirmed immediately.
+                std::string roleText;
+                if (uint8 confirmed = m_rolechecks[rolecheck.leaderGuid].responses[guid])
+                {
+                    if (confirmed & LFT_ROLE_TANK)
+                        roleText += 't';
+                    if (confirmed & LFT_ROLE_HEALER)
+                        roleText += 'h';
+                    if (confirmed & LFT_ROLE_DAMAGE)
+                        roleText += 'd';
+                }
+                if (!roleText.empty())
+                    for (ObjectGuid const& memberGuid : rolecheck.members)
+                        if (Player* partyMember = GetPlayer(memberGuid))
+                            Send(partyMember, "S2C_ROLECHECK_INFO;" + std::string(member->GetName()) + ";" + roleText);
+
                 continue;
             }
 
