@@ -27,6 +27,7 @@
 #include "Conditions.h"
 #include "BattleGroundMgr.h"
 #include "Player.h"
+#include "ScriptObjects.h"
 #include "SpellAuraDefines.h"
 #include "SpellAuras.h"
 
@@ -489,23 +490,31 @@ LootSlotType LootItem::GetSlotTypeForSharedLoot(PermissionTypes permission, Play
 // Inserts the item into the loot (called by LootTemplate processors)
 void Loot::AddItem(LootStoreItem const & item)
 {
-    ItemPrototype const* proto = sObjectMgr.GetItemPrototype(item.itemid);
+    LootStoreItem mutableItem = item;
+
+    // Allow modules to mutate the loot entry before it is rolled and added.
+    ScriptRegistry<LootScript>::ForEach([&](LootScript* script)
+    {
+        script->OnBeforeLootItemAdded(mutableItem, *this);
+    });
+
+    ItemPrototype const* proto = sObjectMgr.GetItemPrototype(mutableItem.itemid);
     if (proto && !proto->Discovered)
         proto->Discovered = true;
 
-    if (item.needs_quest)                                   // Quest drop
+    if (mutableItem.needs_quest)                                   // Quest drop
     {
         if (m_questItems.size() < MAX_NR_QUEST_ITEMS)
-            m_questItems.push_back(LootItem(item));
+            m_questItems.push_back(LootItem(mutableItem));
     }
     else if (items.size() < MAX_NR_LOOT_ITEMS)              // Non-quest drop
     {
-        items.push_back(LootItem(item));
+        items.push_back(LootItem(mutableItem));
 
         // non-conditional one-player only items are counted here,
         // free for all items are counted in FillFFALoot(),
         // non-ffa conditionals are counted in FillNonQuestNonFFAConditionalLoot()
-        if (!item.conditionId)
+        if (!mutableItem.conditionId)
         {
             if (!proto || !(proto->Flags & ITEM_FLAG_PARTY_LOOT))
                 ++unlootedCount;
@@ -533,7 +542,17 @@ bool Loot::FillLoot(uint32 loot_id, LootStore const& store, Player* loot_owner, 
     items.reserve(MAX_NR_LOOT_ITEMS);
     m_questItems.reserve(MAX_NR_QUEST_ITEMS);
 
-    tab->Process(*this, store, store.IsRatesAllowed(), loot_owner); // Processing is done there, callback via Loot::AddItem()
+    // Allow modules to take over loot generation. If any module returns true,
+    // the core skips its default template processing for this loot.
+    bool handledByModule = false;
+    ScriptRegistry<LootScript>::ForEach([&](LootScript* script)
+    {
+        if (script->OnBeforeLootGenerated(*this, loot_id, *tab, store, loot_owner, personal, noEmptyError, looted))
+            handledByModule = true;
+    });
+
+    if (!handledByModule)
+        tab->Process(*this, store, store.IsRatesAllowed(), loot_owner); // Processing is done there, callback via Loot::AddItem()
 
     // Setting access rights for group loot case
     Group* group = loot_owner->GetGroup();
@@ -563,6 +582,11 @@ bool Loot::FillLoot(uint32 loot_id, LootStore const& store, Player* loot_owner, 
         FillNotNormalLootFor(loot_owner);
 
     return true;
+}
+
+void Loot::ProcessLootTemplate(LootTemplate const& lootTemplate, LootStore const& lootStore, Player const* lootOwner)
+{
+    lootTemplate.Process(*this, lootStore, lootStore.IsRatesAllowed(), lootOwner);
 }
 
 bool Loot::IsAllowedLooter(ObjectGuid guid, bool doPersonalCheck) const

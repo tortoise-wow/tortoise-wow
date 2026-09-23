@@ -670,6 +670,9 @@ class LootScript : public ScriptObject
         explicit LootScript(char const* name) : ScriptObject(name) { ScriptRegistry<LootScript>::AddScript(this); }
     public:
         virtual void OnLootMoney(Player* /*player*/, uint32 /*gold*/) {}
+        virtual void OnBeforeLootItemAdded(LootStoreItem& /*storeItem*/, Loot& /*loot*/) {}
+        // Return true to take over loot generation (the core will skip its default template processing).
+        virtual bool OnBeforeLootGenerated(Loot& /*loot*/, uint32 /*lootId*/, LootTemplate const& /*lootTemplate*/, LootStore const& /*lootStore*/, Player const* /*lootOwner*/, bool /*personal*/, bool /*noEmptyError*/, WorldObject const* /*looted*/) { return false; }
 };
 
 class GameEventScript : public ScriptObject
