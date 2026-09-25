@@ -2531,8 +2531,14 @@ void ObjectMgr::LoadItemPrototypes()
 
                 if (proto->Spells[j].SpellCategory > 0)
                 {
+                    // An item's spell category is a free-form grouping key for shared
+                    // cooldowns: the value is only ever used as a map key by
+                    // Unit::HasSpellCategoryCooldown, never looked up in SpellCategory.dbc
+                    // (this is that store's only reader in the whole core). A category the
+                    // DBC does not list still works, so this is a note, not a fault - the
+                    // value is deliberately left in place rather than cleared.
                     if (!sSpellCategoryStore.LookupEntry(proto->Spells[j].SpellCategory))
-                        sLog.outErrorDb("Item (Entry: %u) has wrong (not existing) spell category in spellcategory_%d (%u)", i, j + 1, proto->Spells[j].SpellCategory);
+                        sLog.outDetail("Item (Entry: %u) has spell category in spellcategory_%d (%u) that is not listed in SpellCategory.dbc", i, j + 1, proto->Spells[j].SpellCategory);
                 }
             }
         }
