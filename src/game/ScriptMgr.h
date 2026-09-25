@@ -1933,6 +1933,16 @@ template<class TScript> typename ScriptRegistry<TScript>::AfterDatabaseLoadScrip
 template<class TScript> typename ScriptRegistry<TScript>::EnabledHooksList ScriptRegistry<TScript>::EnabledHooks;
 template<class TScript> uint32 ScriptRegistry<TScript>::_scriptIdCounter = 0;
 
+// Generic questions the core can ask any module that drives simulated
+// characters. Keeping these behind script hooks avoids bot implementation
+// types and ownership in the core.
+class Player;
+bool Script_IsAIControlled(Player const* player);
+bool Script_IsMachineDriven(Player const* player);
+bool Script_HasAIFollowers(Player const* player);
+uint8 Script_GetAllowedRoles(Player const* player);
+void Script_SetForcedRole(Player* player, uint8 role);
+
 uint32 GetAreaTriggerScriptId(uint32 triggerId);
 uint32 GetEventIdScriptId(uint32 eventId);
 uint32 GetScriptId(const char *name);
