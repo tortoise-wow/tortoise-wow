@@ -165,6 +165,7 @@ dtNavMeshQuery::~dtNavMeshQuery()
 /// This function can be used multiple times.
 dtStatus dtNavMeshQuery::init(const dtNavMesh* nav, const int maxNodes)
 {
+	dtAccessGate::Read navRead(nav ? nav->accessGate() : nullptr);
 	if (maxNodes > DT_NULL_IDX || maxNodes > (1 << DT_NODE_PARENT_BITS) - 1)
 		return DT_FAILURE | DT_INVALID_PARAM;
 
@@ -221,6 +222,7 @@ dtStatus dtNavMeshQuery::init(const dtNavMesh* nav, const int maxNodes)
 dtStatus dtNavMeshQuery::findRandomPoint(const dtQueryFilter* filter, float (*frand)(),
 										 dtPolyRef* randomRef, float* randomPt) const
 {
+	dtAccessGate::Read navRead(m_nav ? m_nav->accessGate() : nullptr);
 	dtAssert(m_nav);
 
 	if (!filter || !frand || !randomRef || !randomPt)
@@ -317,6 +319,7 @@ dtStatus dtNavMeshQuery::findRandomPointAroundCircle(dtPolyRef startRef, const f
 													 const dtQueryFilter* filter, float (*frand)(),
 													 dtPolyRef* randomRef, float* randomPt) const
 {
+	dtAccessGate::Read navRead(m_nav ? m_nav->accessGate() : nullptr);
 	dtAssert(m_nav);
 	dtAssert(m_nodePool);
 	dtAssert(m_openList);
@@ -513,6 +516,7 @@ dtStatus dtNavMeshQuery::findRandomPointAroundCircle(dtPolyRef startRef, const f
 ///
 dtStatus dtNavMeshQuery::closestPointOnPoly(dtPolyRef ref, const float* pos, float* closest, bool* posOverPoly) const
 {
+	dtAccessGate::Read navRead(m_nav ? m_nav->accessGate() : nullptr);
 	dtAssert(m_nav);
 	if (!m_nav->isValidPolyRef(ref) ||
 		!pos || !dtVisfinite(pos) ||
@@ -538,6 +542,7 @@ dtStatus dtNavMeshQuery::closestPointOnPoly(dtPolyRef ref, const float* pos, flo
 /// 
 dtStatus dtNavMeshQuery::closestPointOnPolyBoundary(dtPolyRef ref, const float* pos, float* closest) const
 {
+	dtAccessGate::Read navRead(m_nav ? m_nav->accessGate() : nullptr);
 	dtAssert(m_nav);
 	
 	const dtMeshTile* tile = 0;
@@ -593,6 +598,7 @@ dtStatus dtNavMeshQuery::closestPointOnPolyBoundary(dtPolyRef ref, const float* 
 /// 
 dtStatus dtNavMeshQuery::getPolyHeight(dtPolyRef ref, const float* pos, float* height) const
 {
+	dtAccessGate::Read navRead(m_nav ? m_nav->accessGate() : nullptr);
 	dtAssert(m_nav);
 
 	const dtMeshTile* tile = 0;
@@ -687,6 +693,7 @@ dtStatus dtNavMeshQuery::findNearestPoly(const float* center, const float* halfE
 										 const dtQueryFilter* filter,
 										 dtPolyRef* nearestRef, float* nearestPt) const
 {
+	dtAccessGate::Read navRead(m_nav ? m_nav->accessGate() : nullptr);
 	dtAssert(m_nav);
 
 	if (!nearestRef)
@@ -873,6 +880,7 @@ dtStatus dtNavMeshQuery::queryPolygons(const float* center, const float* halfExt
 									   const dtQueryFilter* filter,
 									   dtPolyRef* polys, int* polyCount, const int maxPolys) const
 {
+	dtAccessGate::Read navRead(m_nav ? m_nav->accessGate() : nullptr);
 	if (!polys || !polyCount || maxPolys < 0)
 		return DT_FAILURE | DT_INVALID_PARAM;
 
@@ -896,6 +904,7 @@ dtStatus dtNavMeshQuery::queryPolygons(const float* center, const float* halfExt
 dtStatus dtNavMeshQuery::queryPolygons(const float* center, const float* halfExtents,
 									   const dtQueryFilter* filter, dtPolyQuery* query) const
 {
+	dtAccessGate::Read navRead(m_nav ? m_nav->accessGate() : nullptr);
 	dtAssert(m_nav);
 
 	if (!center || !dtVisfinite(center) ||
@@ -948,6 +957,7 @@ dtStatus dtNavMeshQuery::findPath(dtPolyRef startRef, dtPolyRef endRef,
 								  const dtQueryFilter* filter,
 								  dtPolyRef* path, int* pathCount, const int maxPath) const
 {
+	dtAccessGate::Read navRead(m_nav ? m_nav->accessGate() : nullptr);
 	dtAssert(m_nav);
 	dtAssert(m_nodePool);
 	dtAssert(m_openList);
@@ -1190,6 +1200,8 @@ dtStatus dtNavMeshQuery::initSlicedFindPath(dtPolyRef startRef, dtPolyRef endRef
 											const float* startPos, const float* endPos,
 											const dtQueryFilter* filter, const unsigned int options)
 {
+	dtAccessGate::Read navRead(m_nav ? m_nav->accessGate() : nullptr);
+	m_slicedMeshRevision = m_nav ? m_nav->revision() : 0;
 	dtAssert(m_nav);
 	dtAssert(m_nodePool);
 	dtAssert(m_openList);
@@ -1252,6 +1264,12 @@ dtStatus dtNavMeshQuery::initSlicedFindPath(dtPolyRef startRef, dtPolyRef endRef
 	
 dtStatus dtNavMeshQuery::updateSlicedFindPath(const int maxIter, int* doneIters)
 {
+	dtAccessGate::Read navRead(m_nav ? m_nav->accessGate() : nullptr);
+	if (m_nav && m_slicedMeshRevision != m_nav->revision())
+	{
+		m_query.status = DT_FAILURE | DT_INVALID_PARAM;
+		return m_query.status;
+	}
 	if (!dtStatusInProgress(m_query.status))
 		return m_query.status;
 
@@ -1469,6 +1487,12 @@ dtStatus dtNavMeshQuery::updateSlicedFindPath(const int maxIter, int* doneIters)
 
 dtStatus dtNavMeshQuery::finalizeSlicedFindPath(dtPolyRef* path, int* pathCount, const int maxPath)
 {
+	dtAccessGate::Read navRead(m_nav ? m_nav->accessGate() : nullptr);
+	if (m_nav && m_slicedMeshRevision != m_nav->revision())
+	{
+		m_query.status = DT_FAILURE | DT_INVALID_PARAM;
+		return m_query.status;
+	}
 	if (!pathCount)
 		return DT_FAILURE | DT_INVALID_PARAM;
 
@@ -1560,6 +1584,12 @@ dtStatus dtNavMeshQuery::finalizeSlicedFindPath(dtPolyRef* path, int* pathCount,
 dtStatus dtNavMeshQuery::finalizeSlicedFindPathPartial(const dtPolyRef* existing, const int existingSize,
 													   dtPolyRef* path, int* pathCount, const int maxPath)
 {
+	dtAccessGate::Read navRead(m_nav ? m_nav->accessGate() : nullptr);
+	if (m_nav && m_slicedMeshRevision != m_nav->revision())
+	{
+		m_query.status = DT_FAILURE | DT_INVALID_PARAM;
+		return m_query.status;
+	}
 	if (!pathCount)
 		return DT_FAILURE | DT_INVALID_PARAM;
 
@@ -1768,6 +1798,7 @@ dtStatus dtNavMeshQuery::findStraightPath(const float* startPos, const float* en
 										  float* straightPath, unsigned char* straightPathFlags, dtPolyRef* straightPathRefs,
 										  int* straightPathCount, const int maxStraightPath, const int options) const
 {
+	dtAccessGate::Read navRead(m_nav ? m_nav->accessGate() : nullptr);
 	dtAssert(m_nav);
 
 	if (!straightPathCount)
@@ -2018,6 +2049,7 @@ dtStatus dtNavMeshQuery::moveAlongSurface(dtPolyRef startRef, const float* start
 										  const dtQueryFilter* filter,
 										  float* resultPos, dtPolyRef* visited, int* visitedCount, const int maxVisitedSize) const
 {
+	dtAccessGate::Read navRead(m_nav ? m_nav->accessGate() : nullptr);
 	dtAssert(m_nav);
 	dtAssert(m_tinyNodePool);
 
@@ -2385,6 +2417,7 @@ dtStatus dtNavMeshQuery::raycast(dtPolyRef startRef, const float* startPos, cons
 								 const dtQueryFilter* filter,
 								 float* t, float* hitNormal, dtPolyRef* path, int* pathCount, const int maxPath) const
 {
+	dtAccessGate::Read navRead(m_nav ? m_nav->accessGate() : nullptr);
 	dtRaycastHit hit;
 	hit.path = path;
 	hit.maxPath = maxPath;
@@ -2443,6 +2476,7 @@ dtStatus dtNavMeshQuery::raycast(dtPolyRef startRef, const float* startPos, cons
 								 const dtQueryFilter* filter, const unsigned int options,
 								 dtRaycastHit* hit, dtPolyRef prevRef) const
 {
+	dtAccessGate::Read navRead(m_nav ? m_nav->accessGate() : nullptr);
 	dtAssert(m_nav);
 
 	if (!hit)
@@ -2702,6 +2736,7 @@ dtStatus dtNavMeshQuery::findPolysAroundCircle(dtPolyRef startRef, const float* 
 											   dtPolyRef* resultRef, dtPolyRef* resultParent, float* resultCost,
 											   int* resultCount, const int maxResult) const
 {
+	dtAccessGate::Read navRead(m_nav ? m_nav->accessGate() : nullptr);
 	dtAssert(m_nav);
 	dtAssert(m_nodePool);
 	dtAssert(m_openList);
@@ -2876,6 +2911,7 @@ dtStatus dtNavMeshQuery::findPolysAroundShape(dtPolyRef startRef, const float* v
 											  dtPolyRef* resultRef, dtPolyRef* resultParent, float* resultCost,
 											  int* resultCount, const int maxResult) const
 {
+	dtAccessGate::Read navRead(m_nav ? m_nav->accessGate() : nullptr);
 	dtAssert(m_nav);
 	dtAssert(m_nodePool);
 	dtAssert(m_openList);
@@ -3034,6 +3070,7 @@ dtStatus dtNavMeshQuery::findPolysAroundShape(dtPolyRef startRef, const float* v
 
 dtStatus dtNavMeshQuery::getPathFromDijkstraSearch(dtPolyRef endRef, dtPolyRef* path, int* pathCount, int maxPath) const
 {
+	dtAccessGate::Read navRead(m_nav ? m_nav->accessGate() : nullptr);
 	if (!m_nav->isValidPolyRef(endRef) || !path || !pathCount || maxPath < 0)
 		return DT_FAILURE | DT_INVALID_PARAM;
 
@@ -3074,6 +3111,7 @@ dtStatus dtNavMeshQuery::findLocalNeighbourhood(dtPolyRef startRef, const float*
 												dtPolyRef* resultRef, dtPolyRef* resultParent,
 												int* resultCount, const int maxResult) const
 {
+	dtAccessGate::Read navRead(m_nav ? m_nav->accessGate() : nullptr);
 	dtAssert(m_nav);
 	dtAssert(m_tinyNodePool);
 
@@ -3295,6 +3333,7 @@ dtStatus dtNavMeshQuery::getPolyWallSegments(dtPolyRef ref, const dtQueryFilter*
 											 float* segmentVerts, dtPolyRef* segmentRefs, int* segmentCount,
 											 const int maxSegments) const
 {
+	dtAccessGate::Read navRead(m_nav ? m_nav->accessGate() : nullptr);
 	dtAssert(m_nav);
 
 	if (!segmentCount)
@@ -3451,6 +3490,7 @@ dtStatus dtNavMeshQuery::findDistanceToWall(dtPolyRef startRef, const float* cen
 											const dtQueryFilter* filter,
 											float* hitDist, float* hitPos, float* hitNormal) const
 {
+	dtAccessGate::Read navRead(m_nav ? m_nav->accessGate() : nullptr);
 	dtAssert(m_nav);
 	dtAssert(m_nodePool);
 	dtAssert(m_openList);
@@ -3636,6 +3676,7 @@ dtStatus dtNavMeshQuery::findDistanceToWall(dtPolyRef startRef, const float* cen
 
 bool dtNavMeshQuery::isValidPolyRef(dtPolyRef ref, const dtQueryFilter* filter) const
 {
+	dtAccessGate::Read navRead(m_nav ? m_nav->accessGate() : nullptr);
 	const dtMeshTile* tile = 0;
 	const dtPoly* poly = 0;
 	dtStatus status = m_nav->getTileAndPolyByRef(ref, &tile, &poly);
@@ -3655,6 +3696,7 @@ bool dtNavMeshQuery::isValidPolyRef(dtPolyRef ref, const dtQueryFilter* filter) 
 /// 
 bool dtNavMeshQuery::isInClosedList(dtPolyRef ref) const
 {
+	dtAccessGate::Read navRead(m_nav ? m_nav->accessGate() : nullptr);
 	if (!m_nodePool) return false;
 	
 	dtNode* nodes[DT_MAX_STATES_PER_NODE];
@@ -3667,4 +3709,12 @@ bool dtNavMeshQuery::isInClosedList(dtPolyRef ref) const
 	}		
 
 	return false;
+}
+
+// ManTech diagnostics: pool capacities are stable after native initialization.
+size_t dtNavMeshQuery::getOwnedMemoryBytes() const
+{
+    return sizeof(*this) + (m_nodePool ? m_nodePool->getMemUsed() : 0)
+        + (m_tinyNodePool ? m_tinyNodePool->getMemUsed() : 0)
+        + (m_openList ? m_openList->getMemUsed() : 0);
 }

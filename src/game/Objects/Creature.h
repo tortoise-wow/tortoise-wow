@@ -182,52 +182,57 @@ enum CreatureStateFlag : uint16
 // from `creature_template` table
 struct CreatureInfo
 {
-    uint32  entry = 0;
+    // anonymous unions provide cmangos-style
+    // PascalCase aliases sharing storage with Penqle's snake_case fields. Existing
+    // code keeps using the snake_case names; vendored bot module sees PascalCase.
+    union { uint32 entry = 0; uint32 Entry; };
     uint32  display_id[MAX_DISPLAY_IDS_PER_CREATURE] = {};
     uint32 mount_display_id = 0;
     std::string name;
     std::string subname;
-    uint32  gossip_menu_id = 0;
-    uint32  level_min = 1;
-    uint32  level_max = 1;
-    uint32  health_min = 1;
-    uint32  health_max = 1;
-    uint32  mana_min = 0;
-    uint32  mana_max = 0;
+    union { uint32  gossip_menu_id = 0; uint32 GossipMenuId; };
+    union { uint32  level_min = 1; uint32 MinLevel; };
+    union { uint32  level_max = 1; uint32 MaxLevel; };
+    union { uint32  health_min = 1; uint32 MinLevelHealth; };
+    union { uint32  health_max = 1; uint32 MaxLevelHealth; };
+    union { uint32  mana_min = 0; uint32 MinLevelMana; };
+    union { uint32  mana_max = 0; uint32 MaxLevelMana; };
     uint32  armor = 0;
-    uint32  faction = 35;
-    uint32  npc_flags = 0;
+    union { uint32  faction = 35; uint32 Faction; };
+    union { uint32 npc_flags = 0; uint32 NpcFlags; };
     float   speed_walk = 1.0f;
     float   speed_run = 1.14286f;
     float   scale = 1.0f;
     float   detection_range = 18.0f;                        // Detection Range for Line of Sight aggro
     float   call_for_help_range = 5.0f;                     // Radius for combat assistance call
     float   leash_range = 0.0f;                             // Hard limit on allowed chase distance
-    uint32  rank = 0;
+    union { uint32  rank = 0; uint32 Rank; };
     float   xp_multiplier = 1.0f;
-    float   dmg_min = 1.0f;
-    float   dmg_max = 2.0f;
+    union { float   dmg_min = 1.0f; float MinMeleeDmg; };
+    union { float   dmg_max = 2.0f; float MaxMeleeDmg; };
     uint32  dmg_school = 0;
     uint32  attack_power = 0;
     float   dmg_multiplier = 1.0f;
-    uint32  base_attack_time = 0;
-    uint32  ranged_attack_time = 0;
-    uint32  unit_class = 0;                                 // enum Classes. Note only 4 classes are known for creatures.
+    union { uint32  base_attack_time = 0; uint32 MeleeBaseAttackTime; };
+    union { uint32  ranged_attack_time = 0; uint32 RangedBaseAttackTime; };
+    union { uint32  unit_class = 0; uint32 UnitClass; };
     uint32  unit_flags = 0;                                 // enum UnitFlags mask values
-    uint32  dynamic_flags = 0;
-    uint32  beast_family = 0;                               // enum CreatureFamily values (optional)
-    uint32  trainer_type = 0;
-    uint32  trainer_spell = 0;
-    uint32  trainer_class = 0;
-    uint32  trainer_race = 0;
+    union { uint32  dynamic_flags = 0; uint32 DynamicFlags; };
+    union { uint32  beast_family = 0; uint32 Family; uint32 pet_family; };
+    union { uint32  trainer_type = 0; uint32 TrainerType; };
+    union { uint32  trainer_spell = 0; uint32 TrainerSpell; };
+    union { uint32  trainer_class = 0; uint32 TrainerClass; };
+    union { uint32  trainer_race = 0; uint32 TrainerRace; };
     float   ranged_dmg_min = 0.0f;
     float   ranged_dmg_max = 0.0f;
     uint32  ranged_attack_power = 0;
-    uint32  type = 0;                                       // enum CreatureType values
-    uint32  type_flags = 0;                                 // enum CreatureTypeFlags mask values
-    uint32  loot_id = 0;
-    uint32  pickpocket_loot_id = 0;
-    uint32  skinning_loot_id = 0;
+    union { uint32  type = 0; uint32 CreatureType; };
+    union { uint32  type_flags = 0; uint32 CreatureTypeFlags; };
+    union { uint32  loot_id = 0; uint32 LootId; };
+    union { uint32  pickpocket_loot_id = 0; uint32 PickpocketLootId; };
+    union { uint32  skinning_loot_id = 0; uint32 SkinningLootId; };
+    // placeholder; flags_extra is below; this field is referenced by bot.
+    // (Anonymous union with flags_extra below is the actual storage; this comment marks the name expectation.)
     int32   holy_res = 0;
     int32   fire_res = 0;
     int32   nature_res = 0;
@@ -239,8 +244,8 @@ struct CreatureInfo
     uint32  pet_spell_list_id = 0;
     uint32  spawn_spell_id = 0;
     uint32 const* auras = nullptr;
-    uint32  gold_min = 0;
-    uint32  gold_max = 0;
+    union { uint32  gold_min = 0; uint32 MinLootGold; };
+    union { uint32  gold_max = 0; uint32 MaxLootGold; };
     std::string ai_name;
     uint32  movement_type = 0;
     uint32  inhabit_type = INHABIT_GROUND | INHABIT_WATER;
@@ -248,14 +253,16 @@ struct CreatureInfo
     bool    racial_leader = false;
     uint32  regeneration = REGEN_FLAG_HEALTH | REGEN_FLAG_POWER;
     uint32  equipment_id = 0;
-    uint32  trainer_id = 0;
-    uint32  vendor_id = 0;
+    union { uint32  trainer_id = 0; uint32 TrainerTemplateId; };
+    union { uint32  vendor_id = 0; uint32 VendorTemplateId; };
     uint32  mechanic_immune_mask = 0;
     uint32  school_immune_mask = 0;
     uint32  immunity_flags = 0;
-    uint32  flags_extra = 0;
+    union { uint32  flags_extra = 0; uint32 ExtraFlags; };
     uint32  phase_quest_id = 0;
     uint32  script_id = 0;
+    // bot uses CorpseDelay; not in Penqle's CreatureInfo.
+    uint32  CorpseDelay = 0;
 
     // helpers
     static HighGuid GetHighGuid()
@@ -268,6 +275,13 @@ struct CreatureInfo
     bool isTameable() const
     {
         return type == CREATURE_TYPE_BEAST && beast_family != 0 && type_flags & CREATURE_TYPEFLAGS_TAMEABLE;
+    }
+
+    // cmangos shorthand: which loot skill is required.
+    // Tortoise uses skinning_loot_id; if non-zero, skin is required.
+    uint32 GetRequiredLootSkill() const {
+        if (skinning_loot_id) return SKILL_SKINNING;
+        return 0;
     }
 };
 
@@ -440,11 +454,17 @@ struct TrainerSpell
         : spell(_spell), spellCost(_spellCost), reqSkill(_reqSkill), reqSkillValue(_reqSkillValue), reqLevel(_reqLevel)
     {}
 
-    uint32 spell;
+    // bot uses learnedSpell. In cmangos this is
+    // the spell taught by training; in pre-3.x this is the same as `spell`. Alias via union.
+    union { uint32 spell; uint32 learnedSpell; };
     uint32 spellCost;
     uint32 reqSkill;
     uint32 reqSkillValue;
     uint32 reqLevel;
+    // cmangos has isProvidedReqLevel flag; Penqle doesn't track it. Default false.
+    bool isProvidedReqLevel = false;
+    // cmangos has conditionId; Penqle uses spell_template-side conditions. Stub 0.
+    uint32 conditionId = 0;
 };
 
 typedef std::unordered_map<uint32 /*spellid*/, TrainerSpell> TrainerSpellMap;
@@ -552,6 +572,16 @@ class Creature : public Unit
 
         // CreatureGroups
         CreatureGroup* GetCreatureGroup() const { return m_creatureGroup; }
+        // AzerothCore spelling. Formations and creature groups are one concept
+        // on this core.
+        CreatureGroup* GetFormation() const { return m_creatureGroup; }
+        // AzerothCore spellings.
+        CreatureInfo const* GetCreatureTemplate() const { return GetCreatureInfo(); }
+        bool IsImmuneToPC() const { return HasFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_IMMUNE_TO_PLAYER); }
+        void SetFaction(uint32 faction) { SetFactionTemplateId(faction); }
+        bool isElite() const { return IsElite(); }
+        bool IsEngaged() const { return IsInCombat(); }
+        bool IsSummon() const { return IsTemporarySummon(); }
         void SetCreatureGroup(CreatureGroup* group) { m_creatureGroup = group; }
         void JoinCreatureGroup(Creature* leader, float dist, float angle, uint32 options);
         void LeaveCreatureGroup();
@@ -582,7 +612,7 @@ class Creature : public Unit
         void SaveHomePosition() { SetHomePosition(GetPositionX(), GetPositionY(), GetPositionZ(), GetOrientation()); }
         void SetHomePosition(float x, float y, float z, float o);
         void GetHomePosition(float &x, float &y, float &z, float &o);
-        Position const& GetHomePosition() { return m_homePosition; }
+        Position const& GetHomePosition() const { return m_homePosition; }
         float GetHomePositionO() const { return m_homePosition.o; }
         void ResetHomePosition();
 
@@ -600,6 +630,27 @@ class Creature : public Unit
         bool IsCorpse() const { return GetDeathState() ==  CORPSE; }
         bool IsDespawned() const { return GetDeathState() ==  DEAD; }
         void SetCorpseDelay(uint32 delay) { m_corpseDelay = delay; }
+        uint32 GetCorpseDelay() const { return m_corpseDelay; }
+        // cmangos has SetCorpseAccelerationDelay; Penqle has only SetCorpseDelay.
+        void SetCorpseAccelerationDelay(uint32 delay) { m_corpseDelay = delay; }
+        // IsCritter: cmangos shorthand for type == CREATURE_TYPE_CRITTER.
+        bool IsCritter() const { return GetCreatureInfo() && GetCreatureInfo()->type == CREATURE_TYPE_CRITTER; }
+        // GetDbGuid: cmangos returns the DB-side guid (low part). Same as GUIDLow for Penqle.
+        uint32 GetDbGuid() const { return GetGUIDLow(); }
+        // ReduceCorpseDecayTimer: cmangos shorthand. Stub no-op.
+        void ReduceCorpseDecayTimer() {}
+        // isTrainer: cmangos camelCase alias.
+        bool isTrainer() const { return IsTrainer(); }
+        // GetInteractionPauseTimer: cmangos has it; Penqle no equivalent. Stub returns 0.
+        uint32 GetInteractionPauseTimer() const { return 0; }
+        // isGossip: cmangos alias.
+        bool isGossip() const { return HasFlag(UNIT_NPC_FLAGS, UNIT_NPC_FLAG_GOSSIP); }
+        // GetCombatManager: cmangos has it; Penqle has ThreatManager. Stub returns dummy struct ref.
+        struct CombatManagerStub {
+            bool IsInCombatWith(Unit const* /*who*/) const { return false; }
+            bool IsInEvadeMode() const { return false; }
+        };
+        CombatManagerStub& GetCombatManager() const { static CombatManagerStub s; return s; }
         bool IsRacialLeader() const { return GetCreatureInfo()->racial_leader; }
         bool IsCivilian() const { return GetCreatureInfo()->civilian; }
         bool IsTrigger() const { return HasExtraFlag(CREATURE_FLAG_EXTRA_INVISIBLE); }
@@ -679,6 +730,7 @@ class Creature : public Unit
         bool HasSpell(uint32 spellID) const override;
 
         bool UpdateEntry(uint32 entry, const CreatureData* data = nullptr, GameEventCreatureData const* eventData = nullptr, bool preserveHPAndPower = true);
+        bool UpdateEntry(uint32 entry, GameEventCreatureData const* eventData) { return UpdateEntry(entry, nullptr, eventData); }
 
         void ApplyGameEventSpells(GameEventCreatureData const* eventData, bool activated);
         bool UpdateStats(Stats stat) override;
@@ -728,6 +780,9 @@ class Creature : public Unit
         static void DeleteFromDB(uint32 lowguid, CreatureData const* data);
 
         Loot loot;
+        // bot accesses creature->m_loot like a pointer.
+        // Initialized to &loot so bot's nullable check + dereference compiles correctly.
+        Loot* const m_loot = &loot;
         bool lootForPickPocketed;
         bool lootForBody;
         bool lootForSkin;
@@ -750,6 +805,8 @@ class Creature : public Unit
         uint32 m_spells[CREATURE_MAX_SPELLS];
 
         float GetAttackDistance(Unit const* pl) const;
+        // AzerothCore spelling.
+        float GetAggroRange(Unit const* target) const { return GetAttackDistance(target); }
         float GetDetectionRange() const { return m_detectionDistance; }
 
         void SendAIReaction(AiReaction reactionType);
@@ -811,6 +868,8 @@ class Creature : public Unit
 
         uint32 GetRespawnDelay() const { return m_respawnDelay; }
         void SetRespawnDelay(uint32 delay) { m_respawnDelay = delay; }
+        // cmangos's 2-arg form (second flag ignored).
+        void SetRespawnDelay(uint32 delay, bool /*notify*/) { m_respawnDelay = delay; }
 
         float GetWanderDistance() const { return m_wanderDistance; }
         void SetWanderDistance(float dist) { m_wanderDistance = dist; }
@@ -969,6 +1028,10 @@ class Creature : public Unit
         void RegenerateMana();
 
         void SetVirtualItem(VirtualItemSlot slot, uint32 item_id);
+        void SetVirtualItem(WeaponAttackType slot, uint32 item_id) { SetVirtualItem(static_cast<VirtualItemSlot>(slot), item_id); }
+
+        void SetDisableReputationGain(bool disable) { m_disableReputationGain = disable; }
+        bool IsReputationGainDisabled() const { return m_disableReputationGain; }
 
         void ResetDamageTakenOrigin()
         {
@@ -1003,6 +1066,8 @@ class Creature : public Unit
         {
             m_callForHelpDist = dist;
         }
+
+        void SetLeashingDisabled(bool disabled) { m_leashingDisabled = disabled; }
 
         void SetLeashDistance(float dist)
         {
@@ -1099,6 +1164,7 @@ class Creature : public Unit
         uint32 m_mountId;                                   // display Id to mount
 
         bool m_isDeadByDefault;
+        bool m_disableReputationGain = false;
         bool m_AI_locked;
         uint16 m_creatureStateFlags;
         uint32 m_temporaryFactionFlags;                     // used for real faction changes (not auras etc)
@@ -1131,6 +1197,7 @@ class Creature : public Unit
         float m_callForHelpDist;
         bool m_callsForHelp;
         float m_leashDistance;
+        bool m_leashingDisabled = false;
         float m_detectionDistance;
 
         uint32_t m_goldMinOverride = 0;

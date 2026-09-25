@@ -1,3 +1,4 @@
+#include "Util/DevDiagnostics.h"
 /*
  * Copyright (C) 2005-2011 MaNGOS <http://getmangos.com/>
  * Copyright (C) 2009-2011 MaNGOSZero <https://github.com/mangos/zero>
@@ -133,6 +134,19 @@ bool MySQLConnection::OpenConnection(bool reconnect)
         Execute("SET NAMES `utf8`");
         Execute("SET CHARACTER SET `utf8`");
 
+        // Fail closed if metadata cannot establish full rollback support.
+        // Rechecked on reconnect; engine migrations require a server restart.
+        m_transactionalSchema = false;
+        if (!mysql_query(mMysql, "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema=DATABASE() AND TABLE_TYPE='BASE TABLE' AND (ENGINE IS NULL OR ENGINE<>'InnoDB')"))
+        {
+            if (MYSQL_RES* result = ([&] { MANTECH_DIAG_SCOPE(DbCall, 32, "mysql_store_result"); return mysql_store_result(mMysql); }()))
+            {
+                MYSQL_ROW row = mysql_fetch_row(result);
+                m_transactionalSchema = row && row[0] && std::string(row[0]) == "0";
+                mysql_free_result(result);
+            }
+        }
+
         return true;
     }
     else
@@ -212,7 +226,7 @@ bool MySQLConnection::_Query(const char *sql, MYSQL_RES **pResult, MYSQL_FIELD *
 
     uint32 _s = WorldTimer::getMSTime();
 
-    if (mysql_query(mMysql, sql))
+    if (([&] { MANTECH_DIAG_SCOPE(DbCall, 32, "mysql_query"); return mysql_query(mMysql, sql); }()))
     {
         uint32 lErrno = mysql_errno(mMysql);
 
@@ -229,7 +243,7 @@ bool MySQLConnection::_Query(const char *sql, MYSQL_RES **pResult, MYSQL_FIELD *
         BASIC_FILTER_LOG(LOG_FILTER_SQL_TEXT, "[%u ms] SQL: %s", WorldTimer::getMSTimeDiff(_s,WorldTimer::getMSTime()), sql );
     }
 
-    *pResult = mysql_store_result(mMysql);
+    *pResult = ([&] { MANTECH_DIAG_SCOPE(DbCall, 32, "mysql_store_result"); return mysql_store_result(mMysql); }());
     *pRowCount = mysql_affected_rows(mMysql);
     *pFieldCount = mysql_field_count(mMysql);
 
@@ -289,7 +303,7 @@ bool MySQLConnection::ExecuteMultiline(const char* sql)
 
     uint32 _s = WorldTimer::getMSTime();
 
-    if (mysql_query(mMysql, sql))
+    if (([&] { MANTECH_DIAG_SCOPE(DbCall, 32, "mysql_query"); return mysql_query(mMysql, sql); }()))
     {
         uint32 lErrno = mysql_errno(mMysql);
 
@@ -325,7 +339,7 @@ bool MySQLConnection::ExecuteMultiline(const char* sql)
     //we have to drain the results from multiline queries otherwise the server will not be able to keep up.
     while (mysql_more_results(mMysql))
     {
-        MYSQL_RES* result = mysql_store_result(mMysql);
+        MYSQL_RES* result = ([&] { MANTECH_DIAG_SCOPE(DbCall, 32, "mysql_store_result"); return mysql_store_result(mMysql); }());
         if (result)
             mysql_free_result(result);
         mysql_next_result(mMysql);
@@ -336,14 +350,16 @@ bool MySQLConnection::ExecuteMultiline(const char* sql)
 
 bool MySQLConnection::Execute(const char* sql)
 {
+    SetStatementDeadlock(false);
     if (!mMysql)
         return false;
 
     uint32 _s = WorldTimer::getMSTime();
 
-    if (mysql_query(mMysql, sql))
+    if (([&] { MANTECH_DIAG_SCOPE(DbCall, 32, "mysql_query"); return mysql_query(mMysql, sql); }()))
     {
         uint32 lErrno = mysql_errno(mMysql);
+        SetStatementDeadlock(lErrno == ER_LOCK_DEADLOCK);
 
         sLog.outErrorDb( "SQL: %s", sql);
         sLog.outErrorDb("[%u] %s", lErrno, mysql_error(mMysql));
@@ -362,7 +378,7 @@ bool MySQLConnection::Execute(const char* sql)
 
 bool MySQLConnection::_TransactionCmd(const char *sql)
 {
-    if (mysql_query(mMysql, sql))
+    if (([&] { MANTECH_DIAG_SCOPE(DbCall, 32, "mysql_query"); return mysql_query(mMysql, sql); }()))
     {
         sLog.outError("SQL: %s", sql);
         sLog.outError("SQL ERROR: %s", mysql_error(mMysql));
@@ -433,7 +449,7 @@ bool MySqlPreparedStatement::prepare()
     }
 
     //prepare statement
-    if (mysql_stmt_prepare(m_stmt, m_szFmt.c_str(), m_szFmt.length()))
+    if (([&] { MANTECH_DIAG_SCOPE(DbCall, 32, "mysql_stmt_prepare"); return mysql_stmt_prepare(m_stmt, m_szFmt.c_str(), m_szFmt.length()); }()))
     {
         sLog.outError("SQL: mysql_stmt_prepare() failed for '%s'", m_szFmt.c_str());
         sLog.outError("SQL ERROR: %s", mysql_stmt_error(m_stmt));
@@ -551,11 +567,13 @@ void MySqlPreparedStatement::RemoveBinds()
 
 bool MySqlPreparedStatement::execute()
 {
+    m_pConn.SetStatementDeadlock(false);
     if(!isPrepared())
         return false;
 
-    if(mysql_stmt_execute(m_stmt))
+    if(([&] { MANTECH_DIAG_SCOPE(DbCall, 32, "mysql_stmt_execute"); return mysql_stmt_execute(m_stmt); }()))
     {
+        m_pConn.SetStatementDeadlock(mysql_stmt_errno(m_stmt) == ER_LOCK_DEADLOCK);
         sLog.outError("SQL: cannot execute '%s'", m_szFmt.c_str());
         sLog.outError("SQL ERROR: %s", mysql_stmt_error(m_stmt));
         return false;

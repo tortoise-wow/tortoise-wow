@@ -36,8 +36,8 @@ CreatureEventAIMgr sEventAIMgr;
 // -------------------
 void CreatureEventAIMgr::LoadCreatureEventAI_Events()
 {
-    //Drop Existing EventAI List
-    m_CreatureEventAI_Event_Map.clear();
+    auto generation = std::make_shared<CreatureEventAIGeneration>();
+    generation->scripts = sCreatureAIScripts; // one copy per reload, never per creature
 
     // Gather event data
     QueryResult *result = WorldDatabase.Query("SELECT id, creature_id, condition_id, event_type, event_inverse_phase_mask, event_chance, event_flags, "
@@ -323,9 +323,9 @@ void CreatureEventAIMgr::LoadCreatureEventAI_Events()
 
                 if (action_script)
                 {
-                    const auto& scriptIter = sCreatureAIScripts.find(action_script);
+                    const auto& scriptIter = generation->scripts.find(action_script);
 
-                    if (scriptIter != sCreatureAIScripts.end())
+                    if (scriptIter != generation->scripts.end())
                     {
                         temp.action[j] = &scriptIter->second;
                     }
@@ -338,10 +338,12 @@ void CreatureEventAIMgr::LoadCreatureEventAI_Events()
             }
 
             //Add to list
-            m_CreatureEventAI_Event_Map[creature_id].push_back(temp);
+            generation->events[creature_id].push_back(temp);
         }
         while (result->NextRow());
 
         delete result;
     }
+    std::shared_ptr<CreatureEventAIGeneration const> published = std::move(generation);
+    std::atomic_store(&m_generation, std::move(published));
 }

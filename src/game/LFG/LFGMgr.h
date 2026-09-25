@@ -102,6 +102,14 @@ class LFGQueue
             if (it != m_QueuedPlayers.end() && info)
                 *info = it->second;
         }
+        bool IsGroupInQueue(uint32 groupId) const { return m_QueuedGroups.find(groupId) != m_QueuedGroups.end(); }
+        bool GetGroupQueueInfo(LFGGroupQueueInfo* info, uint32 groupId) const
+        {
+            auto it = m_QueuedGroups.find(groupId);
+            if (!info || it == m_QueuedGroups.end()) return false;
+            *info = it->second;
+            return true;
+        }
         void RemovePlayerFromQueue(const ObjectGuid& plrGuid, PlayerLeaveMethod leaveMethod = PLAYER_CLIENT_LEAVE); // 0 == by default system (cmsg, leader leave), 1 == by lfg system (no need report text you left queu)
         void RemoveGroupFromQueue(uint32 groupId, GroupLeaveMethod leaveMethod = GROUP_CLIENT_LEAVE);
         void Update(uint32 diff);

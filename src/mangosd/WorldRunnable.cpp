@@ -1,3 +1,4 @@
+#include "Util/DevDiagnosticsService.h"
 /*
  * Copyright (C) 2005-2011 MaNGOS <http://getmangos.com/>
  * Copyright (C) 2009-2011 MaNGOSZero <https://github.com/mangos/zero>
@@ -43,6 +44,7 @@
 // Heartbeat for the World
 void WorldRunnable::operator()()
 {
+    ManTech::Diag::StartObserver();
     thread_name("World");
     // Init new SQL thread for the world database
     WorldDatabase.ThreadStart();                                // let thread do safe mySQL requests (one connection call enough)

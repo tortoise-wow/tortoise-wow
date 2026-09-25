@@ -166,6 +166,7 @@ void MasterPlayer::SaveMails()
         {
             Mail* m = *itr;
             m_mail.erase(itr);
+            PublishMailSize();
             delete m;
             itr = m_mail.begin();
         }
@@ -184,6 +185,7 @@ void MasterPlayer::RemoveMail(uint32 id, bool remove)
         {
             //do not delete item, because Player::removeMail() is called when returning mail to sender. DEFAULT CASE
             m_mail.erase(itr);
+            PublishMailSize();
 
             if (remove)
                 delete (*itr);
@@ -283,6 +285,7 @@ void MasterPlayer::LoadMailedItems(QueryResult *result)
 void MasterPlayer::LoadMails(QueryResult *result)
 {
     m_mail.clear();
+    PublishMailSize();
     Player* player = GetSession()->GetPlayer();
     ASSERT(player);
     //        0  1           2      3        4       5          6           7            8     9   10      11         12             13         14
@@ -323,6 +326,8 @@ void MasterPlayer::LoadMails(QueryResult *result)
                 auto stmt = CharacterDatabase.CreateStatement(hardDeleteMail, "DELETE FROM `mail` WHERE id = ?");
                 stmt.PExecute(m->messageID);
             }
+            // This row never entered the owning mail list.
+            delete m;
             continue;
         }
 
@@ -334,6 +339,7 @@ void MasterPlayer::LoadMails(QueryResult *result)
         
 
         m_mail.push_back(m);
+        PublishMailSize();
 
         if (m->mailTemplateId && !m->has_items)
             m->prepareTemplateItems(player);

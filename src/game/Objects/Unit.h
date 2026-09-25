@@ -23,6 +23,8 @@
 #define __UNIT_H
 
 #include "Common.h"
+#include "Memory/SparseListArray.h"
+#include "Memory/LazyStorage.h"
 #include "Object.h"
 #include "UnitDefines.h"
 #include "Opcodes.h"
@@ -745,7 +747,7 @@ class Unit : public WorldObject
         SpellAuraHolderList m_deletedHolders;
         SingleCastSpellTargetMap m_singleCastSpellTargets;  // casted by unit single per-caster auras
         ObjectGuidSet m_spellGameObjects;
-        AuraList m_modAuras[TOTAL_AURAS];
+        ManTech::SparseListArray<Aura*, TOTAL_AURAS> m_modAuras;
         uint32 m_lastManaUseSpellId;
         uint32 m_lastManaUseTimer;
         SpellCooldowns m_spellCooldowns;
@@ -892,7 +894,7 @@ class Unit : public WorldObject
 
         SingleCastSpellTargetMap      & GetSingleCastSpellTargets() { return m_singleCastSpellTargets; }
         SingleCastSpellTargetMap const& GetSingleCastSpellTargets() const { return m_singleCastSpellTargets; }
-        SpellImmuneList m_spellImmune[MAX_SPELL_IMMUNITY];
+        ManTech::LazyStorageArray<SpellImmuneList, MAX_SPELL_IMMUNITY> m_spellImmune;
 
         Aura* GetAura(uint32 spellId, SpellEffectIndex effindex);
         Aura* GetAura(AuraType type, SpellFamily family, uint64 familyFlag, ObjectGuid casterGuid = ObjectGuid());
@@ -902,7 +904,7 @@ class Unit : public WorldObject
         SpellAuraHolderMap      & GetSpellAuraHolderMap() { return m_spellAuraHolders; }
         SpellAuraHolderMap const& GetSpellAuraHolderMap() const { return m_spellAuraHolders; }
         void DelaySpellAuraHolder(uint32 spellId, int32 delaytime, ObjectGuid casterGuid);
-        AuraList const& GetAurasByType(AuraType type) const { return m_modAuras[type]; }
+        AuraList const& GetAurasByType(AuraType type) const { return m_modAuras.Stable(type); }
 
         int32 GetTotalAuraModifier(AuraType auratype) const;
         int32 GetTotalAuraRangeModifier(AuraType auratype) const;

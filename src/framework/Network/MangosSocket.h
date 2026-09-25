@@ -12,6 +12,7 @@
 #include <ace/Unbounded_Queue.h>
 #include <ace/Message_Block.h>
 #include <mutex>
+#include "Memory/WriteBudget.h"
 
 #if !defined (ACE_LACKS_PRAGMA_ONCE)
 #pragma once
@@ -106,7 +107,8 @@ class MangosSocket : public WorldHandler
         typedef std::unique_lock<LockType> GuardType;
 
         /// Queue for storing packets for which there is no space.
-        typedef ACE_Unbounded_Queue<WorldPacket*> PacketQueueT;
+        struct PendingPacket;
+        typedef ACE_Unbounded_Queue<PendingPacket*> PacketQueueT;
 
         /// Check if socket is closed.
         bool IsClosed() const { return closing_; }
@@ -225,6 +227,9 @@ class MangosSocket : public WorldHandler
         /// Here are stored packets for which there was no space on m_OutBuffer,
         /// this allows not-to kick player if its buffer is overflowed.
         PacketQueueT m_PacketQueue;
+        ManTech::WriteBudget m_writeBudget;
+        size_t m_socketWriteLimit = 8u * 1024u * 1024u;
+        size_t m_globalWriteLimit = 256u * 1024u * 1024u;
 
         /// True if the socket is registered with the reactor for output
         bool m_OutActive;

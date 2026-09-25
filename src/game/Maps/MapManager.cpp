@@ -1,3 +1,4 @@
+#include "Util/DevDiagnostics.h"
 /*
  * Copyright (C) 2005-2011 MaNGOS <http://getmangos.com/>
  * Copyright (C) 2009-2011 MaNGOSZero <https://github.com/mangos/zero>
@@ -30,8 +31,10 @@
 #include "Corpse.h"
 #include "ObjectMgr.h"
 #include "ScriptObjects.h"
+#include "ScriptMgr.h"
 #include "ZoneScriptMgr.h"
 #include "Map.h"
+#include "Player.h"
 #include "ThreadPool.h"
 #include "MoveMap.h"
 #include "ChannelBroadcaster.h"
@@ -45,10 +48,15 @@ MapManager::MapManager()
     :
     i_gridCleanUpDelay(sWorld.getConfig(CONFIG_UINT32_INTERVAL_GRIDCLEAN)),
     i_MaxInstanceId(RESERVED_INSTANCES_LAST),
-    m_threads(new ThreadPool(sWorld.getConfig(CONFIG_UINT32_MAPUPDATE_INSTANCED_UPDATE_THREADS), "MapManager"))
+    m_threads(new ThreadPool(sWorld.getConfig(CONFIG_UINT32_MAPUPDATE_WORKER_THREADS), "MapOwners")),
+    m_cellDiscovery(new MapTaskExecutor(sWorld.getConfig(CONFIG_UINT32_MAP_CELL_THREADS))),
+    m_objectBuild(new MapTaskExecutor(sWorld.getConfig(CONFIG_UINT32_MAP_OBJECT_BUILD_THREADS))),
+    m_idleBotAI(new MapTaskExecutor(sWorld.getConfig(CONFIG_UINT32_MAP_IDLE_BOT_THREADS),
+        [] { CharacterDatabase.ThreadStart(); }, [] { CharacterDatabase.ThreadEnd(); }))
 {
     i_timer.SetInterval(sWorld.getConfig(CONFIG_UINT32_INTERVAL_MAPUPDATE));
     m_threads->start<ThreadPool::MySQL<>>();
+    sLog.outString("MANTECH_IDLE_AI workers=%zu ownership=joined_map_batch", m_idleBotAI->Size());
 }
 
 MapManager::~MapManager()
@@ -281,6 +289,7 @@ void MapManager::ScheduleNewWorldOnFarTeleport(Player* pPlayer)
         DungeonPersistentState* pSave = pPlayer->GetBoundInstanceSaveForSelfOrGroup(pMapEntry->id);
         if (!pSave || !FindMap(pMapEntry->id, pSave->GetInstanceId()))
         {
+            std::lock_guard<std::mutex> lock(m_scheduledNewInstancesLock);
             m_scheduledNewInstancesForPlayers.insert(pPlayer);
             return;
         }
@@ -290,20 +299,13 @@ void MapManager::ScheduleNewWorldOnFarTeleport(Player* pPlayer)
     pPlayer->SendNewWorld();
 }
 
-void MapManager::CreateNewInstancesForPlayers()
-{
-    do
-    {
-        std::this_thread::sleep_for(std::chrono::milliseconds(20));
-
-        CreateNewInstancesForPlayersSync();
-    } while (asyncMapUpdating);
-}
-
 void MapManager::CreateNewInstancesForPlayersSync()
 {
 	std::unordered_set<Player*> players;
-	std::swap(players, m_scheduledNewInstancesForPlayers);
+    {
+        std::lock_guard<std::mutex> lock(m_scheduledNewInstancesLock);
+        std::swap(players, m_scheduledNewInstancesForPlayers);
+    }
 
 	for (Player* player : players)
 	{
@@ -334,6 +336,7 @@ void MapManager::CreateNewInstancesForPlayersSync()
 
 void MapManager::Update(uint32 diff)
 {
+    MANTECH_DIAG_SCOPE(Maps, 1, nullptr);
     i_timer.Update(diff);
     if (!i_timer.Passed())
         return;
@@ -345,69 +348,72 @@ void MapManager::Update(uint32 diff)
 
     uint32 mapsDiff = (uint32)i_timer.GetCurrent();
     asyncMapUpdating = true;
+    struct PhaseExit
+    {
+        bool& active;
+        ~PhaseExit() { sWorld.GetChannelBroadcaster()->DisableSendingMessages(); active = false; }
+    } phaseExit{asyncMapUpdating};
 	sWorld.GetChannelBroadcaster()->EnableSendingMessages(); // should be active only on async map updating
 
-    int continentsIdx = 0;
-    uint32 now = WorldTimer::getMSTime();
-
-    uint32 inactiveTimeLimit = sWorld.getConfig(CONFIG_UINT32_EMPTY_MAPS_UPDATE_TIME);
-    std::vector<std::function<void()>> continentsUpdaters;
-    std::vector<std::function<void()>> instancesUpdaters;
-
-    for (MapMapType::iterator iter = i_maps.begin(); iter != i_maps.end(); ++iter)
+    uint32 const now = WorldTimer::getMSTime();
+    uint32 const inactiveTimeLimit = sWorld.getConfig(CONFIG_UINT32_EMPTY_MAPS_UPDATE_TIME);
+    std::vector<Map*> maps;
+    for (auto const& entry : i_maps)
     {
-        // If this map has been empty for too long, we no longer update it.
-        if (!iter->second->ShouldUpdateMap(now, inactiveTimeLimit))
+        Map* map = entry.second;
+        if (!map->ShouldUpdateMap(now, inactiveTimeLimit))
             continue;
-
-        iter->second->UpdateSync(mapsDiff);
-        iter->second->MarkNotUpdated();
-        if (iter->second->Instanceable())
-        {
-            if (m_threads->status() == ThreadPool::Status::READY)
-                instancesUpdaters.emplace_back([iter,mapsDiff](){
-                    iter->second->DoUpdate(mapsDiff);
-                });
-            else
-                iter->second->DoUpdate(mapsDiff);
-        }
-        else // One threat per continent part
-        {
-            continentsUpdaters.emplace_back([iter,mapsDiff](){
-                Map *m = iter->second;
-                if (!m->IsUpdateFinished() || !sMapMgr.IsContinentUpdateFinished())
-                    m->DoUpdate(mapsDiff);
-            });
-            continentsIdx++;
-        }
+        map->UpdateSync(mapsDiff);
+        map->MarkNotUpdated();
+        maps.push_back(map);
     }
-
-    i_maxContinentThread = continentsIdx;
-    i_continentUpdateFinished.store(0);
-
-    if (!m_continentThreads || m_continentThreads->size() < continentsUpdaters.size())
+    // Give newly connected humans priority too, not only last tick's cached
+    // real-player flag. This runs in the owner phase before map jobs start.
+    std::stable_partition(maps.begin(), maps.end(), [](Map* map)
     {
-        m_continentThreads.reset(new ThreadPool(continentsUpdaters.size(), "ContinentUpdate"));
-        m_continentThreads->start<>();
-    }
-    std::future<void> continents = m_continentThreads->processWorkload(std::move(continentsUpdaters),
-                                                                       ThreadPool::Callable());
+        for (auto const& ref : map->GetPlayers())
+            if (Player* player = ref.getSource())
+                if (player->IsInWorld() && !Script_IsMachineDriven(player))
+                    return true;
+        return false;
+    });
 
-    std::chrono::high_resolution_clock::time_point start;
-    do {
-        start = std::chrono::high_resolution_clock::now();
-        std::future<void> f = m_threads->processWorkload(instancesUpdaters,
-                                                         ThreadPool::Callable());
-
-        if (f.valid())
-            f.wait();
+    // CMaNGOS ownership model: a map is one job, not a worker waiting on
+    // other workers. Transfers/destruction occur only after all owners join.
+    // A fixed pool can now handle any number of partitions without starving
+    // queued jobs behind a barrier held by the already-running partitions.
+    auto runBatch = [this](ThreadPool::workload_t& work)
+    {
+        if (m_threads->size())
+        {
+            auto done = m_threads->processWorkload(work);
+            if (done.valid())
+            {
+                MANTECH_DIAG_SCOPE(MapBarrier, 1, "map_batch_join");
+                done.get();
+            }
+        }
         else
-            break;
-    } while(!sMapMgr.waitContinentUpdateFinishedUntil(start + std::chrono::milliseconds(sWorld.getConfig(CONFIG_UINT32_INTERVAL_MAPUPDATE))));
+            for (auto const& task : work)
+                task();
+    };
+    ThreadPool::workload_t work;
+    work.reserve(maps.size());
+    for (Map* map : maps)
+    {
+        map->MarkUpdateQueued();
+        work.emplace_back([map, mapsDiff] { map->DoUpdate(mapsDiff); });
+    }
+    runBatch(work);
 
-
-    if (continents.valid())
-        continents.wait();
+    // Preserve Turtle's continent post-update boundary: scripts/grid cleanup
+    // still run after every continent's simulation has finished. Instance
+    // subclasses retain their existing complete Update() ordering.
+    work.clear();
+    for (Map* map : maps)
+        if (!map->Instanceable())
+            work.emplace_back([map] { map->CompleteUpdate(); });
+    runBatch(work);
 
     sWorld.GetChannelBroadcaster()->DisableSendingMessages();
     SwitchPlayersInstances();
@@ -1157,28 +1163,9 @@ void MapManager::SwitchPlayersInstances()
     }
 }
 
-void MapManager::MarkContinentUpdateFinished()
+void MapManager::DoForAllMaps(std::function<void(Map*)> const& worker)
 {
-    ASSERT(i_continentUpdateFinished < i_maxContinentThread);
-    std::unique_lock<std::mutex> lock(m_continentMutex);
-    i_continentUpdateFinished++;
-    if (IsContinentUpdateFinished())
-        m_continentCV.notify_all();
-}
+    for (auto const& entry : i_maps)
+        worker(entry.second);
 
-bool MapManager::IsContinentUpdateFinished() const
-{
-    return i_continentUpdateFinished == i_maxContinentThread;
-}
-
-bool MapManager::waitContinentUpdateFinishedFor(std::chrono::milliseconds time) const
-{
-    std::unique_lock<std::mutex> lock(m_continentMutex);
-    return m_continentCV.wait_for(lock,time,std::bind(&MapManager::IsContinentUpdateFinished,this));
-}
-
-bool MapManager::waitContinentUpdateFinishedUntil(std::chrono::high_resolution_clock::time_point time) const
-{
-    std::unique_lock<std::mutex> lock(m_continentMutex);
-    return m_continentCV.wait_until(lock,time,std::bind(&MapManager::IsContinentUpdateFinished,this));
 }

@@ -57,6 +57,10 @@ namespace VMAP
             float* GetHeightStorage() const { return iHeight; }
             uint8* GetFlagsStorage() const { return iFlags; }
             uint32 GetFileSize() const;
+            size_t OwnedMemoryBytes() const {
+                return sizeof(*this) + (iHeight ? size_t(iTilesX + 1) * (iTilesY + 1) * sizeof(float) : 0)
+                    + (iFlags ? size_t(iTilesX) * iTilesY : 0);
+            }
             bool writeToFile(FILE* wf);
             static bool readFromFile(FILE* rf, WmoLiquid*& out);
         private:
@@ -95,6 +99,10 @@ namespace VMAP
             const G3D::AABox& GetBound() const { return iBound; }
             uint32 GetMogpFlags() const { return iMogpFlags; }
             uint32 GetWmoID() const { return iGroupWMOID; }
+            size_t OwnedCapacityBytes() const {
+                return vertices.capacity() * sizeof(Vector3) + triangles.capacity() * sizeof(MeshTriangle)
+                    + meshTree.OwnedCapacityBytes() + (iLiquid ? iLiquid->OwnedMemoryBytes() : 0);
+            }
         protected:
             G3D::AABox iBound;
             uint32 iMogpFlags;// 0x8 outdor; 0x2000 indoor
@@ -124,6 +132,11 @@ namespace VMAP
             bool GetLocationInfo(const G3D::Vector3& p, const G3D::Vector3& down, float& dist, GroupLocationInfo& info) const;
             bool writeFile(std::string const& filename);
             bool readFile(std::string const& filename);
+            size_t OwnedMemoryBytes() const {
+                size_t bytes = sizeof(*this) + groupModels.capacity() * sizeof(GroupModel) + groupTree.OwnedCapacityBytes();
+                for (auto const& group : groupModels) bytes += group.OwnedCapacityBytes();
+                return bytes;
+            }
         protected:
             uint32 RootWMOID;
             std::vector<GroupModel> groupModels;

@@ -234,8 +234,10 @@ namespace DBUpdater
             if (!ExecuteUpdate(update, targetDatabase))
             {
                 sLog.outError("[DB Auto-Updater] Migration %s with hash %s failed to apply.", update.Name.c_str(), update.Hash.c_str());
-                std::string line;
-                std::getline(std::cin, line);
+                // (removed a leftover std::getline(std::cin) here that paused startup
+                // waiting for Enter after a failed migration - blocks a service /
+                // pipeline start with an open stdin; the return below already aborts.
+                // The intentional crash-pause getline in Log.cpp is untouched.)
                 return false;
            }
         }
@@ -498,6 +500,11 @@ namespace DBUpdater
         auto authUpdateFolder = sConfig.GetStringDefault("Database.AutoUpdate.AuthUpdateName", "Logon");
         auto charUpdateFolder = sConfig.GetStringDefault("Database.AutoUpdate.CharUpdateName", "Char");
         auto worldUpdateFolder = sConfig.GetStringDefault("Database.AutoUpdate.WorldUpdateName", "World");
+        // Core database folder names can differ from the module convention.
+        // In particular ManTech uses "character", while native modules use "char".
+        auto moduleAuthFolder = sConfig.GetStringDefault("Database.AutoUpdate.ModuleAuthUpdateName", "auth");
+        auto moduleCharFolder = sConfig.GetStringDefault("Database.AutoUpdate.ModuleCharUpdateName", "char");
+        auto moduleWorldFolder = sConfig.GetStringDefault("Database.AutoUpdate.ModuleWorldUpdateName", "world");
         bool sortByName = sConfig.GetBoolDefault("Database.AutoUpdate.SortByName", false);
         path folderPath{ pathString };
 #ifdef TW_SOURCE_MODULES_DIR
@@ -520,13 +527,13 @@ namespace DBUpdater
         if (!ProcessTargetUpdates(worldUpdatePath, &WorldDatabase, false, sortByName))
             return false;
 
-        if (!ProcessModuleUpdates(modulesPath, authUpdateFolder, &LoginDatabase, sortByName))
+        if (!ProcessModuleUpdates(modulesPath, moduleAuthFolder, &LoginDatabase, sortByName))
             return false;
 
-        if (!ProcessModuleUpdates(modulesPath, charUpdateFolder, &CharacterDatabase, sortByName))
+        if (!ProcessModuleUpdates(modulesPath, moduleCharFolder, &CharacterDatabase, sortByName))
             return false;
 
-        if (!ProcessModuleUpdates(modulesPath, worldUpdateFolder, &WorldDatabase, sortByName))
+        if (!ProcessModuleUpdates(modulesPath, moduleWorldFolder, &WorldDatabase, sortByName))
             return false;
 
 
@@ -554,4 +561,6 @@ namespace DBUpdater
         return true;
 
     }
+    // End configured migration dispatch.
+
 }

@@ -24,6 +24,9 @@
 
 #include "LockedQueue.h"
 
+#include <atomic>
+#include <string>
+
 class Database;
 class SqlOperation;
 class SqlConnection;
@@ -34,15 +37,21 @@ class SqlDelayThread
 
     private:
         SqlQueue m_sqlQueue;                                ///< Queue of SQL statements
+        SqlQueue m_priorityQueue;                           ///< Real-client/login work
         Database *m_dbEngine;                               ///< Pointer to used Database engine
         SqlQueue m_serialDelayQueue;
+        SqlQueue m_prioritySerialDelayQueue;
         SqlConnection *m_dbConnection;                     ///< Pointer to DB connection
-        volatile bool m_running;
-        const char* Name;
+        std::atomic<bool> m_running;
+        // BY VALUE, not a pointer. The caller hands this down from a local
+        // std::string in Master::_StartDB (name.c_str()), which dies the
+        // moment that function returns - after which the delay thread was
+        // reading whatever the world thread had since put on that stack.
+        std::string Name;
 
 
         //process all enqueued requests
-        void ProcessRequests();
+        size_t ProcessRequests();
 
     public:
         SqlDelayThread(const char* InName, Database* db, SqlConnection* conn);
@@ -51,7 +60,14 @@ class SqlDelayThread
         ///< Put sql statement to delay queue
         bool Delay(SqlOperation* sql) { m_sqlQueue.add(sql); return true; }
         void addSerialOperation(SqlOperation *op);
+        void addPriorityOperation(SqlOperation* op) { m_priorityQueue.add(op); }
+        void addPrioritySerialOperation(SqlOperation* op) { m_prioritySerialDelayQueue.add(op); }
+        size_t PendingCount() const
+        {
+            return m_priorityQueue.size() + m_prioritySerialDelayQueue.size() + m_serialDelayQueue.size();
+        }
         bool HasAsyncQuery();
+        size_t DrainRequests() { return ProcessRequests(); } // after all workers join
 
         virtual void Stop();                                ///< Stop event
         void run();                                 ///< Main Thread loop
