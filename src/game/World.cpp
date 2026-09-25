@@ -1049,6 +1049,10 @@ void World::LoadConfigSettingsFromFile(bool reload)
     setConfig(CONFIG_UINT32_RESPEC_MULTIPLICATIVE_COST, "Rate.RespecMultiplicativeCost", 5);
     setConfig(CONFIG_UINT32_RESPEC_MIN_MULTIPLIER,      "Rate.RespecMinMultiplier", 2);
     setConfig(CONFIG_UINT32_RESPEC_MAX_MULTIPLIER,      "Rate.RespecMaxMultiplier", 10);
+    setConfig(CONFIG_UINT32_BARBERSHOP_COST_BASE,       "Barbershop.Cost.Base", 5);
+    setConfig(CONFIG_UINT32_BARBERSHOP_COST_STYLE,      "Barbershop.Cost.Style", 100);
+    setConfig(CONFIG_UINT32_BARBERSHOP_COST_COLOR,      "Barbershop.Cost.Color", 50);
+    setConfig(CONFIG_UINT32_BARBERSHOP_COST_FACIAL_HAIR, "Barbershop.Cost.FacialHair", 75);
 
     setConfigMinMax(CONFIG_FLOAT_RATE_TARGET_POS_RECALCULATION_RANGE, "TargetPosRecalculateRange", 1.5f, CONTACT_DISTANCE, ATTACK_DISTANCE);
 
