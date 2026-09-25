@@ -319,7 +319,7 @@ void Log::Initialize()
         }
     }
 
-    dberLogfile = openLogFile("DBErrorLogFile", nullptr, "a+");
+    dberLogfile = openLogFile("DBErrorLogFile", "DBErrorLogTimestamp", "a+");
     worldLogfile = openLogFile("WorldLogFile", "WorldLogTimestamp", "a+");
     nostalriusLogFile = openLogFile("NostalriusLogFile", "NostalriusLogTimestamp", "a+");
     honorLogfile = openLogFile("HonorLogFile", "HonorLogTimestamp", "a+");
