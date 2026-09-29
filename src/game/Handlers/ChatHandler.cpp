@@ -24,6 +24,7 @@
 #include "WorldPacket.h"
 #include "WorldSession.h"
 #include "World.h"
+#include "BattleGroundMgr.h"
 #include "Opcodes.h"
 #include "ObjectMgr.h"
 #include "Chat.h"
@@ -1383,6 +1384,17 @@ bool WorldSession::HandleTurtleAddonMessages(uint32 lang, uint32 type, std::stri
             {
                 ChatHandler(_player).PSendSysMessage("You do not meet the conditions to queue for battlegrounds.");
                 return true;
+            }
+            else if (strstr(msg.c_str(), "ThornGorge") || strstr(msg.c_str(), "Thorn Gorge"))
+            {
+                if (!sBattleGroundMgr.GetBattleGroundTemplate(BATTLEGROUND_TG))
+                {
+                    SendNotification("Thorn Gorge is disabled on this realm.");
+                    return true;
+                }
+                _player->SetBattleGroundEntryPoint();
+                SendBattleGroundList(_player->GetObjectGuid(), BATTLEGROUND_TG);
+                _player->SetBGQueueAllowed(true);
             }
             else if (strstr(msg.c_str(), "Warsong") || strstr(msg.c_str(), "Arathi") || strstr(msg.c_str(), "Alterac") || strstr(msg.c_str(), "Sunnyglade") || strstr(msg.c_str(), "Arena"))
             {

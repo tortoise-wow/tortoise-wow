@@ -23,6 +23,7 @@
 #include "Log.h"
 #include "Map.h"
 #include "Transport.h"
+#include "Config/Config.h"
 
 #include <array>
 #include <tuple>
@@ -106,6 +107,11 @@ bool PathInfo::calculate(Vector3 const& start, Vector3 dest, bool forceDest, boo
     if (!m_navMesh || !m_navMeshQuery || m_sourceUnit->HasUnitState(UNIT_STAT_IGNORE_PATHFINDING) ||
             !HaveTiles(start) || !HaveTiles(dest))
     {
+        if (m_filter.getExcludeFlags() & NAV_STEEP_SLOPES)
+        {
+            m_type = PATHFIND_NOPATH;
+            return false;
+        }
         BuildShortcut();
         m_type = PathType(PATHFIND_NORMAL | PATHFIND_NOT_USING_PATH);
         return true;
@@ -179,6 +185,7 @@ dtPolyRef PathInfo::getPolyByLocation(const float* point, float *distance, uint3
     float closestPoint[VERTEX_SIZE] = {0.0f, 0.0f, 0.0f};
     dtQueryFilter filter;
     filter.setIncludeFlags(m_filter.getIncludeFlags() | allowedFlags);
+    filter.setExcludeFlags(m_filter.getExcludeFlags());
     dtPolyRef polyRef = FindWalkPoly(m_navMeshQuery, point, filter, closestPoint);
     if (polyRef != INVALID_POLYREF)
     {
@@ -460,7 +467,8 @@ void PathInfo::BuildPointPath(const float *startPoint, const float *endPoint, fl
     setActualEndPosition(m_pathPoints[pointCount - 1]);
 
     // force the given destination, if needed
-    bool forceDestination = (m_forceDestination && (!(m_type & PATHFIND_NORMAL) || !inRange(getEndPosition(), getActualEndPosition(), 1.0f, 1.0f)));
+    bool forceDestination = (m_forceDestination && !(m_filter.getExcludeFlags() & NAV_STEEP_SLOPES) &&
+        (!(m_type & PATHFIND_NORMAL) || !inRange(getEndPosition(), getActualEndPosition(), 1.0f, 1.0f)));
     if (forceDestination)
     {
         // we may want to keep partial subpath
@@ -559,6 +567,10 @@ void PathInfo::createFilter()
         else // creatures don't take environmental damage
             includeFlags |= (NAV_WATER | NAV_MAGMA | NAV_SLIME);
     }
+
+    if (m_sourceUnit->GetTypeId() == TYPEID_PLAYER &&
+        sConfig.GetBoolDefault(("mmap.PlayerWalkable." + std::to_string(m_sourceUnit->GetMapId())).c_str(), false))
+        excludeFlags |= NAV_STEEP_SLOPES;
 
     m_filter.setIncludeFlags(includeFlags);
     m_filter.setExcludeFlags(excludeFlags);
@@ -816,6 +828,23 @@ dtStatus PathInfo::findSmoothPath(const float* startPos, const float* endPos,
 
         if (dtStatusFailed(m_navMeshQuery->moveAlongSurface(polys[0], iterPos, moveTgt, &m_filter, result, visited, (int*)&nvisited, MAX_VISIT_POLY)))
             return DT_FAILURE;
+
+        // A long step can pass a narrow corner and return to the previous
+        // point on the next iteration. Retry that oscillating step just beyond
+        // the corner; moveAlongSurface still owns collision and connectivity.
+        if (nsmoothPath >= 2 && len > 1.0f &&
+            dtVdist2DSqr(result,&smoothPath[(nsmoothPath-2)*VERTEX_SIZE]) < 0.01f)
+        {
+            float cornerDistance=dtVdist2D(iterPos,steerPos);
+            if (cornerDistance > 0.001f)
+            {
+                float shorter=dtMin(len,1.0f+0.05f/cornerDistance);
+                dtVmad(moveTgt,iterPos,delta,shorter);
+                nvisited=0;
+                if (dtStatusFailed(m_navMeshQuery->moveAlongSurface(polys[0],iterPos,moveTgt,&m_filter,result,visited,(int*)&nvisited,MAX_VISIT_POLY)))
+                    return DT_FAILURE;
+            }
+        }
 
         npolys = fixupCorridor(polys, npolys, MAX_PATH_LENGTH, visited, nvisited);
         npolys = fixupShortcuts(polys, npolys, m_navMeshQuery);
