@@ -228,7 +228,7 @@ registered by modules.
 | `GlobalScript` | Item delete, spell custom attributes, and instance id removal hooks. |
 | `MiscScript` | Object/player construction, item creation, and soulbound checks. |
 | `FormulaScript` | Honor, gray level, XP gain, and group rate calculations. |
-| `LootScript` | Money loot events. |
+| `LootScript` | Money loot events, mutating items before they are added, and taking over loot generation via `OnBeforeLootGenerated`. |
 | `AuctionHouseScript` | Auction add, remove, success, and expire events. |
 | `AllBattlegroundScript` | Battleground start and end events. |
 | `GroupScript` | Group member, leader, and disband events. |
