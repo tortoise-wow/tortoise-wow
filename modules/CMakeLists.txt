@@ -190,27 +190,63 @@ foreach(SOURCE_MODULE ${MODULES_MODULE_LIST})
     CollectModuleIncludeDirectories("${MODULE_SOURCE_PATH}" MODULE_INCLUDE_DIRS)
     ConfigureModuleLoader("${SOURCE_MODULE}" MODULE_DYNAMIC_LOADER ON "${SOURCE_MODULE}")
 
-    add_library(${MODULE_PROJECT_NAME} SHARED
-      ${MODULE_SOURCE_FILES}
-      ${MODULE_EXTRA_SCRIPT_SOURCES}
-      ${MODULE_DYNAMIC_LOADER})
-
-    target_include_directories(${MODULE_PROJECT_NAME}
-      PUBLIC
-        ${MODULES_COMMON_INCLUDES}
-        ${MODULE_INCLUDE_DIRS}
-        ${MODULE_EXTRA_SCRIPT_INCLUDE_DIRS})
-
-    if(WIN32)
-      target_link_libraries(${MODULE_PROJECT_NAME}
+    if(MSVC)
+      # The module's code is compiled apart from its DLL: mangosd reads what these objects ask
+      # of the core before it links, and exports exactly that (cmake/ModuleExports.cmake). The
+      # DLL then links against mangosd itself -- one core, one set of singletons -- where it
+      # used to link game, shared and framework statically and hold a private copy of each.
+      # MSVC only: /FI and dumpbin are its own. Other Windows toolchains keep the old path.
+      add_library(${MODULE_PROJECT_NAME}_objects OBJECT
+        ${MODULE_SOURCE_FILES}
+        ${MODULE_EXTRA_SCRIPT_SOURCES}
+        ${MODULE_DYNAMIC_LOADER})
+      target_include_directories(${MODULE_PROJECT_NAME}_objects
         PUBLIC
-          game
-          shared
-          framework)
+          ${MODULES_COMMON_INCLUDES}
+          ${MODULE_INCLUDE_DIRS}
+          ${MODULE_EXTRA_SCRIPT_INCLUDE_DIRS})
+      target_compile_options(${MODULE_PROJECT_NAME}_objects
+        PRIVATE "/FI${CMAKE_CURRENT_SOURCE_DIR}/ModuleImports.h")
+      # The core's data the module reads -- the script registries -- comes dllimport'ed from
+      # mangosd (TW_CORE_DATA, ScriptMgr.h), not as the module's own copy.
+      target_compile_definitions(${MODULE_PROJECT_NAME}_objects PRIVATE TORTOISE_MSVC_DYNAMIC_MODULE)
+      # The core's usage requirements -- its definitions and includes -- and nothing linked: an
+      # object library only compiles.
+      target_link_libraries(${MODULE_PROJECT_NAME}_objects PRIVATE game shared framework)
+      add_library(${MODULE_PROJECT_NAME} SHARED
+        $<TARGET_OBJECTS:${MODULE_PROJECT_NAME}_objects>)
+      set_target_properties(mangosd PROPERTIES ENABLE_EXPORTS ON)
+      # mangosd's import library alone -- not the target, whose own static libraries CMake would
+      # pass on and link into the DLL a second time.
+      add_dependencies(${MODULE_PROJECT_NAME} mangosd)
+      target_link_libraries(${MODULE_PROJECT_NAME}
+        PRIVATE
+          $<TARGET_LINKER_FILE:mangosd>
+          ${ACE_LIBRARIES})
+      list(APPEND MODULES_WINDOWS_OBJECT_TARGETS ${MODULE_PROJECT_NAME}_objects)
     else()
-      target_link_libraries(${MODULE_PROJECT_NAME}
+      add_library(${MODULE_PROJECT_NAME} SHARED
+        ${MODULE_SOURCE_FILES}
+        ${MODULE_EXTRA_SCRIPT_SOURCES}
+        ${MODULE_DYNAMIC_LOADER})
+
+      target_include_directories(${MODULE_PROJECT_NAME}
         PUBLIC
-          fmt)
+          ${MODULES_COMMON_INCLUDES}
+          ${MODULE_INCLUDE_DIRS}
+          ${MODULE_EXTRA_SCRIPT_INCLUDE_DIRS})
+
+      if(WIN32)
+        target_link_libraries(${MODULE_PROJECT_NAME}
+          PUBLIC
+            game
+            shared
+            framework)
+      else()
+        target_link_libraries(${MODULE_PROJECT_NAME}
+          PUBLIC
+            fmt)
+      endif()
     endif()
 
     set_target_properties(${MODULE_PROJECT_NAME}
@@ -230,6 +266,47 @@ foreach(SOURCE_MODULE ${MODULES_MODULE_LIST})
     message(FATAL_ERROR "Unknown linkage \"${MODULE_LINKAGE}\" for module ${SOURCE_MODULE}.")
   endif()
 endforeach()
+
+# **mangosd exports what the dynamic modules ask of it** (MSVC; Linux has -rdynamic): read
+# from their objects just before mangosd links, into a .def it links with, and an import library
+# the modules link against.
+if(MSVC AND MODULES_WINDOWS_OBJECT_TARGETS)
+  get_filename_component(MODULES_LINKER_DIR "${CMAKE_LINKER}" DIRECTORY)
+  set(MODULES_EXPORTS_DEF "${CMAKE_BINARY_DIR}/mangosd_modules.def")
+  # The core a module builds on: the game, its shared and framework layers, and the scripts'
+  # own base (ScriptedInstance, ScriptedAI) when the core is built with them.
+  set(MODULES_EXPORT_LIB_TARGETS game shared framework)
+  if(TARGET scripts)
+    list(APPEND MODULES_EXPORT_LIB_TARGETS scripts)
+  endif()
+  set(MODULES_EXPORT_LIBS)
+  foreach(LIB_TARGET ${MODULES_EXPORT_LIB_TARGETS})
+    list(APPEND MODULES_EXPORT_LIBS "$<TARGET_FILE:${LIB_TARGET}>")
+  endforeach()
+  set(MODULES_EXPORT_OBJECTS)
+  foreach(OBJECT_TARGET ${MODULES_WINDOWS_OBJECT_TARGETS})
+    list(APPEND MODULES_EXPORT_OBJECTS "$<TARGET_OBJECTS:${OBJECT_TARGET}>")
+  endforeach()
+  # A command here and a target mangosd waits for: a custom command can only hang on a target
+  # made in its own directory, and mangosd is made in src/mangosd, before the modules are known.
+  # Each list goes over as one "|"-joined argument; the script splits it again.
+  add_custom_command(OUTPUT "${MODULES_EXPORTS_DEF}"
+    COMMAND "${CMAKE_COMMAND}"
+      "-DDUMPBIN=${MODULES_LINKER_DIR}/dumpbin.exe"
+      "-DOBJECTS=$<JOIN:${MODULES_EXPORT_OBJECTS},|>"
+      "-DLIBS=$<JOIN:${MODULES_EXPORT_LIBS},|>"
+      "-DOUT=${MODULES_EXPORTS_DEF}"
+      -P "${CMAKE_SOURCE_DIR}/cmake/ModuleExports.cmake"
+    DEPENDS
+      ${MODULES_EXPORT_OBJECTS} ${MODULES_EXPORT_LIBS}
+      "${CMAKE_SOURCE_DIR}/cmake/ModuleExports.cmake"
+    COMMENT "mangosd: exporting what the dynamic modules need"
+    VERBATIM)
+  add_custom_target(mangosd_module_exports DEPENDS "${MODULES_EXPORTS_DEF}")
+  add_dependencies(mangosd mangosd_module_exports)
+  set_property(TARGET mangosd APPEND PROPERTY LINK_OPTIONS "/DEF:${MODULES_EXPORTS_DEF}")
+  set_property(TARGET mangosd APPEND PROPERTY LINK_DEPENDS "${MODULES_EXPORTS_DEF}")
+endif()
 
 ConfigureModuleLoader("static" MODULE_STATIC_LOADER OFF ${MODULES_STATIC_MODULES})
 

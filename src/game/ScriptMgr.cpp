@@ -52,6 +52,60 @@ ScriptMapMap sCreatureAIScripts;
 
 ScriptMgr sScriptMgr;
 
+// Every script registry's data, defined here whether or not the core itself uses that registry:
+// a Windows dynamic module imports it from mangosd (TW_CORE_DATA, ScriptMgr.h) and has no copy
+// of its own. A new script type adds its line; a module that uses one missing here fails to link.
+#define TW_DEFINE_SCRIPT_REGISTRY(TScript) \
+    template ScriptRegistry<TScript>::ScriptMap ScriptRegistry<TScript>::ScriptPointerList; \
+    template ScriptRegistry<TScript>::AfterDatabaseLoadScriptList ScriptRegistry<TScript>::AfterDatabaseLoadScripts; \
+    template ScriptRegistry<TScript>::EnabledHooksList ScriptRegistry<TScript>::EnabledHooks; \
+    template uint32 ScriptRegistry<TScript>::_scriptIdCounter;
+
+TW_DEFINE_SCRIPT_REGISTRY(AccountScript)
+TW_DEFINE_SCRIPT_REGISTRY(AllBattlegroundScript)
+TW_DEFINE_SCRIPT_REGISTRY(AllCommandScript)
+TW_DEFINE_SCRIPT_REGISTRY(AllCreatureScript)
+TW_DEFINE_SCRIPT_REGISTRY(AllGameObjectScript)
+TW_DEFINE_SCRIPT_REGISTRY(AllItemScript)
+TW_DEFINE_SCRIPT_REGISTRY(AllMapScript)
+TW_DEFINE_SCRIPT_REGISTRY(AllSpellScript)
+TW_DEFINE_SCRIPT_REGISTRY(AreaTriggerScript)
+TW_DEFINE_SCRIPT_REGISTRY(AuctionHouseScript)
+TW_DEFINE_SCRIPT_REGISTRY(BattlegroundMapScript)
+TW_DEFINE_SCRIPT_REGISTRY(BattlegroundScript)
+TW_DEFINE_SCRIPT_REGISTRY(CommandScript)
+TW_DEFINE_SCRIPT_REGISTRY(ConditionScript)
+TW_DEFINE_SCRIPT_REGISTRY(CreatureScript)
+TW_DEFINE_SCRIPT_REGISTRY(DatabaseScript)
+TW_DEFINE_SCRIPT_REGISTRY(DynamicObjectScript)
+TW_DEFINE_SCRIPT_REGISTRY(FormulaScript)
+TW_DEFINE_SCRIPT_REGISTRY(GameEventScript)
+TW_DEFINE_SCRIPT_REGISTRY(GameObjectScript)
+TW_DEFINE_SCRIPT_REGISTRY(GlobalScript)
+TW_DEFINE_SCRIPT_REGISTRY(GroupScript)
+TW_DEFINE_SCRIPT_REGISTRY(GuildScript)
+TW_DEFINE_SCRIPT_REGISTRY(InstanceMapScript)
+TW_DEFINE_SCRIPT_REGISTRY(ItemScript)
+TW_DEFINE_SCRIPT_REGISTRY(LootScript)
+TW_DEFINE_SCRIPT_REGISTRY(MailScript)
+TW_DEFINE_SCRIPT_REGISTRY(MiscScript)
+TW_DEFINE_SCRIPT_REGISTRY(ModuleScript)
+TW_DEFINE_SCRIPT_REGISTRY(MovementHandlerScript)
+TW_DEFINE_SCRIPT_REGISTRY(OutdoorPvPScript)
+TW_DEFINE_SCRIPT_REGISTRY(PetScript)
+TW_DEFINE_SCRIPT_REGISTRY(PlayerScript)
+TW_DEFINE_SCRIPT_REGISTRY(ServerScript)
+TW_DEFINE_SCRIPT_REGISTRY(SpellScriptLoader)
+TW_DEFINE_SCRIPT_REGISTRY(TicketScript)
+TW_DEFINE_SCRIPT_REGISTRY(TransportScript)
+TW_DEFINE_SCRIPT_REGISTRY(UnitScript)
+TW_DEFINE_SCRIPT_REGISTRY(WeatherScript)
+TW_DEFINE_SCRIPT_REGISTRY(WorldMapScript)
+TW_DEFINE_SCRIPT_REGISTRY(WorldObjectScript)
+TW_DEFINE_SCRIPT_REGISTRY(WorldScript)
+
+#undef TW_DEFINE_SCRIPT_REGISTRY
+
 namespace
 {
     template<class TScript>

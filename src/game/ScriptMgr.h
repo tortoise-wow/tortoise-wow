@@ -22,6 +22,18 @@
 #define _SCRIPTMGR_H
 
 #include "Common.h"
+
+// The core's data a dynamic module uses. On Linux a module resolves against the running mangosd
+// (-rdynamic) and this is nothing. An MSVC module is a DLL that reaches mangosd's data through
+// its import table (modules/CMakeLists.txt defines TORTOISE_MSVC_DYNAMIC_MODULE for it): without
+// dllimport it could not link, or would hold its own copy -- its hooks in a registry the server
+// never calls.
+#if defined(_MSC_VER) && defined(TORTOISE_MSVC_DYNAMIC_MODULE)
+#define TW_CORE_DATA __declspec(dllimport)
+#else
+#define TW_CORE_DATA
+#endif
+
 #include <string>
 #include "Log.h"
 #include "Policies/Singleton.h"
@@ -1674,8 +1686,8 @@ class ScriptMgr
         ModulesLoaderCallbackType m_modulesLoaderCallback;
 };
 
-extern ScriptMgr sScriptMgr;
-extern int num_sc_scripts;
+extern TW_CORE_DATA ScriptMgr sScriptMgr;
+extern TW_CORE_DATA int num_sc_scripts;
 
 class ScriptObject
 {
@@ -1708,9 +1720,9 @@ class ScriptRegistry
         typedef std::vector<std::pair<TScript*, std::vector<uint16>>> AfterDatabaseLoadScriptList;
         typedef std::vector<std::vector<TScript*>> EnabledHooksList;
 
-        static ScriptMap ScriptPointerList;
-        static AfterDatabaseLoadScriptList AfterDatabaseLoadScripts;
-        static EnabledHooksList EnabledHooks;
+        TW_CORE_DATA static ScriptMap ScriptPointerList;
+        TW_CORE_DATA static AfterDatabaseLoadScriptList AfterDatabaseLoadScripts;
+        TW_CORE_DATA static EnabledHooksList EnabledHooks;
 
         static void InitEnabledHooksIfNeeded(uint16 totalAvailableHooks)
         {
@@ -1925,13 +1937,16 @@ class ScriptRegistry
             delete script;
         }
 
-        static uint32 _scriptIdCounter;
+        TW_CORE_DATA static uint32 _scriptIdCounter;
 };
 
+// A Windows dynamic module imports these from mangosd, where ScriptMgr.cpp defines every registry's.
+#ifndef TORTOISE_MSVC_DYNAMIC_MODULE
 template<class TScript> typename ScriptRegistry<TScript>::ScriptMap ScriptRegistry<TScript>::ScriptPointerList;
 template<class TScript> typename ScriptRegistry<TScript>::AfterDatabaseLoadScriptList ScriptRegistry<TScript>::AfterDatabaseLoadScripts;
 template<class TScript> typename ScriptRegistry<TScript>::EnabledHooksList ScriptRegistry<TScript>::EnabledHooks;
 template<class TScript> uint32 ScriptRegistry<TScript>::_scriptIdCounter = 0;
+#endif
 
 uint32 GetAreaTriggerScriptId(uint32 triggerId);
 uint32 GetEventIdScriptId(uint32 eventId);
