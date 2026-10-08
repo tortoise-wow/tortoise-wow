@@ -465,21 +465,27 @@ struct spell_druid_healing_touch : public SpellScript
         if (!ok || !spell || !spell->m_casterUnit || !spell->GetPowerCost())
             return;
 
-        int32 refundPct = 0;
-        for (SpellModifier const* mod : spell->m_appliedMods)
-        {
-            if (!mod || !mod->ownerAura)
-                continue;
+        // m_appliedMods can hold mods whose aura went away during the cast:
+        // Player::AddSpellMod(mod, false) deletes them without touching the
+        // spell's list, so dereferencing its entries crashed here (SIGSEGV in
+        // Spell::finish). Look the bloom mods up in the caster's live list and
+        // only compare pointers against m_appliedMods.
+        Player* player = spell->m_casterUnit->ToPlayer();
+        if (!player)
+            return;
 
-            switch (mod->ownerAura->GetId())
+        int32 refundPct = 0;
+        for (uint32 bloomSpellId : { SPELL_DRUID_AESSINAS_BLOOM_BUFF_RANK_1, SPELL_DRUID_AESSINAS_BLOOM_BUFF_RANK_2 })
+        {
+            for (uint32 op = 0; op < MAX_SPELLMOD; ++op)
             {
-                case SPELL_DRUID_AESSINAS_BLOOM_BUFF_RANK_1:
-                case SPELL_DRUID_AESSINAS_BLOOM_BUFF_RANK_2:
-                    if (SpellEntry const* bloomInfo = mod->ownerAura->GetSpellProto())
-                        refundPct = std::max(refundPct, bloomInfo->CalculateSimpleValue(EFFECT_INDEX_0));
-                    break;
-                default:
-                    break;
+                SpellModifier* mod = player->GetSpellMod(SpellModOp(op), bloomSpellId);
+                if (!mod || !mod->ownerAura ||
+                    std::find(spell->m_appliedMods.begin(), spell->m_appliedMods.end(), mod) == spell->m_appliedMods.end())
+                    continue;
+
+                if (SpellEntry const* bloomInfo = mod->ownerAura->GetSpellProto())
+                    refundPct = std::max(refundPct, bloomInfo->CalculateSimpleValue(EFFECT_INDEX_0));
             }
         }
 
