@@ -319,6 +319,27 @@ class WorldSession
         void SizeError(WorldPacket const& packet, uint32 size) const;
 
         void SendPacket(WorldPacket const* packet);
+        // bot module calls SendPacket(packet) by value.
+        // Add reference overload that forwards to the pointer version.
+        void SendPacket(WorldPacket const& packet) { SendPacket(&packet); }
+        // SendPlaySpellVisual: cmangos has it on WorldSession; Penqle has it on Unit.
+        // Build SMSG_PLAY_SPELL_VISUAL packet from session and dispatch.
+        void SendPlaySpellVisual(ObjectGuid guid, uint32 spellArtKit);
+        // SetNoAnticheat: cmangos disables anticheat for bot sessions. Stub no-op
+        void SetNoAnticheat(bool /*disable*/ = true) {}
+        // SetOffline: cmangos marks session as offline. Stub no-op.
+        void SetOffline() {}
+        // GetState: cmangos returns session state enum. Stub returns READY (1).
+        enum WorldSessionState : uint32 {
+            WORLD_SESSION_STATE_CREATED = 0,
+            WORLD_SESSION_STATE_READY = 1,
+            WORLD_SESSION_STATE_OFFLINE = 2,
+            WORLD_SESSION_STATE_REMOVING = 3,
+        };
+        WorldSessionState GetState() const { return WORLD_SESSION_STATE_READY; }
+        // World-owner only: synthetic sessions have queued actions but no socket.
+        void HandleBotPackets();
+
         void SendNotification(const char *format,...) ATTR_PRINTF(2,3);
         void SendNotification(int32 string_id,...);
         void SendPetNameInvalid(uint32 error, std::string const& name);
@@ -403,7 +424,7 @@ class WorldSession
          * @brief Returns true if packets can be processed (ie the session has an open socket)
          */
         bool CanProcessPackets() const;
-        void ProcessPackets(PacketFilter& updater);
+        void ProcessPackets(PacketFilter& updater, bool botPackets = false, uint32 budgetMs = 0);
 
         /// Handle the authentication waiting queue (to be completed)
         void SendAuthWaitQue(uint32 position);
@@ -1041,6 +1062,7 @@ class WorldSession
 
         std::unordered_map<uint32, std::pair<uint32, uint32>> m_requeuePacketCount; 
         uint32 m_lastReceivedPacketTime;
+        uint32 m_lastGameplayDelayReportMs = 0;
         ClientIdentifiersMap _clientIdentifiers;
         std::string     _clientHash;
         ClientOSType    m_clientOS;

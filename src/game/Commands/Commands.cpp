@@ -19092,16 +19092,16 @@ bool ChatHandler::HandleWarEffortSetStageCommand(char* args)
 bool ChatHandler::HandlePerfStatsCommand(char* args)
 {
     SendSysMessage("Showing performance statistics:");
-    PSendSysMessage("Total Units: %i", PerfStats::g_totalUnits);
-    PSendSysMessage("Total Creatures: %i", PerfStats::g_totalCreatures);
-    PSendSysMessage("Total Pets: %i", PerfStats::g_totalPets);
-    PSendSysMessage("Total Players: %i", PerfStats::g_totalPlayers);
-    PSendSysMessage("Total Corpses: %i", PerfStats::g_totalCorpses);
-    PSendSysMessage("Total Items: %i", PerfStats::g_totalItems);
-    PSendSysMessage("Total GameObjects: %i", PerfStats::g_totalGameObjects);
-    PSendSysMessage("Total DynamicObjects: %i", PerfStats::g_totalDynamicObjects);
-    PSendSysMessage("Total QueryResults: %i", PerfStats::g_totalQueryResults);
-    PSendSysMessage("Total Maps: %i", PerfStats::g_totalMaps);
+    PSendSysMessage("Total Units: %i", PerfStats::g_totalUnits.load(std::memory_order_relaxed));
+    PSendSysMessage("Total Creatures: %i", PerfStats::g_totalCreatures.load(std::memory_order_relaxed));
+    PSendSysMessage("Total Pets: %i", PerfStats::g_totalPets.load(std::memory_order_relaxed));
+    PSendSysMessage("Total Players: %i", PerfStats::g_totalPlayers.load(std::memory_order_relaxed));
+    PSendSysMessage("Total Corpses: %i", PerfStats::g_totalCorpses.load(std::memory_order_relaxed));
+    PSendSysMessage("Total Items: %i", PerfStats::g_totalItems.load(std::memory_order_relaxed));
+    PSendSysMessage("Total GameObjects: %i", PerfStats::g_totalGameObjects.load(std::memory_order_relaxed));
+    PSendSysMessage("Total DynamicObjects: %i", PerfStats::g_totalDynamicObjects.load(std::memory_order_relaxed));
+    PSendSysMessage("Total QueryResults: %i", PerfStats::g_totalQueryResults.load(std::memory_order_relaxed));
+    PSendSysMessage("Total Maps: %i", PerfStats::g_totalMaps.load(std::memory_order_relaxed));
     PSendSysMessage("Slowest Map: %i (%i ms)", PerfStats::g_slowestMapId, PerfStats::g_slowestMapUpdateTime);
 
     return true;

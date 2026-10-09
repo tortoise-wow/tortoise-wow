@@ -2,6 +2,7 @@
 #define MASTERPLAYER_H
 
 #include "Common.h"
+#include <atomic>
 #include "SharedDefines.h"
 #include "ObjectGuid.h"
 #include "MapNodes/AbstractPlayer.h"
@@ -65,8 +66,10 @@ public:
     void UpdateNextMailTimeAndUnreads();
     void AddNewMailDeliverTime(time_t deliver_time);
     void RemoveMail(uint32 id, bool remove = false);
-    void AddMail(Mail* mail) { m_mail.push_front(mail);}// for call from WorldSession::SendMailTo
-    uint32 GetMailSize() { return m_mail.size(); }
+    void AddMail(Mail* mail) { m_mail.push_front(mail); PublishMailSize(); }
+    // Count-only observation is safe across native map workers. Mail contents,
+    // iterators and mutations remain exclusively with their native owner.
+    uint32 GetMailSize() const { return m_mailSize.load(std::memory_order_acquire); }
     Mail* GetMail(uint32 id);
     void MarkMailsUpdated() { m_mailsUpdated = true; }
     bool HasUnreadMail() const { return unReadMails > 0; }
@@ -153,6 +156,8 @@ protected:
     uint8 unReadMails;
     time_t m_nextMailDelivereTime;
     PlayerMails m_mail;
+    std::atomic<uint32> m_mailSize{0};
+    void PublishMailSize() { m_mailSize.store(uint32(m_mail.size()), std::memory_order_release); }
     ItemMap mMitems;
 };
 

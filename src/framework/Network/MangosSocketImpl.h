@@ -20,7 +20,19 @@
 #include "Auth/Sha1.h"
 #include "WorldSession.h"
 #include "Log.h"
+#include "WorkMetrics.h"
 #include "DBCStores.h"
+#include "Config/Config.h"
+
+template <typename SessionType, typename SocketName, typename Crypt>
+struct MangosSocket<SessionType, SocketName, Crypt>::PendingPacket
+{
+    // Reserve before copying payload; release only when the queued copy dies.
+    std::shared_ptr<ManTech::WriteBudget::Token> charge;
+    WorldPacket packet;
+    PendingPacket(WorldPacket const& p, std::shared_ptr<ManTech::WriteBudget::Token> token)
+        : charge(std::move(token)), packet(p) {}
+};
 
 
 template <typename SessionType, typename SocketName, typename Crypt>
@@ -47,13 +59,16 @@ MangosSocket<SessionType, SocketName, Crypt>::~MangosSocket(void)
     delete m_RecvWPct;
 
     if (m_OutBuffer)
+    {
+        ManTech::MemoryLedger::Remove(ManTech::MemoryKind::Network, m_OutBufferSize);
         m_OutBuffer->release();
+    }
 
     closing_ = true;
 
     peer().close();
 
-    WorldPacket* pct;
+    PendingPacket* pct;
     while (m_PacketQueue.dequeue_head(pct) == 0)
         delete pct;
 }
@@ -70,6 +85,8 @@ void MangosSocket<SessionType, SocketName, Crypt>::CloseSocket(void)
             return;
 
         closing_ = true;
+        PendingPacket* pending;
+        while (m_PacketQueue.dequeue_head(pending) == 0) delete pending;
         peer().close_writer();
         notifyClose = true;
     }
@@ -87,24 +104,40 @@ void MangosSocket<SessionType, SocketName, Crypt>::CloseSocket(void)
 template <typename SessionType, typename SocketName, typename Crypt>
 int MangosSocket<SessionType, SocketName, Crypt>::SendPacket(const WorldPacket& pct)
 {
+    WorkMetrics::Probe cost(WorkMetrics::SocketQueue);
     GuardType lock(m_OutBufferLock);
 
     if (closing_)
         return -1;
 
-    if (((SocketName*)this)->iSendPacket(pct) == -1)
+    // Every accepted frame must fit the native batch buffer. Never truncate its
+    // 16-bit header or leave an unsendable packet at the head forever.
+    if (pct.size() > 65533 || pct.size() + sizeof(ServerPktHeader) > m_OutBufferSize)
     {
-        WorldPacket* npct;
-
-        ACE_NEW_RETURN(npct, WorldPacket(pct), -1);
-
-        // NOTE maybe check of the size of the queue can be good ?
-        // to make it bounded instead of unbounded
-        if (m_PacketQueue.enqueue_tail(npct) == -1)
+        lock.unlock(); CloseSocket(); return -1;
+    }
+    // Older queued frames must precede newer frames, including encrypted headers.
+    if (!m_PacketQueue.is_empty() || ((SocketName*)this)->iSendPacket(pct) == -1)
+    {
+        try
         {
-            delete npct;
-            sLog.outError("MangosSocket<SessionType, SocketName, Crypt>::SendPacket: m_PacketQueue.enqueue_tail failed");
-            return -1;
+            auto token = m_writeBudget.Acquire(std::max<size_t>(128, pct.size() + sizeof(PendingPacket) + sizeof(ServerPktHeader)),
+                m_socketWriteLimit, m_globalWriteLimit);
+            if (!token)
+            {
+                sLog.outError("Socket output quota exceeded; closing slow connection");
+                lock.unlock(); CloseSocket(); return -1;
+            }
+            auto queued = std::make_unique<PendingPacket>(pct, std::move(token));
+            if (m_PacketQueue.enqueue_tail(queued.get()) == -1)
+            {
+                lock.unlock(); CloseSocket(); return -1;
+            }
+            queued.release();
+        }
+        catch (std::bad_alloc const&)
+        {
+            lock.unlock(); CloseSocket(); return -1;
         }
     }
 
@@ -130,6 +163,9 @@ int MangosSocket<SessionType, SocketName, Crypt>::open(void *a)
 
     // Allocate the buffer.
     ACE_NEW_RETURN(m_OutBuffer, ACE_Message_Block(m_OutBufferSize), -1);
+    ManTech::MemoryLedger::Add(ManTech::MemoryKind::Network, m_OutBufferSize);
+    m_socketWriteLimit = size_t(std::clamp(sConfig.GetIntDefault("Network.WriteLimitMB", 8), 1, 4096)) * 1024u * 1024u;
+    m_globalWriteLimit = size_t(std::clamp(sConfig.GetIntDefault("Network.GlobalWriteLimitMB", 256), 1, 16384)) * 1024u * 1024u;
 
     // Store peer address.
     ACE_INET_Addr remote_addr;
@@ -290,6 +326,7 @@ int MangosSocket<SessionType, SocketName, Crypt>::handle_close(ACE_HANDLE h, ACE
 template <typename SessionType, typename SocketName, typename Crypt>
 int MangosSocket<SessionType, SocketName, Crypt>::Update(void)
 {
+    WorkMetrics::Flush();
     if (closing_)
         return -1;
 
@@ -525,12 +562,12 @@ int MangosSocket<SessionType, SocketName, Crypt>::iSendPacket(const WorldPacket&
 template <typename SessionType, typename SocketName, typename Crypt>
 bool MangosSocket<SessionType, SocketName, Crypt>::iFlushPacketQueue()
 {
-    WorldPacket *pct;
+    PendingPacket *pct;
     bool haveone = false;
 
     while (m_PacketQueue.dequeue_head(pct) == 0)
     {
-        if (((SocketName*)this)->iSendPacket(*pct) == -1)
+        if (((SocketName*)this)->iSendPacket(pct->packet) == -1)
         {
             if (m_PacketQueue.enqueue_head(pct) == -1)
             {

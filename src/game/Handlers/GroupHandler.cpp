@@ -29,6 +29,7 @@
 #include "ObjectMgr.h"
 #include "Player.h"
 #include "Group.h"
+#include "ScriptObjects.h"
 #include "SocialMgr.h"
 #include "Util.h"
 
@@ -140,6 +141,12 @@ void WorldSession::HandleGroupInviteOpcode(WorldPacket & recv_data)
         }
     }
 
+    if (ScriptRegistry<GroupScript>::ForEachWithReturn([&](GroupScript* script)
+    {
+        return !script->CanInvitePlayer(group, GetPlayer(), player);
+    }))
+        return;
+
     // ok, but group not exist, start a new group
     // but don't create and save the group to the DB until
     // at least one person joins
@@ -169,6 +176,10 @@ void WorldSession::HandleGroupInviteOpcode(WorldPacket & recv_data)
     WorldPacket data(SMSG_GROUP_INVITE, 10);                // guess size
     data << GetPlayer()->GetName();
     player->GetSession()->SendPacket(&data);
+    ScriptRegistry<GroupScript>::ForEach([&](GroupScript* script)
+    {
+        script->OnPlayerInvited(group, GetPlayer(), player);
+    });
 
     SendPartyResult(PARTY_OP_INVITE, membername, ERR_PARTY_RESULT_OK);
 }
@@ -185,6 +196,12 @@ void WorldSession::HandleGroupAcceptOpcode(WorldPacket & /*recv_data*/)
                       GetPlayer()->GetGuidStr().c_str());
         return;
     }
+
+    if (ScriptRegistry<GroupScript>::ForEachWithReturn([&](GroupScript* script)
+    {
+        return !script->CanMemberAccept(group, GetPlayer());
+    }))
+        return;
 
     // remove in from invites in any case
     group->RemoveInvite(GetPlayer());

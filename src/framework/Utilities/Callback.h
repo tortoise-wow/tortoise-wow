@@ -414,13 +414,16 @@ namespace MaNGOS
     class IQueryCallback
     {
         public:
-            IQueryCallback() : threadSafe(true) {}
+            IQueryCallback() : threadSafe(true), highPriority(false) {}
             virtual void Execute() = 0;
             virtual ~IQueryCallback() {}
             virtual void SetResult(QueryResult* result) = 0;
             virtual QueryResult* GetResult() = 0;
             bool IsThreadSafe() const { return threadSafe; }
+            bool IsHighPriority() const { return highPriority; }
+            void SetHighPriority(bool value) { highPriority = value; }
             bool threadSafe;
+            bool highPriority;
     };
 
     template<class CB>

@@ -19,6 +19,8 @@ set (game_SRCS
     AccountMgr.cpp
     AuraRemovalMgr.cpp
     AutoBroadCastMgr.cpp
+    Autoscaling/AutoScaler.cpp
+    Autoscaling/AutoScaler.hpp
     Camera.cpp
     Conditions.cpp
     CreatureGroups.cpp
@@ -152,6 +154,8 @@ set (game_SRCS
     Maps/GridSearchers.cpp
     Maps/GridStates.cpp
     Maps/InstanceData.cpp
+    Maps/AreaTriggerAccess.cpp
+    Maps/AreaTriggerAccess.h
     Maps/Map.cpp
     Maps/MapManager.cpp
     Maps/MapPersistentStateMgr.cpp

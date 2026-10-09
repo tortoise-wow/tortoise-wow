@@ -14,6 +14,7 @@
 #include <ace/os_include/sys/os_socket.h>
 #include <ace/Acceptor.h>
 #include <ace/SOCK_Acceptor.h>
+#include <ace/OS_NS_sys_socket.h>
 
 #include <set>
 #include <atomic>
@@ -280,6 +281,11 @@ int MangosSocketMgr<SocketType>::StartReactiveIO(ACE_UINT16 port, const char* ad
         sLog.outError("Failed to open acceptor, check if the port is free");
         return -1;
     }
+    // Reapply listen with an explicit bounded backlog. This is a connection
+    // burst buffer, not a population limit; socketless bots do not consume it.
+    int const backlog = std::clamp(sConfig.GetIntDefault("Network.ListenBacklog", 1024), 16, 8192);
+    if (ACE_OS::listen(m_Acceptor->get_handle(), backlog) == -1)
+        sLog.outError("Unable to change listen backlog to %d; retaining OS default", backlog);
 
     return 0;
 }

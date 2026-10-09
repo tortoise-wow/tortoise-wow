@@ -1,4 +1,4 @@
-﻿/*
+/*
  * Copyright (C) 2005-2011 MaNGOS <http://getmangos.com/>
  * Copyright (C) 2009-2011 MaNGOSZero <https://github.com/mangos/zero>
  * Copyright (C) 2011-2016 Nostalrius <https://nostalrius.org>
@@ -26,6 +26,7 @@
 #include "WorldSession.h"
 #include "SessionTransport.h"
 #include "PlayerLoginQueryHolder.h"
+
 #include "Opcodes.h"
 #include "Log.h"
 #include "World.h"
@@ -326,6 +327,7 @@ void WorldSession::HandlePlayerLoginOpcode(WorldPacket & recv_data)
 
     PlayerCacheData* cacheData = sObjectMgr.GetPlayerDataByGUID(playerGuid.GetCounter());
     if (!cacheData || cacheData->uiAccount != GetAccountId())
+
     {
         WorldPacket data(SMSG_CHARACTER_LOGIN_FAILED, 1);
         data << (uint8)1;
@@ -438,6 +440,21 @@ void WorldSession::HandlePlayerLogin(LoginQueryHolder *holder)
     }
     ObjectGuid playerGuid = holder->GetGuid();
     ASSERT(playerGuid.IsPlayer());
+    bool const traceLoginEnabled = GetSocket() && holder->GetLoginRequestTime() &&
+        TurtleDiagnostics::enabled.load(std::memory_order_relaxed);
+    uint32 const loginRequestedAt = holder->GetLoginRequestTime();
+    uint32 loginPreviousStage = loginRequestedAt;
+    auto traceLogin = [&](char const* phase)
+    {
+        if (!traceLoginEnabled) return;
+        uint32 const now = WorldTimer::getMSTime();
+        sLog.out(LOG_PERFORMANCE, "PLAYER_LOGIN_STAGE account=%u guid=%u phase=%s stage_ms=%u since_request_ms=%u",
+            GetAccountId(), playerGuid.GetCounter(), phase,
+            WorldTimer::getMSTimeDiff(loginPreviousStage, now), WorldTimer::getMSTimeDiff(loginRequestedAt, now));
+        loginPreviousStage = now;
+    };
+    // Includes DB queue, holder execution and callback dispatch, not SQL alone.
+    traceLogin("db_results_ready");
 
     // If the character is online (ALT-F4 logout for example)
     Player *pCurrChar = sObjectAccessor.FindPlayer(playerGuid);
@@ -516,6 +533,7 @@ void WorldSession::HandlePlayerLogin(LoginQueryHolder *holder)
         pCurrChar->GetMotionMaster()->Initialize();
     }
 
+    traceLogin("existing_character_resolved");
     // "GetAccountId()==db stored account id" checked in LoadFromDB (prevent login not own character using cheating tools)
     if (alreadyOnline)
         pCurrChar->SendPacketsAtRelogin();
@@ -529,6 +547,7 @@ void WorldSession::HandlePlayerLogin(LoginQueryHolder *holder)
     }
 
     ASSERT(pCurrChar->GetSession() == this);
+    traceLogin("character_loaded");
     SetPlayer(pCurrChar);
     if (m_antiCheat)
         m_antiCheat->NewPlayer();
@@ -572,6 +591,7 @@ void WorldSession::HandlePlayerLogin(LoginQueryHolder *holder)
     sObjectAccessor.AddObject(m_masterPlayer);
 
     WorldPacket data(SMSG_LOGIN_VERIFY_WORLD, 20);
+    traceLogin("social_loaded");
     data << pCurrChar->GetMapId();
     data << pCurrChar->GetPositionX();
     data << pCurrChar->GetPositionY();
@@ -653,6 +673,7 @@ void WorldSession::HandlePlayerLogin(LoginQueryHolder *holder)
         }
     }
 
+    traceLogin("initial_packets_queued");
     if (!alreadyOnline && !pCurrChar->GetMap()->Add(pCurrChar))
     {
         // normal delayed teleport protection not applied (and this correct) for this case (Player object just created)
@@ -677,6 +698,7 @@ void WorldSession::HandlePlayerLogin(LoginQueryHolder *holder)
     pCurrChar->GetSocial()->SendIgnoreList();
 
     pCurrChar->SendInitialPacketsAfterAddToMap();
+    traceLogin("map_and_initial_objects_added");
     if (alreadyOnline)
         pCurrChar->SendInitWorldStates(pCurrChar->GetCachedZoneId());
 
@@ -740,6 +762,7 @@ void WorldSession::HandlePlayerLogin(LoginQueryHolder *holder)
         pCurrChar->ContinueTaxiFlight();
         pCurrChar->LoadPet();
     }
+    traceLogin("social_corpse_and_pet_loaded");
 
     auto maskVar = pCurrChar->GetPlayerVariable(PlayerVariables::PendingChallengeMask);
     if (maskVar && *maskVar != "0")
@@ -829,6 +852,7 @@ void WorldSession::HandlePlayerLogin(LoginQueryHolder *holder)
     m_playerLoading = false;
     m_headlessLoginRequested = false;
     m_clientMoverGuid = pCurrChar->GetObjectGuid();
+    traceLogin("login_flag_cleared");
     delete holder;
     if (alreadyOnline)
     {
@@ -911,6 +935,7 @@ void WorldSession::HandlePlayerLogin(LoginQueryHolder *holder)
     {
         script->OnLogin(pCurrChar);
     });
+
 }
 
 void WorldSession::HandleSetFactionAtWarOpcode(WorldPacket & recv_data)

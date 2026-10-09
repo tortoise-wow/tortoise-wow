@@ -113,6 +113,9 @@ VisibleNotifier::Notify()
         }
 
         player.m_visibleGUIDs.erase(*itr);
+        if (itr->IsCreatureOrPet())
+            if (Creature* creature = player.GetMap()->GetAnyTypeCreature(*itr))
+                creature->RemoveMovementViewer(player.GetObjectGuid());
 
         DEBUG_FILTER_LOG(LOG_FILTER_VISIBILITY_CHANGES, "%s is out of range (no in active cells set) now for %s",
                          itr->GetString().c_str(), player.GetGuidStr().c_str());

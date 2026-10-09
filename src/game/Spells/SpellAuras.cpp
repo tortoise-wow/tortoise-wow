@@ -1,3 +1,4 @@
+#include "Memory/EntityLedger.h"
 /*
  * Copyright (C) 2005-2011 MaNGOS <http://getmangos.com/>
  * Copyright (C) 2009-2011 MaNGOSZero <https://github.com/mangos/zero>
@@ -312,6 +313,7 @@ Aura::Aura(SpellEntry const* spellproto, SpellEffectIndex eff, int32 *currentBas
     m_applied(false),
     m_initialAbsorbAmount(0)
 {
+    ManTech::EntityLedger::Add(ManTech::EntityKind::AuraEffects);
     MANGOS_ASSERT(target);
    // MANGOS_ASSERT(spellproto && spellproto == sSpellMgr.GetSpellEntry(spellproto->Id) && "`info` must be pointer to a sSpellMgr element");
     ASSERT(spellproto->EffectApplyAuraName[eff]);
@@ -438,6 +440,7 @@ bool SpellAuraHolder::IsMoreImportantDebuffThan(SpellAuraHolder* other) const
 
 Aura::~Aura()
 {
+    ManTech::EntityLedger::Remove(ManTech::EntityKind::AuraEffects);
     delete m_spellmod;
 }
 
@@ -6722,6 +6725,7 @@ SpellAuraHolder::SpellAuraHolder(SpellEntry const* spellproto, Unit *target, Uni
     m_debuffLimitAffected(false), m_debuffLimitScore(0), _heartBeatRandValue(0), _pveHeartBeatData(nullptr),
     m_spellTriggered(false), m_isReflected(false), m_addedBySpell(false), m_AuraDRLevel(DIMINISHING_LEVEL_1)
 {
+    ManTech::EntityLedger::Add(ManTech::EntityKind::AuraHolders);
     MANGOS_ASSERT(target);
    // MANGOS_ASSERT(spellproto && spellproto == sSpellMgr.GetSpellEntry(spellproto->Id) && "`info` must be pointer to a sSpellMgr element");
 
@@ -6740,6 +6744,7 @@ SpellAuraHolder::SpellAuraHolder(SpellEntry const* spellproto, Unit *target, Uni
         m_realCasterGuid = m_casterGuid;
 
     m_applyTime = time(nullptr);
+    m_applyMSTime = WorldTimer::getMSTime();
     m_isPassive = IsPassiveSpell(GetId()) || (spellproto->Attributes == SPELL_ATTR_HIDDEN_CLIENTSIDE && spellproto->DurationIndex == 21);
     m_isDeathPersist = spellproto->IsDeathPersistentSpell();
     m_isDungeonDeathPersist = spellproto->IsDeathPersistentDungeonSpell();
@@ -7295,11 +7300,28 @@ void Aura::HandleAuraSafeFall(bool Apply, bool Real)
 
 SpellAuraHolder::~SpellAuraHolder()
 {
+    ManTech::EntityLedger::Remove(ManTech::EntityKind::AuraHolders);
     // note: auras in delete list won't be affected since they clear themselves from holder when adding to deletedAuraslist
     for (const auto& aura : m_auras)
         delete aura;
 
     delete _pveHeartBeatData;
+}
+
+bool SpellAuraHolder::CanDeferIdleUpdate() const
+{
+    // Only inert, self-cast permanent passives. All duration/heartbeat,
+    // periodic, area, channel and specialized aura work retains real cadence.
+    // Keep this next to Update so changes to its timer contract are visible.
+    if (!IsPermanent() || !IsPassive() || !IsPositive() || m_duration > 0 ||
+        _heartBeatRandValue || _pveHeartBeatData || !m_target ||
+        GetCasterGuid() != m_target->GetObjectGuid() || m_spellProto->IsChanneledSpell())
+        return false;
+    for (Aura const* aura : m_auras)
+        if (aura && (typeid(*aura) != typeid(Aura) || aura->IsPeriodic() ||
+            aura->IsAreaAura() || aura->IsPersistent()))
+            return false;
+    return true;
 }
 
 void SpellAuraHolder::Update(uint32 diff)
@@ -7439,6 +7461,7 @@ void SpellAuraHolder::Update(uint32 diff)
 
 void SpellAuraHolder::RefreshHolder()
 {
+    m_applyMSTime = WorldTimer::getMSTime();
     SetAuraDuration(GetAuraMaxDuration());
     UpdateAuraDuration();
 }

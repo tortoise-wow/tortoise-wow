@@ -127,6 +127,54 @@ HeadlessSessionStartResult HeadlessSessionMgr::Start(uint32 accountId, ObjectGui
     return HeadlessSessionStartResult::Started;
 }
 
+HeadlessSessionStartResult HeadlessSessionMgr::StartPrepared(LoginQueryHolder* holder,
+    LocaleConstant locale, std::string const& tag)
+{
+    // A bound request cannot be replayed and a network login cannot be adopted.
+    if (!holder || holder->GetTransport() != SessionTransport::Headless || holder->GetRequestToken())
+    {
+        delete holder;
+        return HeadlessSessionStartResult::QueryDispatchFailed;
+    }
+    uint32 const accountId = holder->GetAccountId();
+    ObjectGuid const guid = holder->GetGuid();
+    HeadlessSessionStartResult result = ValidateStart(accountId, guid);
+    if (result != HeadlessSessionStartResult::Started)
+    {
+        delete holder;
+        return result;
+    }
+    WorldSession* session = new WorldSession(accountId, nullptr, sAccountMgr.GetSecurity(accountId),
+        time_t(0), locale, std::string(), 0, SessionTransport::Headless);
+    session->InitHeadlessSession();
+    session->SetUsername(tag.empty() ? "Headless" : tag);
+    SessionEntry entry;
+    entry.session = session;
+    entry.accountId = accountId;
+    entry.characterGuid = guid;
+    entry.requestToken = NextRequestToken();
+    auto inserted = m_pendingSessions.emplace(guid, entry);
+    if (!inserted.second)
+    {
+        delete holder;
+        delete session;
+        return HeadlessSessionStartResult::Duplicate;
+    }
+    holder->m_requestToken = entry.requestToken;
+    session->m_loginRequestGuid = guid;
+    session->m_loginRequestToken = entry.requestToken;
+    session->m_playerLoading = true;
+    session->m_headlessLoginRequested = true;
+    HandleLoginCallback(holder); // Native checks, hooks, and holder destruction.
+    auto active = m_sessions.find(guid);
+    if (active != m_sessions.end() && active->second.requestToken == entry.requestToken &&
+        active->second.session->GetPlayer() && !active->second.session->PlayerLoading())
+        return HeadlessSessionStartResult::Started;
+    if (FindEntry(guid, accountId, SessionTransport::Headless, entry.requestToken))
+        Stop(guid, false);
+    return HeadlessSessionStartResult::QueryDispatchFailed;
+}
+
 void HeadlessSessionMgr::DestroySession(SessionEntry& entry, bool save, bool clearCharacterOnline)
 {
     WorldSession* session = entry.session;
@@ -145,8 +193,36 @@ void HeadlessSessionMgr::DestroySession(SessionEntry& entry, bool save, bool cle
     delete session;
 }
 
+void HeadlessSessionMgr::EndStopDeferral()
+{
+    MANGOS_ASSERT(m_stopDeferralDepth);
+    if (--m_stopDeferralDepth) return;
+    auto stops = std::move(m_deferredStops);
+    m_deferredStops.clear();
+    for (auto const& stop : stops)
+    {
+        auto active = m_sessions.find(stop.first);
+        auto pending = m_pendingSessions.find(stop.first);
+        if ((active != m_sessions.end() && active->second.requestToken == stop.second.token) ||
+            (pending != m_pendingSessions.end() && pending->second.requestToken == stop.second.token))
+            Stop(stop.first, stop.second.save);
+    }
+}
+
 bool HeadlessSessionMgr::Stop(ObjectGuid characterGuid, bool save)
 {
+    if (m_stopDeferralDepth)
+    {
+        auto active = m_sessions.find(characterGuid);
+        auto pending = m_pendingSessions.find(characterGuid);
+        SessionEntry const* entry = active != m_sessions.end() ? &active->second :
+            pending != m_pendingSessions.end() ? &pending->second : nullptr;
+        if (!entry) return false;
+        auto inserted = m_deferredStops.emplace(characterGuid, DeferredStop{entry->requestToken, save});
+        // A deletion request must not be turned back into a save by a later call.
+        if (!inserted.second) inserted.first->second.save &= save;
+        return true;
+    }
     auto active = m_sessions.find(characterGuid);
     if (active != m_sessions.end())
     {
@@ -354,7 +430,30 @@ void HeadlessSessionMgr::Update(uint32 diff)
 
         session->AddActiveTime(diff);
         bool missingPlayer = !session->GetPlayer() && !session->PlayerLoading();
-        if (missingPlayer || !session->Update(updater))
+        bool keepSession = !missingPlayer && session->Update(updater);
+        if (keepSession)
+        {
+            Player* player = session->GetPlayer();
+            // Inspect after native packet dispatch: a worldport ACK may have
+            // completed the transfer. Loading and pending/near/far teleports
+            // are legitimate out-of-world states and reset the grace period.
+            if (player && !session->PlayerLoading() && !player->IsInWorld() &&
+                !player->IsBeingTeleported())
+            {
+                uint32& elapsed = active->second.outOfWorldElapsed;
+                uint32 const remaining = 5000 - elapsed;
+                elapsed += diff < remaining ? diff : remaining;
+                if (elapsed == 5000)
+                {
+                    sLog.outError("Headless session for %s remained outside the world for five seconds; stopping",
+                        active->second.characterGuid.GetString().c_str());
+                    keepSession = false;
+                }
+            }
+            else
+                active->second.outOfWorldElapsed = 0;
+        }
+        if (!keepSession)
         {
             SessionEntry expired = active->second;
             active = m_sessions.erase(active);

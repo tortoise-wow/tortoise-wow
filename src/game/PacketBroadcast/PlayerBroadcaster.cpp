@@ -1,3 +1,4 @@
+#include "Util/DevDiagnostics.h"
 #include "PlayerBroadcaster.h"
 #include "MovementBroadcaster.h"
 #include "World.h"
@@ -18,11 +19,12 @@ PlayerBroadcaster::PlayerBroadcaster(WorldSocket* w_socket, const ObjectGuid& se
 
 void PlayerBroadcaster::ChangeSocket(WorldSocket* new_socket)
 {
-    if (m_socket)
-        m_socket->RemoveReference();
-
+    std::lock_guard<std::mutex> socketGuard(m_socket_lock);
+    if (new_socket == m_socket) return;
     if (new_socket)
         new_socket->AddReference();
+    if (m_socket)
+        m_socket->RemoveReference();
 
     m_socket = new_socket;
 }
@@ -52,17 +54,19 @@ void PlayerBroadcaster::ClearListeners()
 
 void PlayerBroadcaster::SendPacket(const WorldPacket& packet)
 {
+    std::lock_guard<std::mutex> socketGuard(m_socket_lock);
     if (m_socket)
         m_socket->SendPacket(packet);
 }
 
 void PlayerBroadcaster::ProcessQueue(uint32& num_packets)
 {
+    MANTECH_DIAG_SCOPE(MovementFlush, 32, "movement_broadcast_flush");
+    std::scoped_lock lock{ m_queue_lock, m_listeners_lock };
+    lastUpdatePackets = 0;
     if (m_queue.empty())
         return;
-
-    std::scoped_lock lock{ m_queue_lock, m_listeners_lock };
-    auto queue = std::move(m_queue);
+    auto& queue = m_queue;
 
     lastUpdatePackets = queue.size() * m_listeners.size();
     num_packets += lastUpdatePackets;
@@ -81,6 +85,7 @@ void PlayerBroadcaster::ProcessQueue(uint32& num_packets)
             itr.second->SendPacket(data.packet);
         }
     }
+    queue.clear(); // retain allocation; queue lock is held through the send pass
 }
 
 void PlayerBroadcaster::QueuePacket(WorldPacket packet, bool self, ObjectGuid except)
@@ -96,7 +101,8 @@ void PlayerBroadcaster::QueuePacket(WorldPacket packet, bool self, ObjectGuid ex
     if (m_queue.size() >= MAX_QUEUE_SIZE)
     {
         BroadcastData& last_in_queue = m_queue[m_queue.size() - 1];
-        if (CanSkipPacket(last_in_queue.packet.GetOpcode()) && CanSkipPacket(data.packet.GetOpcode()))
+        if (CanSkipPacket(last_in_queue.packet.GetOpcode()) && CanSkipPacket(data.packet.GetOpcode()) &&
+            last_in_queue.sendToSelf == data.sendToSelf && last_in_queue.except == data.except)
         {
             m_queue[m_queue.size() - 1] = std::move(data);
             return;
@@ -113,11 +119,7 @@ ObjectGuid PlayerBroadcaster::GetGUID() const
 
 void PlayerBroadcaster::FreeAtLogout()
 {
-    if (m_socket)
-    {
-        m_socket->RemoveReference();
-        m_socket = nullptr;
-    }
+    ChangeSocket(nullptr); // releases socket lock before taking queue/listener locks
 
     const std::scoped_lock lock{ m_queue_lock, m_listeners_lock };
     m_queue.clear();

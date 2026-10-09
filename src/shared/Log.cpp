@@ -29,14 +29,45 @@
 #include "Timer.h"
 
 #include <stdarg.h>
+#include <cstdio>
 #include <fstream>
 #include <iostream>
+#include <sys/stat.h>
 
 #include "ace/OS_NS_unistd.h"
 
 typedef MaNGOS::ClassLevelLockable<Log, std::mutex> LogLock;
 INSTANTIATE_SINGLETON_2(Log, LogLock);
 INSTANTIATE_CLASS_MUTEX(Log, std::mutex);
+
+namespace
+{
+    uint64 GetLogFileSize(std::string const& path)
+    {
+#ifdef WIN32
+        struct _stat64 info;
+        return _stat64(path.c_str(), &info) == 0 ? static_cast<uint64>(info.st_size) : 0;
+#else
+        struct stat info;
+        return stat(path.c_str(), &info) == 0 ? static_cast<uint64>(info.st_size) : 0;
+#endif
+    }
+
+    void RotateLogFile(std::string const& path, uint64 maxBytes, uint32 keep)
+    {
+        if (!maxBytes || !keep || GetLogFileSize(path) < maxBytes)
+            return;
+
+        std::remove((path + "." + std::to_string(keep)).c_str());
+        for (uint32 index = keep; index > 1; --index)
+        {
+            std::string const from = path + "." + std::to_string(index - 1);
+            std::string const to = path + "." + std::to_string(index);
+            std::rename(from.c_str(), to.c_str());
+        }
+        std::rename(path.c_str(), (path + ".1").c_str());
+    }
+}
 
 LogFilterData logFilterData[LOG_FILTER_COUNT] =
 {
@@ -386,6 +417,14 @@ FILE* Log::openLogFile(char const* configFileName, char const* configTimeStampFl
             logfn.insert(dot_pos, m_logsTimestamp);
         else
             logfn += m_logsTimestamp;
+    }
+
+    bool const timestamped = configTimeStampFlag && sConfig.GetBoolDefault(configTimeStampFlag, false);
+    if (mode && strchr(mode, 'a') && !timestamped)
+    {
+        uint32 const maxSizeMb = std::max<int32>(0, sConfig.GetIntDefault("LogRotateSizeMB", 100));
+        uint32 const keep = std::max<int32>(0, sConfig.GetIntDefault("LogRotateKeep", 5));
+        RotateLogFile(m_logsDir + logfn, static_cast<uint64>(maxSizeMb) * 1024u * 1024u, keep);
     }
 
 #ifndef WIN32

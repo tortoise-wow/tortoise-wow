@@ -353,6 +353,16 @@ struct spell_warrior_unbridled_wrath : public SpellScript
 
 struct spell_warrior_master_strike : public SpellScript
 {
+    bool OnEffectExecute(Spell* spell, SpellEffectIndex effIdx) const override
+    {
+        // Weapon-specific effects are dispatched after the damage effect below.
+        // The native template's empty secondary trigger is its script placeholder.
+        // Preserve any real trigger supplied by a subsequent content update.
+        return effIdx != EFFECT_INDEX_1 ||
+            spell->m_spellInfo->Effect[effIdx] != SPELL_EFFECT_TRIGGER_SPELL ||
+            spell->m_spellInfo->EffectTriggerSpell[effIdx] != 0;
+    }
+
     void OnEffectExecuted(Spell* spell, SpellEffectIndex effIdx) const override
     {
         if (effIdx != EFFECT_INDEX_0 || !spell->m_casterUnit)

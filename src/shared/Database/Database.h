@@ -1,3 +1,4 @@
+#include "Util/DevDiagnostics.h"
 /*
  * Copyright (C) 2005-2011 MaNGOS <http://getmangos.com/>
  * Copyright (C) 2009-2011 MaNGOSZero <https://github.com/mangos/zero>
@@ -69,6 +70,10 @@ class SqlConnection
         virtual bool CommitTransaction() { return true; }
         // can't rollback without transaction support
         virtual bool RollbackTransaction() { return true; }
+        // Replay is opt-in, and only for a verified transactional schema.
+        virtual bool CanReplayTransaction() const { return false; }
+        bool LastStatementWasDeadlock() const { return m_statementDeadlock; }
+        void SetStatementDeadlock(bool deadlock) { m_statementDeadlock = deadlock; }
 
         //methods to work with prepared statements
         bool ExecuteStmt(int nIndex, const SqlStmtParameters& id);
@@ -77,13 +82,16 @@ class SqlConnection
         class Lock
         {
             public:
-                Lock(SqlConnection * conn) : m_pConn(conn) {}
+                Lock(SqlConnection * conn) : m_pConn(conn) {
+                    MANTECH_DIAG_SCOPE(DbLock, 32, "connection_lock");
+                    m_lock.lock();
+                }
 
                 SqlConnection* operator->() const { return m_pConn; }
 
             private:
                 SqlConnection * const m_pConn;
-                std::unique_lock<std::recursive_mutex> m_lock{m_pConn->m_mutex};
+                std::unique_lock<std::recursive_mutex> m_lock{m_pConn->m_mutex, std::defer_lock};
         };
 
         //get DB object
@@ -112,6 +120,7 @@ class SqlConnection
     private:
         using LOCK_TYPE = std::recursive_mutex;
         LOCK_TYPE m_mutex;
+        bool m_statementDeadlock = false;
 
         typedef std::vector<SqlPreparedStatement * > StmtHolder;
         StmtHolder m_holder;
@@ -129,20 +138,16 @@ class Database
         virtual void HaltDelayThread();
 
         /// Synchronous DB queries
-        inline QueryResult* Query(const char *sql)
-        {
-            SqlConnection::Lock guard(getQueryConnection());
-            return guard->Query(sql);
-        }
+        QueryResult* Query(const char *sql);
 
-        inline QueryNamedResult* QueryNamed(const char *sql)
+        inline std::shared_ptr<QueryNamedResult> QueryNamed(const char *sql)
         {
             SqlConnection::Lock guard(getQueryConnection());
-            return guard->QueryNamed(sql);
+            return std::shared_ptr<QueryNamedResult>(guard->QueryNamed(sql));
         }
 
         QueryResult* PQuery(const char *format,...) ATTR_PRINTF(2,3);
-        QueryNamedResult* PQueryNamed(const char *format,...) ATTR_PRINTF(2,3);
+        std::shared_ptr<QueryNamedResult> PQueryNamed(const char *format,...) ATTR_PRINTF(2,3);
 
         inline bool DirectExecute(const char* sql)
         {
@@ -189,6 +194,8 @@ class Database
         template<class Class, typename ParamType1>
             bool AsyncPQuery(Class *object, void (Class::*method)(QueryResult*, ParamType1), ParamType1 param1, const char *format,...) ATTR_PRINTF(5,6);
         template<class Class, typename ParamType1>
+            bool AsyncPQueryPriority(Class *object, void (Class::*method)(QueryResult*, ParamType1), ParamType1 param1, const char *format,...) ATTR_PRINTF(5,6);
+        template<class Class, typename ParamType1>
             bool AsyncPQueryUnsafe(Class *object, void (Class::*method)(QueryResult*, ParamType1), ParamType1 param1, const char *format,...) ATTR_PRINTF(5,6);
         template<class Class, typename ParamType1, typename ParamType2>
             bool AsyncPQuery(Class *object, void (Class::*method)(QueryResult*, ParamType1, ParamType2), ParamType1 param1, ParamType2 param2, const char *format,...) ATTR_PRINTF(6,7);
@@ -214,6 +221,8 @@ class Database
             bool DelayQueryHolder(Class *object, void (Class::*method)(QueryResult*, SqlQueryHolder*), SqlQueryHolder *holder);
         template<class Class>
             bool DelayQueryHolderUnsafe(Class *object, void (Class::*method)(QueryResult*, SqlQueryHolder*), SqlQueryHolder *holder);
+        template<class Class>
+            bool DelayQueryHolderUnsafePriority(Class *object, void (Class::*method)(QueryResult*, SqlQueryHolder*), SqlQueryHolder *holder);
         template<class Class, typename ParamType1>
             bool DelayQueryHolder(Class *object, void (Class::*method)(QueryResult*, SqlQueryHolder*, ParamType1), SqlQueryHolder *holder, ParamType1 param1);
 
@@ -231,7 +240,7 @@ class Database
         // Writes SQL commands to a LOG file (see mangosd.conf "LogSQL")
         bool PExecuteLog(const char *format,...) ATTR_PRINTF(2,3);
 
-        bool BeginTransaction(uint32 serialId = 0);
+        bool BeginTransaction(uint32 serialId = 0, bool retryDeadlock = false);
         bool InTransaction();
         uint32 GetTransactionSerialId();
         bool CommitTransaction(std::function<void(bool)>* callback = nullptr);
@@ -268,8 +277,15 @@ class Database
         //you should call it explicitly after your server successfully started up
         //NO ASYNC TRANSACTIONS DURING SERVER STARTUP - ONLY DURING RUNTIME!!!
         void AllowAsyncTransactions() { m_bAllowAsyncTransactions = true; }
-        inline void AddToDelayQueue(SqlOperation* op) { m_delayQueue->add(op); }
+        void AddToDelayQueue(SqlOperation* op);
         inline bool NextDelayedOperation(SqlOperation*& op) { return m_delayQueue->next(op); }
+        inline void AddToPriorityDelayQueue(SqlOperation* op)
+        {
+            if (m_numAsyncWorkers)
+                m_threadsBodies[0]->addPriorityOperation(op);
+            else
+                AddToDelayQueue(op);
+        }
 
         inline void AddToSerialDelayQueue(int workerId, SqlOperation* op) { m_threadsBodies[workerId]->addSerialOperation(op); }
         bool NextSerialDelayedOperation(int workerId, SqlOperation*& op);
@@ -277,6 +293,9 @@ class Database
         bool HasAsyncQuery();
 
         void AddToSerialDelayQueue(SqlOperation *op);
+        void AddToPrioritySerialDelayQueue(SqlOperation* op);
+        size_t GetPendingAsyncOperationCount() const;
+        size_t GetPendingResultCount() const;
 
         // Frees data, cancels scheduled queries, closes connection
         void StopServer();
@@ -298,7 +317,7 @@ class Database
                 ~TransHelper();
 
                 //initializes new SqlTransaction object
-                SqlTransaction * init(uint32 serialId);
+                SqlTransaction * init(uint32 serialId, bool retryDeadlock = false);
                 //gets pointer on current transaction object. Returns nullptr if transaction was not initiated
                 SqlTransaction * get() const { return m_pTrans; }
                 //detaches SqlTransaction object allocated by init() function

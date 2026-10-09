@@ -1,3 +1,4 @@
+#include "Util/DevDiagnostics.h"
 /*
  * Copyright (C) 2005-2011 MaNGOS <http://getmangos.com/>
  * Copyright (C) 2009-2011 MaNGOSZero <https://github.com/mangos/zero>
@@ -19,6 +20,7 @@
  */
 
 #include "Unit.h"
+#include "ArchitectureDiagnostics.h"
 #include "Log.h"
 #include "Opcodes.h"
 #include "WorldPacket.h"
@@ -223,6 +225,7 @@ Unit::Unit()
     m_isSpawningLinked = false;
 
     ++PerfStats::g_totalUnits;
+    ManTech::MemoryLedger::Add(ManTech::MemoryKind::Units, sizeof(Unit));
 }
 
 Unit::~Unit()
@@ -248,6 +251,7 @@ Unit::~Unit()
     MANGOS_ASSERT(!m_needUpdateVisibility);
 
     --PerfStats::g_totalUnits;
+    ManTech::MemoryLedger::Remove(ManTech::MemoryKind::Units, sizeof(Unit));
 }
 
 void Unit::Update(uint32 update_diff, uint32 p_time)
@@ -255,12 +259,15 @@ void Unit::Update(uint32 update_diff, uint32 p_time)
     if (!IsInWorld())
         return;
 
+    TurtleDiagnostics::CreatureProbe::Stage(this, TurtleDiagnostics::UnitHooks);
     ScriptRegistry<UnitScript>::ForEachEnabledHook(UNITHOOK_ON_UNIT_UPDATE, [&](UnitScript* script)
     {
         script->OnUnitUpdate(this, update_diff);
     });
 
+    TurtleDiagnostics::CreatureProbe::Stage(this, TurtleDiagnostics::UnitVisibility);
     CheckPendingVisibilityAndViewUpdate();
+    TurtleDiagnostics::CreatureProbe::Stage(this, TurtleDiagnostics::UnitCombat);
 
     // Nostalrius : systeme de contresort des mobs.
     // Boucle 1 pour regler les timers
@@ -286,11 +293,15 @@ void Unit::Update(uint32 update_diff, uint32 p_time)
     // WARNING! Order of execution here is important, do not change.
     // Spells must be processed with event system BEFORE they go to _UpdateSpells.
     // Or else we may have some SPELL_STATE_FINISHED spells stalled in pointers, that is bad.
+    TurtleDiagnostics::CreatureProbe::Stage(this, TurtleDiagnostics::UnitEvents);
     m_Events.Update(update_diff);
+    TurtleDiagnostics::CreatureProbe::Stage(this, TurtleDiagnostics::UnitSpells);
     _UpdateSpells(update_diff);
 
+    TurtleDiagnostics::CreatureProbe::Stage(this, TurtleDiagnostics::UnitAuraCleanup);
     CleanupDeletedAuras();    
 
+    TurtleDiagnostics::CreatureProbe::Stage(this, TurtleDiagnostics::UnitCombat);
     if (m_lastManaUseTimer)
     {
         if (update_diff >= m_lastManaUseTimer)
@@ -360,6 +371,7 @@ void Unit::Update(uint32 update_diff, uint32 p_time)
         SetAttackTimer(RANGED_ATTACK, (update_diff >= ranged_att ? 0 : ranged_att - update_diff));
 
     // update abilities available only for fraction of time
+    TurtleDiagnostics::CreatureProbe::Stage(this, TurtleDiagnostics::UnitReactives);
     UpdateReactives(update_diff);
 
     if (IsAlive())
@@ -368,9 +380,13 @@ void Unit::Update(uint32 update_diff, uint32 p_time)
         ModifyAuraState(AURA_STATE_HEALTHLESS_35_PERCENT, GetHealth() < GetMaxHealth() * 0.35f);
     }
 
+    TurtleDiagnostics::CreatureProbe::Stage(this, TurtleDiagnostics::UnitMovementChecks);
     CheckPendingMovementChanges();
+    TurtleDiagnostics::CreatureProbe::Stage(this, TurtleDiagnostics::UnitSpline);
     UpdateSplineMovement(p_time);
+    TurtleDiagnostics::CreatureProbe::Stage(this, TurtleDiagnostics::UnitMotion);
     GetMotionMaster()->UpdateMotion(p_time);
+    TurtleDiagnostics::CreatureProbe::Stage(this, TurtleDiagnostics::UnitDeferredMotion);
     if (GetMotionMaster()->NeedsAsyncUpdate() && IsInWorld())
     {
         if (sWorld.getConfig(CONFIG_UINT32_CONTINENTS_MOTIONUPDATE_THREADS) && GetMap()->IsContinent())
@@ -378,6 +394,7 @@ void Unit::Update(uint32 update_diff, uint32 p_time)
         else
             GetMotionMaster()->UpdateMotionAsync(p_time);
     }
+    TurtleDiagnostics::CreatureProbe::Stage(this, TurtleDiagnostics::UnitWorld);
     WorldObject::Update(update_diff, p_time);
     if (_delayedActions & OBJECT_DELAYED_ADD_TO_RELOCATED_LIST)
     {
@@ -3058,6 +3075,7 @@ float Unit::GetUnitCriticalChance(WeaponAttackType attackType, Unit const* pVict
 
 void Unit::_UpdateSpells(uint32 time)
 {
+    MANTECH_DIAG_SCOPE(Auras, 32, "unit_spells_and_auras");
     if (m_currentSpells[CURRENT_AUTOREPEAT_SPELL])
         _UpdateAutoRepeatSpell();
 
@@ -3805,7 +3823,7 @@ bool Unit::RemoveAuraDueToDebuffLimit(SpellAuraHolder* currentAura)
 void Unit::AddAuraToModList(Aura *aura)
 {
     if (aura->GetModifier()->m_auraname < TOTAL_AURAS)
-        m_modAuras[aura->GetModifier()->m_auraname].push_back(aura);
+        m_modAuras.Mutable(aura->GetModifier()->m_auraname).push_back(aura);
 }
 
 bool Unit::RemoveNoStackAurasDueToAuraHolder(SpellAuraHolder *holder)
@@ -4413,7 +4431,7 @@ void Unit::RemoveAura(Aura *Aur, AuraRemoveMode mode)
 {
     // remove from list before mods removing (prevent cyclic calls, mods added before including to aura list - use reverse order)
     if (Aur->GetModifier()->m_auraname < TOTAL_AURAS)
-        m_modAuras[Aur->GetModifier()->m_auraname].remove(Aur);
+        m_modAuras.Mutable(Aur->GetModifier()->m_auraname).remove(Aur);
 
     // Set remove mode
     Aur->SetRemoveMode(mode);
@@ -6002,7 +6020,7 @@ bool Unit::IsImmuneToDamage(SpellSchoolMask shoolMask, SpellEntry const* spellIn
         return false;
 
     // If m_immuneToDamage type contain magic, IMMUNE damage.
-    SpellImmuneList const& damageList = m_spellImmune[IMMUNITY_DAMAGE];
+    SpellImmuneList const& damageList = m_spellImmune.Read(IMMUNITY_DAMAGE);
     for (const auto& itr : damageList)
     {
         if (itr.type & shoolMask)
@@ -6012,7 +6030,7 @@ bool Unit::IsImmuneToDamage(SpellSchoolMask shoolMask, SpellEntry const* spellIn
     if (!spellInfo || !spellInfo->HasAttribute(SPELL_ATTR_EX2_NO_SCHOOL_IMMUNITIES))
     {
         // If m_immuneToSchool type contain this school type, IMMUNE damage.
-        SpellImmuneList const& schoolList = m_spellImmune[IMMUNITY_SCHOOL];
+        SpellImmuneList const& schoolList = m_spellImmune.Read(IMMUNITY_SCHOOL);
         for (const auto& itr : schoolList)
         {
             if (itr.type & shoolMask)
@@ -6042,7 +6060,7 @@ bool Unit::IsImmuneToSpell(SpellEntry const* spellInfo, bool /*castOnSelf*/) con
     // Should either check self cast or passive spell here, not sure which is better.
     if (!spellInfo->HasAttribute(SPELL_ATTR_PASSIVE))
     {
-        SpellImmuneList const& dispelList = m_spellImmune[IMMUNITY_DISPEL];
+        SpellImmuneList const& dispelList = m_spellImmune.Read(IMMUNITY_DISPEL);
         for (const auto& itr : dispelList)
         {
             if (itr.type == spellInfo->Dispel)
@@ -6064,7 +6082,7 @@ bool Unit::IsImmuneToSpell(SpellEntry const* spellInfo, bool /*castOnSelf*/) con
      && !spellInfo->HasAttribute(SPELL_ATTR_EX_DISPEL_AURAS_ON_IMMUNITY)            // can remove immune (by dispell or immune it)
      && !spellInfo->HasAttribute(SPELL_ATTR_EX2_NO_SCHOOL_IMMUNITIES))
     {
-        SpellImmuneList const& schoolList = m_spellImmune[IMMUNITY_SCHOOL];
+        SpellImmuneList const& schoolList = m_spellImmune.Read(IMMUNITY_SCHOOL);
         for (const auto& itr : schoolList)
         {
             if (itr.type & spellInfo->GetSpellSchoolMask())
@@ -6084,7 +6102,7 @@ bool Unit::IsImmuneToSpell(SpellEntry const* spellInfo, bool /*castOnSelf*/) con
 
     if (uint32 mechanic = spellInfo->Mechanic)
     {
-        SpellImmuneList const& mechanicList = m_spellImmune[IMMUNITY_MECHANIC];
+        SpellImmuneList const& mechanicList = m_spellImmune.Read(IMMUNITY_MECHANIC);
         for (const auto& itr : mechanicList)
         {
             if (itr.type == mechanic)
@@ -6137,7 +6155,7 @@ bool Unit::IsImmuneToSpellEffect(SpellEntry const* spellInfo, SpellEffectIndex i
 {
     //If m_immuneToEffect type contain this effect type, IMMUNE effect.
     uint32 effect = spellInfo->Effect[index];
-    SpellImmuneList const& effectList = m_spellImmune[IMMUNITY_EFFECT];
+    SpellImmuneList const& effectList = m_spellImmune.Read(IMMUNITY_EFFECT);
     for (const auto& itr : effectList)
     {
         if (itr.type == effect)
@@ -6156,7 +6174,7 @@ bool Unit::IsImmuneToSpellEffect(SpellEntry const* spellInfo, SpellEffectIndex i
 
     if (uint32 mechanic = spellInfo->EffectMechanic[index])
     {
-        SpellImmuneList const& mechanicList = m_spellImmune[IMMUNITY_MECHANIC];
+        SpellImmuneList const& mechanicList = m_spellImmune.Read(IMMUNITY_MECHANIC);
         for (const auto& itr : mechanicList)
         {
             if (itr.type == spellInfo->EffectMechanic[index])
@@ -6192,7 +6210,7 @@ bool Unit::IsImmuneToSpellEffect(SpellEntry const* spellInfo, SpellEffectIndex i
     uint32 aura = spellInfo->EffectApplyAuraName[index];
     if (aura)
     {
-        SpellImmuneList const& list = m_spellImmune[IMMUNITY_STATE];
+        SpellImmuneList const& list = m_spellImmune.Read(IMMUNITY_STATE);
         for (const auto& itr : list)
         {
             if (itr.type == aura)
@@ -6218,7 +6236,7 @@ bool Unit::IsImmuneToSchool(SpellEntry const* spellInfo, uint8 effectMask) const
     if (!spellInfo->HasAttribute(SPELL_ATTR_EX_DISPEL_AURAS_ON_IMMUNITY)           // can remove immune (by dispell or immune it)
      && !spellInfo->HasAttribute(SPELL_ATTR_EX2_NO_SCHOOL_IMMUNITIES))
     {
-        SpellImmuneList const& schoolList = m_spellImmune[IMMUNITY_SCHOOL];
+        SpellImmuneList const& schoolList = m_spellImmune.Read(IMMUNITY_SCHOOL);
         for (auto itr : schoolList)
         {
             SpellEntry const* pImmunitySpell = sSpellMgr.GetSpellEntry(itr.spellId);
@@ -7105,9 +7123,9 @@ void Unit::UpdateVisibilityAndView()
     static const AuraType auratypes[] = {SPELL_AURA_BIND_SIGHT, SPELL_AURA_FAR_SIGHT, SPELL_AURA_NONE};
     for (AuraType const* type = &auratypes[0]; *type != SPELL_AURA_NONE; ++type)
     {
-        AuraList& alist = m_modAuras[*type];
-        if (alist.empty())
+        if (m_modAuras[*type].empty())
             continue;
+        AuraList& alist = m_modAuras.Mutable(*type);
 
         for (AuraList::iterator it = alist.begin(); it != alist.end();)
         {
@@ -11255,7 +11273,7 @@ bool Unit::IsImmuneToSchoolMask(uint32 schoolMask) const
 
 bool Unit::IsImmuneToMechanic(Mechanics mechanic) const
 {
-    SpellImmuneList const& mechanicList = m_spellImmune[IMMUNITY_MECHANIC];
+    SpellImmuneList const& mechanicList = m_spellImmune.Read(IMMUNITY_MECHANIC);
     for (const auto& itr : mechanicList)
         if (itr.type == mechanic)
             return true;

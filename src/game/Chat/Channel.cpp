@@ -1,4 +1,5 @@
-﻿/*
+#include "Util/DevDiagnostics.h"
+/*
  * Copyright (C) 2005-2011 MaNGOS <http://getmangos.com/>
  * Copyright (C) 2009-2011 MaNGOSZero <https://github.com/mangos/zero>
  * Copyright (C) 2011-2016 Nostalrius <https://nostalrius.org>
@@ -855,11 +856,24 @@ void Channel::SetOwner(ObjectGuid guid, bool exclaim)
 
 void Channel::SendToAll(WorldPacket *data, ObjectGuid guid)
 {
-    for (const auto& itr : m_players)
+    MANTECH_DIAG_SCOPE(Packet, 32, "channel_broadcast");
+    // GetPlayer's temporary shared_ptr owns only a forwarding wrapper, not the
+    // native player. Resolve the same native object immediately before delivery
+    // without allocating a wrapper/control block for every broadcast recipient.
+    auto deliver = [data, guid](auto* player)
     {
-        if (PlayerPointer pPlayer = GetPlayer(itr.first))
-            if (!pPlayer->GetSocial()->HasIgnore(guid))
-                pPlayer->GetSession()->SendPacket(data);
+        if (player && !player->GetSocial()->HasIgnore(guid))
+            player->GetSession()->SendPacket(data);
+    };
+    if (m_area_dependant)
+    {
+        for (const auto& itr : m_players)
+            deliver(sObjectAccessor.FindPlayerNotInWorld(itr.first));
+    }
+    else
+    {
+        for (const auto& itr : m_players)
+            deliver(sObjectAccessor.FindMasterPlayer(itr.first));
     }
 }
 

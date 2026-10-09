@@ -183,6 +183,16 @@ Database::AsyncPQuery(Class *object, void (Class::*method)(QueryResult*, ParamTy
 }
 template<class Class, typename ParamType1>
 bool
+Database::AsyncPQueryPriority(Class *object, void (Class::*method)(QueryResult*, ParamType1), ParamType1 param1, const char *format,...)
+{
+    ASYNC_PQUERY_BODY(format, szQuery)
+    ASYNC_QUERY_BODY(szQuery)
+    AddToPriorityDelayQueue(new SqlQuery(szQuery,
+        new MaNGOS::QueryCallback<Class, ParamType1>(object, method, (QueryResult*)nullptr, param1), m_pResultQueue, true));
+    return true;
+}
+template<class Class, typename ParamType1>
+bool
 Database::AsyncPQueryUnsafe(Class *object, void (Class::*method)(QueryResult*, ParamType1), ParamType1 param1, const char *format,...)
 {
     ASYNC_PQUERY_BODY(format, szQuery)
@@ -270,6 +280,16 @@ Database::DelayQueryHolderUnsafe(Class *object, void (Class::*method)(QueryResul
     MaNGOS::QueryCallback<Class, SqlQueryHolder*> *cb = new MaNGOS::QueryCallback<Class, SqlQueryHolder*>(object, method, (QueryResult*)nullptr, holder);
     cb->threadSafe = false;
     return holder->Execute(cb, this, m_pResultQueue);
+}
+template<class Class>
+bool
+Database::DelayQueryHolderUnsafePriority(Class *object, void (Class::*method)(QueryResult*, SqlQueryHolder*), SqlQueryHolder *holder)
+{
+    ASYNC_DELAYHOLDER_BODY(holder)
+    MaNGOS::QueryCallback<Class, SqlQueryHolder*> *cb = new MaNGOS::QueryCallback<Class, SqlQueryHolder*>(object, method, (QueryResult*)nullptr, holder);
+    cb->threadSafe = false;
+    cb->SetHighPriority(true);
+    return holder->Execute(cb, this, m_pResultQueue, true);
 }
 template<class Class, typename ParamType1>
 bool

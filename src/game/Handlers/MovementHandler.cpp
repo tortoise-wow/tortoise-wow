@@ -22,6 +22,7 @@
 #include "Common.h"
 #include "WorldPacket.h"
 #include "WorldSession.h"
+#include "ArchitectureDiagnostics.h"
 #include "Opcodes.h"
 #include "Log.h"
 #include "Player.h"
@@ -838,6 +839,13 @@ void WorldSession::HandleMoveSplineDoneOpcode(WorldPacket& recvData)
 void WorldSession::HandleSetActiveMoverOpcode(WorldPacket& recvData)
 {
     DEBUG_LOG("WORLD: Recvd CMSG_SET_ACTIVE_MOVER");
+    if (GetSocket() && _player && TurtleDiagnostics::enabled.load(std::memory_order_relaxed))
+    {
+        uint32 const now = WorldTimer::getMSTime();
+        sLog.out(LOG_PERFORMANCE, "PLAYER_CLIENT_SIGNAL account=%u guid=%u signal=active_mover since_in_game_ms=%u handler_queue_ms=%u",
+            GetAccountId(), _player->GetGUIDLow(), WorldTimer::getMSTimeDiff(_player->GetInGameTime(), now),
+            recvData.GetPacketTime() ? WorldTimer::getMSTimeDiff(recvData.GetPacketTime(), now) : 0);
+    }
 
     ObjectGuid guid;
     recvData >> guid;

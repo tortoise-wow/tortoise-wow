@@ -29,6 +29,8 @@
 #include "ObjectGuid.h"
 
 #include "libdeflate.h"
+#include "PacketCompressionContext.h"
+#include "DetailedWorkDiagnostics.h"
 
 #define MAX_UNCOMPRESSED_PACKET_SIZE 0x8000 // 32ko
 
@@ -67,22 +69,19 @@ ByteBuffer& UpdateData::AddUpdateBlockAndGetBuffer()
     return it->data;
 }
 
-inline auto GetCompressor()
-{
-    return std::unique_ptr<libdeflate_compressor, decltype(&libdeflate_free_compressor)>{
-        libdeflate_alloc_compressor(sWorld.getConfig(CONFIG_UINT32_COMPRESSION)), libdeflate_free_compressor };
-}
-
 void PacketCompressor::Compress(void* dst, uint32 *dst_size, void* src, int src_size)
 {
-    auto compressor = GetCompressor();
-    *dst_size = libdeflate_zlib_compress(compressor.get(), src, src_size, dst, *dst_size);
+    DetailedWork::Scope compressionWork(DetailedWork::PacketCompression);
+    thread_local PacketCompressionContext context;
+    auto* compressor = context.Get(sWorld.getConfig(CONFIG_UINT32_COMPRESSION));
+    *dst_size = libdeflate_zlib_compress(compressor, src, src_size, dst, *dst_size);
 }
 
 size_t PacketCompressor::Bound(size_t size)
 {
-    auto compressor = GetCompressor();
-    return libdeflate_zlib_compress_bound(compressor.get(), size);
+    // The library documents nullptr as the bound across all compression levels.
+    // This also remains valid if a config reload occurs between Bound/Compress.
+    return libdeflate_zlib_compress_bound(nullptr, size);
 }
 
 
@@ -145,6 +144,12 @@ bool UpdateData::BuildPacket(WorldPacket *packet, UpdatePacket const* updPacket,
 
 void UpdateData::Send(WorldSession* session, bool hasTransport)
 {
+    if (!session || !session->GetSocket())
+    {
+        Clear();
+        return;
+    }
+
     WorldPacket data;
     if (m_datas.empty() && !m_outOfRangeGUIDs.empty())
     {

@@ -24,6 +24,9 @@
 
 #include "Common.h"
 #include "CreatureAI.h"
+#include <memory>
+#include "Memory/MemoryLedger.h"
+struct CreatureEventAIGeneration;
 
 class Unit;
 class Creature;
@@ -280,9 +283,14 @@ typedef turtle_unordered_map<uint32, CreatureEventAI_Event_Vec, Category_EventAI
 
 struct CreatureEventAIHolder
 {
-    explicit CreatureEventAIHolder(CreatureEventAI_Event p) : Event(p), Time(0), Enabled(true) {}
+    explicit CreatureEventAIHolder(CreatureEventAI_Event const& p) : Event(p), Time(0), Enabled(true)
+    { ManTech::MemoryLedger::Add(ManTech::MemoryKind::EventHolders, sizeof(*this)); }
+    CreatureEventAIHolder(CreatureEventAIHolder const& p) : Event(p.Event), Time(p.Time), Enabled(p.Enabled)
+    { ManTech::MemoryLedger::Add(ManTech::MemoryKind::EventHolders, sizeof(*this)); }
+    ~CreatureEventAIHolder()
+    { ManTech::MemoryLedger::Remove(ManTech::MemoryKind::EventHolders, sizeof(*this)); }
 
-    CreatureEventAI_Event Event;
+    CreatureEventAI_Event const& Event;
     uint32 Time;
     bool Enabled;
 
@@ -336,6 +344,7 @@ class CreatureEventAI : public CreatureAI
 
         //Variables used by Events themselves
         typedef std::vector<CreatureEventAIHolder> CreatureEventAIList;
+        std::shared_ptr<CreatureEventAIGeneration const> m_eventGeneration;
         CreatureEventAIList m_CreatureEventAIList;          //Holder for events (stores enabled, time, and eventid)
         float  m_AttackDistance;                            // Distance to attack from
         float  m_AttackAngle;                               // Angle of attack

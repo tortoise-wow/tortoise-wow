@@ -20,6 +20,8 @@
 #define MANGOS_RANDOMMOTIONGENERATOR_H
 
 #include "MovementGenerator.h"
+#include "PathFinder.h"
+#include <memory>
 
 class RandomMovementGenerator : public MovementGeneratorMedium< Creature, RandomMovementGenerator >
 {
@@ -57,6 +59,7 @@ class RandomMovementGenerator : public MovementGeneratorMedium< Creature, Random
         float i_positionZ;
         float i_wanderDistance;
         uint32 i_expireTime;
+        std::unique_ptr<PathFinder> i_path;
 };
 
 #endif

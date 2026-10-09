@@ -153,6 +153,17 @@ enum PlayerHook
     PLAYERHOOK_IS_MANAGED_BOT,
     PLAYERHOOK_GET_BOT_ROLES,
     PLAYERHOOK_ON_ADDON_MESSAGE,
+    PLAYERHOOK_IS_AI_CONTROLLED,
+    PLAYERHOOK_IS_MACHINE_DRIVEN,
+    PLAYERHOOK_IS_UPDATE_CRITICAL,
+    PLAYERHOOK_HAS_AI_FOLLOWERS,
+    PLAYERHOOK_GET_ALLOWED_ROLES,
+    PLAYERHOOK_SET_FORCED_ROLE,
+    PLAYERHOOK_ON_CHAT_COMMAND,
+    PLAYERHOOK_CAN_USE_GROUP_CHAT,
+    PLAYERHOOK_ON_AI_UPDATE,
+    PLAYERHOOK_IS_AI_UPDATE_DUE,
+
     PLAYERHOOK_END
 };
 
@@ -176,6 +187,9 @@ class PlayerScript : public ScriptObject
         virtual void OnTalentsReset(Player* /*player*/, bool /*noCost*/) {}
         virtual void OnBeforeUpdate(Player* /*player*/, uint32 /*diff*/) {}
         virtual void OnUpdate(Player* /*player*/, uint32 /*diff*/) {}
+        // AI has its own cadence; never throttle gameplay/module OnUpdate hooks.
+        virtual void OnAIUpdate(Player* /*player*/, uint32 /*diff*/, bool /*minimal*/) {}
+        virtual bool IsAIUpdateDue(Player* /*player*/, uint32 /*diff*/) { return false; }
         virtual void OnMoneyChanged(Player* /*player*/, int32& /*amount*/) {}
         virtual void OnGiveXP(Player* /*player*/, uint32& /*amount*/, Unit* /*victim*/) {}
         virtual void OnReputationChange(Player* /*player*/, uint32 /*factionId*/, int32& /*standing*/) {}
@@ -211,6 +225,26 @@ class PlayerScript : public ScriptObject
         // A module may take an addon message as a command of its own. Return true
         // when the text was consumed; the core then does not relay it.
         virtual bool OnAddonMessage(Player* /*from*/, std::string const& /*msg*/) { return false; }
+
+        // Generic seams for modules that drive simulated characters. These
+        // deliberately describe what the core needs rather than naming a
+        // particular bot implementation.
+        virtual bool IsAIControlled(Player const* /*player*/) { return false; }
+        virtual bool IsMachineDriven(Player const* /*player*/) { return false; }
+
+        // Machine-driven characters normally run on a reduced cadence. Modules
+        // return true while a character is attached to a real player or doing
+        // latency-sensitive work so map catch-up passes keep it responsive.
+        virtual bool IsUpdateCritical(Player const* /*player*/) { return false; }
+
+        // Whether this *human* player commands puppets of his own. Distinct from
+        // IsAIControlled: the master is a real player, his followers are not.
+
+        virtual bool HasAIFollowers(Player const* /*player*/) { return false; }
+        virtual bool GetAllowedRoles(Player const* /*player*/, uint8& /*roles*/) { return false; }
+        virtual void SetForcedRole(Player* /*player*/, uint8 /*role*/) {}
+        virtual void OnChatCommand(Player* /*player*/, uint32 /*type*/, std::string const& /*msg*/,
+                                   uint32 /*lang*/, std::string const& /*to*/) {}
 };
 
 class CreatureScript : public ScriptObject, public UpdatableScript<Creature>
@@ -608,6 +642,7 @@ enum ServerHook
     SERVERHOOK_ON_SOCKET_CLOSE,
     SERVERHOOK_CAN_PACKET_SEND,
     SERVERHOOK_CAN_PACKET_RECEIVE,
+    SERVERHOOK_ON_PACKET_HANDLED,
     SERVERHOOK_END
 };
 
@@ -628,6 +663,9 @@ class ServerScript : public ScriptObject
         virtual void OnSocketClose(WorldSocket* /*socket*/) {}
         virtual bool CanPacketSend(WorldSession* /*session*/, WorldPacket const& /*packet*/) { return true; }
         virtual bool CanPacketReceive(WorldSession* /*session*/, WorldPacket const& /*packet*/) { return true; }
+        // Observation hook after the opcode handler has completed. Unlike
+        // CanPacketReceive, this cannot suppress the packet.
+        virtual void OnPacketHandled(WorldSession* /*session*/, WorldPacket const& /*packet*/) {}
 };
 
 class MiscScript : public ScriptObject
@@ -723,6 +761,15 @@ class GroupScript : public ScriptObject
     protected:
         explicit GroupScript(char const* name) : ScriptObject(name) { ScriptRegistry<GroupScript>::AddScript(this); }
     public:
+        virtual void OnCreate(Group* /*group*/, ObjectGuid /*leaderGuid*/, uint8 /*groupType*/) {}
+        virtual void OnInviteMember(Group* /*group*/, ObjectGuid /*guid*/) {}
+        // Native invite transaction on the world owner. Unlike AddInvite's
+        // membership notification, these preserve the actual inviter (including
+        // raid assistants); group may be null during the eligibility check.
+        virtual bool CanInvitePlayer(Group* /*group*/, Player* /*inviter*/, Player* /*target*/) { return true; }
+        virtual void OnPlayerInvited(Group* /*group*/, Player* /*inviter*/, Player* /*target*/) {}
+        virtual bool CanMemberAccept(Group* /*group*/, Player* /*player*/) { return true; }
+
         virtual void OnAddMember(Group* /*group*/, ObjectGuid /*guid*/) {}
         virtual void OnRemoveMember(Group* /*group*/, ObjectGuid /*guid*/, uint8 /*method*/) {}
         virtual void OnChangeLeader(Group* /*group*/, ObjectGuid /*newLeaderGuid*/, ObjectGuid /*oldLeaderGuid*/) {}

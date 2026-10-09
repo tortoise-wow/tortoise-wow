@@ -49,6 +49,8 @@ namespace VMAP
             typedef std::unordered_map<uint32, bool> loadedTileMap;
             typedef std::unordered_map<uint32, uint32> loadedSpawnMap;
         private:
+            uint64 iAccountedMemoryBytes = 0;
+            void RefreshMemoryCharge();
             uint32 iMapID;
             bool iIsTiled;
             BIH iTree;
@@ -89,6 +91,7 @@ namespace VMAP
             void UnloadMapTile(uint32 tileX, uint32 tileY, VMapManager2* vm);
             bool isTiled() const { return iIsTiled; }
             uint32 numLoadedTiles() const { return iLoadedTiles.size(); }
+            bool isTileLoaded(uint32 x, uint32 y) const { return iLoadedTiles.count(packTileID(x, y)) != 0; }
 
 #ifdef MMAP_GENERATOR
         public:

@@ -25,6 +25,7 @@
 #include "GuildBank/GuildBank.h"
 #include "Utilities/robin_hood.h"
 #include <shared_mutex>
+#include <vector>
 
 class Guild;
 class ObjectGuid;
@@ -46,6 +47,8 @@ class GuildMgr
         void RemoveGuild(uint32 guildId);
 
         Guild* GetGuildById(uint32 guildId) const;
+        // Value snapshot; call on the world owner after map jobs join.
+        std::vector<std::pair<uint32, ObjectGuid>> GetLeadershipSnapshot() const;
         Guild* GetGuildByName(std::string const& name) const;
         Guild* GetGuildByLeader(ObjectGuid const& guid) const;
         std::string GetGuildNameById(uint32 guildId) const;

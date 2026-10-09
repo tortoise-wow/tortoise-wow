@@ -998,6 +998,14 @@ ChatCommand * ChatHandler::getCommandTable()
         { "cleaninventory", SEC_DEVELOPER,       false, &ChatHandler::HandleCleanInventoryCommand,      "", nullptr},
         { "showborders",    SEC_DEVELOPER,       false, &ChatHandler::HandleShowBordersCommand,         "", nullptr },
         { "queststatuses",  SEC_PLAYER,           false, &ChatHandler::HandleQuestStatusesCommand,       "", nullptr},
+        // Bot module commands. .rndbot is SEC_PLAYER so a single human can
+        // manage their own random-bot pool without keeping a GM alt logged in;
+        // a server operator who wants tighter control can raise it.
+        // Match the CMaNGOS AHBot command family: these operations can reload
+        // server configuration or rebuild the whole market, so they remain
+        // administrator-only.
+        // Optional module command scripts register their own diagnostics.
+
         { nullptr,          0,                   false, nullptr,                                        "", nullptr }
     };
 

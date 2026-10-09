@@ -27,6 +27,7 @@
 #include "ObjectGuid.h"
 
 #include <shared_mutex>
+#include <vector>
 
 class SocialMgr;
 class PlayerSocial;
@@ -115,6 +116,9 @@ class PlayerSocial
         void SendIgnoreList();
         // Misc
         bool HasFriend(ObjectGuid friend_guid) const;
+        // Value copy for callers already on the native social owner.
+        // This query does not make concurrent social mutation safe.
+        std::vector<ObjectGuid> GetFriendGuids() const;
         bool HasIgnore(ObjectGuid ignore_guid) const;
 
         ObjectGuid const& GetPlayerGUID() const { return m_playerGUID; }

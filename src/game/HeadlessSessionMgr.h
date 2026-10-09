@@ -61,7 +61,15 @@ public:
 
     HeadlessSessionStartResult Start(uint32 accountId, ObjectGuid characterGuid,
         LocaleConstant locale, std::string const& tag);
+    // World-owner call. Consumes a completed, unbound headless query holder on
+    // every result. The caller retains population policy, never session ownership.
+    HeadlessSessionStartResult StartPrepared(LoginQueryHolder* holder,
+        LocaleConstant locale, std::string const& tag);
     bool Stop(ObjectGuid characterGuid, bool save = true);
+    // World owner only, nestable. Stops requested by callbacks are applied on
+    // scope exit, after callers have stopped using the player/session.
+    void BeginStopDeferral() { ++m_stopDeferralDepth; }
+    void EndStopDeferral();
     HeadlessSessionState GetState(ObjectGuid characterGuid) const;
 
 private:
@@ -83,6 +91,7 @@ private:
         uint32 accountId = 0;
         ObjectGuid characterGuid;
         uint64 requestToken = 0;
+        uint32 outOfWorldElapsed = 0;
     };
 
     HeadlessSessionStartResult ValidateStart(uint32 accountId, ObjectGuid characterGuid) const;
@@ -95,4 +104,7 @@ private:
     std::map<ObjectGuid, SessionEntry> m_sessions;
     std::map<ObjectGuid, SessionEntry> m_pendingSessions;
     uint64 m_nextRequestToken = 0;
+    uint32 m_stopDeferralDepth = 0;
+    struct DeferredStop { uint64 token; bool save; };
+    std::map<ObjectGuid, DeferredStop> m_deferredStops;
 };

@@ -34,6 +34,9 @@
 #include "ScriptMgr.h"
 #include "Util.h"
 
+#include <mutex>
+#include <unordered_set>
+
 pAuraProcHandler AuraProcHandler[TOTAL_AURAS] =
 {
     &Unit::HandleNULLProc,                                  //  0 SPELL_AURA_NONE
@@ -263,6 +266,10 @@ pAuraProcHandler AuraProcHandler[TOTAL_AURAS] =
     &Unit::HandleModBlockDamagePercentAuraProc,             //224 SPELL_AURA_MOD_BLOCK_DAMAGE_PERCENT
     &Unit::HandleNULLProc,                                  //225 SPELL_AURA_MOD_GATHERING_ITEM_CHANCE
     &Unit::HandleModRageFromDamageDealtAuraProc,            //226 SPELL_AURA_MOD_RAGE_FROM_DAMAGE_DEALT
+    &Unit::HandleNULLProc,                                  //227 SPELL_AURA_MOD_ATTACKING_RAGE_PERCENT
+    &Unit::HandleNULLProc,                                  //228 SPELL_AURA_MOD_SKILL_CAST_TIME
+    &Unit::HandleNULLProc,                                  //229 SPELL_AURA_MOD_PERIODIC_DAMAGE_PERCENT_DONE
+    &Unit::HandleNULLProc,                                  //230 SPELL_AURA_MOD_CHAIN_DAMAGE_PERCENT_TAKEN
 };
 
 // Fonctions Nostalrius
@@ -822,8 +829,20 @@ SpellAuraProcResult Unit::HandleProcTriggerSpellAuraProc(Unit* pVictim, uint32 d
     SpellEntry const* triggerEntry = sSpellMgr.GetSpellEntry(trigger_spell_id);
     if (!triggerEntry)
     {
-        // Not cast unknown spell
-        sLog.outError("Unit::HandleProcTriggerSpell: Spell %u have %u in EffectTriggered[%d], not handled custom case?", auraSpellInfo->Id, trigger_spell_id, triggeredByAura->GetEffIndex());
+        // A malformed spell row may be evaluated every combat tick. Keep the
+        // diagnostic actionable without producing hundreds of identical log
+        // lines and making an already slow map update even more expensive.
+        static std::mutex reportedProcMutex;
+        static std::unordered_set<uint64> reportedProcPairs;
+        uint64 const pairKey = (uint64(auraSpellInfo->Id) << 32) | trigger_spell_id;
+        bool firstReport = false;
+        {
+            std::lock_guard<std::mutex> lock(reportedProcMutex);
+            firstReport = reportedProcPairs.insert(pairKey).second;
+        }
+        if (firstReport)
+            sLog.outError("Unit::HandleProcTriggerSpell: aura spell %u references missing trigger spell %u (effect %u); suppressing duplicate reports",
+                          auraSpellInfo->Id, trigger_spell_id, uint32(triggeredByAura->GetEffIndex()));
         return SPELL_AURA_PROC_FAILED;
     }
 

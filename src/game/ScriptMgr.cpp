@@ -31,6 +31,9 @@
 #include "Conditions.h"
 #include "GameEventMgr.h"
 #include "CreatureGroups.h"
+#ifdef ENABLE_ELUNA
+#include "LuaEngine.h"
+#endif
 #include "InstanceData.h"
 
 #include <algorithm>
@@ -191,14 +194,9 @@ void ScriptMgr::LoadScripts(ScriptMapMap& scripts, const char* tablename)
                     continue;
                 }
 
-                for (int i : tmp.talk.textId)
-                {
-                    if (i < 0)
-                    {
-                        sLog.outErrorDb("Table `%s` has out of range broadcast text id (dataint = %i, expected positive value) in SCRIPT_COMMAND_TALK for script id %u", tablename, i, tmp.id);
-                        continue;
-                    }
-                }
+                // Positive ids reference broadcast_text; legacy ScriptDev2 and
+                // Turtle content deliberately use negative script_texts ids.
+                // Both forms are handled by DoScriptText().
                 break;
             }
             case SCRIPT_COMMAND_EMOTE:
@@ -1626,8 +1624,10 @@ void ScriptMgr::CheckScriptTexts(ScriptMapMap const& scripts)
             {
                 for (int i : itrM->second.talk.textId)
                 {
-                    if (i && !sObjectMgr.GetBroadcastTextLocale(i))
-                        sLog.outErrorDb("Table `broadcast_text` is missing text id %u, used in database script id %u.", i, script.first);
+                    if (i > 0 && !sObjectMgr.GetBroadcastTextLocale(i))
+                        sLog.outErrorDb("Table `broadcast_text` is missing text id %i, used in database script id %u.", i, script.first);
+                    else if (i < 0 && !GetTextData(i))
+                        sLog.outErrorDb("Table `script_texts` is missing text id %i, used in database script id %u.", i, script.first);
                 }
             }
         }
@@ -1727,6 +1727,21 @@ void ScriptMgr::LoadScriptNames()
         delete result;
     }
 
+    // Scripts that ship in this binary but whose creature_template.script_name
+    // rows live in world-DB updates a realm may not have applied. Without the
+    // name here RegisterSelf() reports "not assigned in database" and the
+    // script is dropped; with it the script registers and LoadCreatureTemplates
+    // binds it to the entry when the DB row carries no script (see there).
+    // Zul Farrak Farraki Arena, update 20260626153218 (2026-09-05).
+    static char const* const kFallbackScriptNames[] =
+    {
+        "npc_champion_razjal_the_quick",
+        "npc_kathzen_the_brutal",
+        "npc_juthza_the_cunning",
+    };
+    for (char const* fallback : kFallbackScriptNames)
+        m_scriptNames.emplace_back(fallback);
+
     std::sort(m_scriptNames.begin(), m_scriptNames.end());
     m_scriptNames.erase(std::unique(m_scriptNames.begin(), m_scriptNames.end()), m_scriptNames.end());
 }
@@ -1781,6 +1796,12 @@ CreatureAI* ScriptMgr::GetCreatureAI(Creature* pCreature)
             ai = script->GetCreatureAI(pCreature);
             return ai != nullptr;
         });
+
+#ifdef ENABLE_ELUNA
+        if (!ai)
+            if (Eluna* e = pCreature->GetEluna())
+                ai = e->GetAI(pCreature);
+#endif
 
         return ai;
     }
@@ -1904,10 +1925,18 @@ bool ScriptMgr::OnGossipHello(Player* pPlayer, Creature* pCreature)
             return true;
     }
 
-    return ScriptRegistry<AllCreatureScript>::ForEachWithReturn([&](AllCreatureScript* script)
+    if (ScriptRegistry<AllCreatureScript>::ForEachWithReturn([&](AllCreatureScript* script)
     {
         return script->CanCreatureGossipHello(pPlayer, pCreature);
-    });
+    }))
+        return true;
+
+#ifdef ENABLE_ELUNA
+    if (Eluna* e = pPlayer->GetEluna())
+        return e->OnGossipHello(pPlayer, pCreature);
+#endif
+
+    return false;
 }
 
 bool ScriptMgr::OnGossipHello(Player* pPlayer, GameObject* pGameObject)
@@ -1928,10 +1957,18 @@ bool ScriptMgr::OnGossipHello(Player* pPlayer, GameObject* pGameObject)
             return true;
     }
 
-    return ScriptRegistry<AllGameObjectScript>::ForEachWithReturn([&](AllGameObjectScript* script)
+    if (ScriptRegistry<AllGameObjectScript>::ForEachWithReturn([&](AllGameObjectScript* script)
     {
         return script->CanGameObjectGossipHello(pPlayer, pGameObject);
-    });
+    }))
+        return true;
+
+#ifdef ENABLE_ELUNA
+    if (Eluna* e = pPlayer->GetEluna())
+        return e->OnGossipHello(pPlayer, pGameObject);
+#endif
+
+    return false;
 }
 
 bool ScriptMgr::OnGossipSelect(Player* pPlayer, Creature* pCreature, uint32 sender, uint32 action, const char* code)
@@ -1970,6 +2007,12 @@ bool ScriptMgr::OnGossipSelect(Player* pPlayer, Creature* pCreature, uint32 send
             return script->OnGossipSelect(pPlayer, pCreature, sender, action);
         }
     }
+
+#ifdef ENABLE_ELUNA
+    if (Eluna* e = pPlayer->GetEluna())
+        return code ? e->OnGossipSelectCode(pPlayer, pCreature, sender, action, code)
+                    : e->OnGossipSelect(pPlayer, pCreature, sender, action);
+#endif
 
     return false;
 }
@@ -2011,10 +2054,19 @@ bool ScriptMgr::OnGossipSelect(Player* pPlayer, GameObject* pGameObject, uint32 
         }
     }
 
-    return ScriptRegistry<AllGameObjectScript>::ForEachWithReturn([&](AllGameObjectScript* script)
+    if (ScriptRegistry<AllGameObjectScript>::ForEachWithReturn([&](AllGameObjectScript* script)
     {
         return script->CanGameObjectGossipSelect(pPlayer, pGameObject, sender, action, code);
-    });
+    }))
+        return true;
+
+#ifdef ENABLE_ELUNA
+    if (Eluna* e = pPlayer->GetEluna())
+        return code ? e->OnGossipSelectCode(pPlayer, pGameObject, sender, action, code)
+                    : e->OnGossipSelect(pPlayer, pGameObject, sender, action);
+#endif
+
+    return false;
 }
 
 bool ScriptMgr::OnQuestAccept(Player* pPlayer, Creature* pCreature, Quest const* pQuest)
@@ -2036,6 +2088,11 @@ bool ScriptMgr::OnQuestAccept(Player* pPlayer, Creature* pCreature, Quest const*
         pPlayer->PlayerTalkClass->ClearMenus();
         return script->OnQuestAccept(pPlayer, pCreature, pQuest);
     }
+
+#ifdef ENABLE_ELUNA
+    if (Eluna* e = pPlayer->GetEluna())
+        return e->OnQuestAccept(pPlayer, pCreature, pQuest);
+#endif
 
     return false;
 }
@@ -2059,6 +2116,11 @@ bool ScriptMgr::OnQuestAccept(Player* pPlayer, GameObject* pGameObject, Quest co
         pPlayer->PlayerTalkClass->ClearMenus();
         return script->OnQuestAccept(pPlayer, pGameObject, pQuest);
     }
+
+#ifdef ENABLE_ELUNA
+    if (Eluna* e = pPlayer->GetEluna())
+        return e->OnQuestAccept(pPlayer, pGameObject, pQuest);
+#endif
 
     return false;
 }
@@ -2209,6 +2271,11 @@ uint32 ScriptMgr::GetDialogStatus(Player* pPlayer, Creature* pCreature)
         return script->GetDialogStatus(pPlayer, pCreature);
     }
 
+#ifdef ENABLE_ELUNA
+    if (Eluna* e = pPlayer->GetEluna())
+        e->GetDialogStatus(pPlayer, pCreature);
+#endif
+
     return DIALOG_STATUS_UNDEFINED;
 }
 
@@ -2227,6 +2294,11 @@ uint32 ScriptMgr::GetDialogStatus(Player* pPlayer, GameObject* pGameObject)
         pPlayer->PlayerTalkClass->ClearMenus();
         return script->GetDialogStatus(pPlayer, pGameObject);
     }
+
+#ifdef ENABLE_ELUNA
+    if (Eluna* e = pPlayer->GetEluna())
+        e->GetDialogStatus(pPlayer, pGameObject);
+#endif
 
     return DIALOG_STATUS_UNDEFINED;
 }
@@ -2260,6 +2332,11 @@ bool ScriptMgr::OnGameObjectUse(Player* pPlayer, GameObject* pGameObject)
         pPlayer->PlayerTalkClass->ClearMenus();
         return script->OnGossipHello(pPlayer, pGameObject);
     }
+
+#ifdef ENABLE_ELUNA
+    if (Eluna* e = pPlayer->GetEluna())
+        return e->OnGameObjectUse(pPlayer, pGameObject);
+#endif
 
     return false;
 }
@@ -2306,6 +2383,11 @@ bool ScriptMgr::OnAreaTrigger(Player* pPlayer, AreaTriggerEntry const* atEntry)
     if (AreaTriggerScript* script = ScriptRegistry<AreaTriggerScript>::GetScriptById(GetAreaTriggerScriptId(atEntry->id)))
         return script->OnTrigger(pPlayer, atEntry);
 
+#ifdef ENABLE_ELUNA
+    if (Eluna* e = pPlayer->GetEluna())
+        return e->OnAreaTrigger(pPlayer, atEntry);
+#endif
+
     return false;
 }
 
@@ -2324,7 +2406,14 @@ bool ScriptMgr::OnProcessEvent(uint32 eventId, Object* pSource, Object* pTarget,
         else
             script->OnStop(eventId);
 
-        return true;
+        // Only a database-bound script HANDLES the event. A non-bound one is an
+        // observer - the Eluna bridge sits at registry id 0, which is exactly
+        // what GetEventIdScriptId() returns for every event WITHOUT a
+        // scripted_event_id row - and reporting "handled" here kept the DB
+        // event_scripts from ever running: Zul Farrak gong 141832, event 2488,
+        // Gahzrilla never summoned (2026-09-05).
+        if (script->IsDatabaseBound())
+            return true;
     }
 
     return false;
@@ -2333,6 +2422,11 @@ bool ScriptMgr::OnProcessEvent(uint32 eventId, Object* pSource, Object* pTarget,
 bool ScriptMgr::OnEffectDummy(WorldObject* pCaster, uint32 spellId, SpellEffectIndex effIndex, Creature* pTarget)
 {
     Script* pTempScript = m_NPC_scripts[pTarget->GetScriptId()];
+
+#ifdef ENABLE_ELUNA
+    if (Eluna* e = pCaster->GetEluna())
+        e->OnDummyEffect(pCaster, spellId, effIndex, pTarget);
+#endif
 
     if (pTempScript && pTempScript->pEffectDummyCreature && pTempScript->pEffectDummyCreature(pCaster, spellId, effIndex, pTarget))
         return true;
@@ -2343,6 +2437,11 @@ bool ScriptMgr::OnEffectDummy(WorldObject* pCaster, uint32 spellId, SpellEffectI
 bool ScriptMgr::OnEffectDummy(WorldObject* pCaster, uint32 spellId, SpellEffectIndex effIndex, GameObject* pTarget)
 {
     Script* pTempScript = m_NPC_scripts[pTarget->GetGOInfo()->ScriptId];
+
+#ifdef ENABLE_ELUNA
+    if (Eluna* e = pCaster->GetEluna())
+        e->OnDummyEffect(pCaster, spellId, effIndex, pTarget);
+#endif
 
     if (pTempScript && pTempScript->pEffectDummyGameObj && pTempScript->pEffectDummyGameObj(pCaster, spellId, effIndex, pTarget))
         return true;
@@ -3184,4 +3283,91 @@ bool QuestInstance::GoToStage(uint32 newStage)
     }
     SetQuestStage(newStage);
     return true;
+}
+
+
+// --- module queries -------------------------------------------------------
+// Thin wrappers over the ScriptRegistry loops so call sites stay readable.
+// All of these sit on cold paths (group forming, looking-for-team, death and
+// release), so the loop costs nothing worth measuring.
+
+bool Script_IsAIControlled(Player const* player)
+{
+    if (!player)
+        return false;
+
+    return ScriptRegistry<PlayerScript>::ForEachEnabledHookWithReturn(PLAYERHOOK_IS_AI_CONTROLLED, [&](PlayerScript* script)
+    {
+        return script->IsAIControlled(player);
+    });
+}
+
+bool Script_HasAIFollowers(Player const* player)
+{
+    if (!player)
+        return false;
+
+    return ScriptRegistry<PlayerScript>::ForEachEnabledHookWithReturn(PLAYERHOOK_HAS_AI_FOLLOWERS, [&](PlayerScript* script)
+    {
+        return script->HasAIFollowers(player);
+    });
+}
+
+uint8 Script_GetAllowedRoles(Player const* player)
+{
+    if (!player)
+        return 0;
+
+    uint8 roles = 0;
+    ScriptRegistry<PlayerScript>::ForEachEnabledHookWithReturn(PLAYERHOOK_GET_ALLOWED_ROLES, [&](PlayerScript* script)
+    {
+        return script->GetAllowedRoles(player, roles);
+    });
+
+    return roles;
+}
+
+void Script_SetForcedRole(Player* player, uint8 role)
+{
+    if (!player)
+        return;
+
+    ScriptRegistry<PlayerScript>::ForEachEnabledHook(PLAYERHOOK_SET_FORCED_ROLE, [&](PlayerScript* script)
+    {
+        script->SetForcedRole(player, role);
+    });
+}
+
+bool Script_IsMachineDriven(Player const* player)
+{
+    if (!player)
+        return false;
+
+    return ScriptRegistry<PlayerScript>::ForEachEnabledHookWithReturn(PLAYERHOOK_IS_MACHINE_DRIVEN, [&](PlayerScript* script)
+    {
+        return script->IsMachineDriven(player);
+    });
+}
+
+bool Script_IsUpdateCritical(Player const* player)
+{
+    if (!player)
+        return false;
+
+    return ScriptRegistry<PlayerScript>::ForEachEnabledHookWithReturn(PLAYERHOOK_IS_UPDATE_CRITICAL, [&](PlayerScript* script)
+    {
+        return script->IsUpdateCritical(player);
+    });
+}
+
+bool Script_IsAIUpdateDue(Player* player, uint32 diff)
+{
+    return ScriptRegistry<PlayerScript>::ForEachEnabledHookWithReturn(PLAYERHOOK_IS_AI_UPDATE_DUE,
+        [&](PlayerScript* script) { return script->IsAIUpdateDue(player, diff); });
+}
+
+void Script_UpdateAI(Player* player, uint32 diff, bool minimal)
+{
+    ScriptRegistry<PlayerScript>::ForEachEnabledHook(PLAYERHOOK_ON_AI_UPDATE,
+        [&](PlayerScript* script) { script->OnAIUpdate(player, diff, minimal); });
 }

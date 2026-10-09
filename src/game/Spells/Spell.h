@@ -236,6 +236,7 @@ class Spell
     friend void WorldObject::MoveChannelledSpellWithCastTime(Spell* pSpell);
     public:
 
+
         void EffectEmpty(SpellEffectIndex eff_idx);
         void EffectNULL(SpellEffectIndex eff_idx);
         void EffectUnused(SpellEffectIndex eff_idx);
@@ -365,6 +366,8 @@ class Spell
         void OnSpellLaunch();
 
         SpellCastResult CheckItems();
+        // Bounds measured using GetCombatDistance, for ordinary ranged spells.
+        std::pair<float, float> GetGenericRangeBounds(bool strict, Unit* target);
         SpellCastResult CheckRange(bool strict);
         SpellCastResult CheckPower() const;
         SpellCastResult CheckCasterAuras() const;
