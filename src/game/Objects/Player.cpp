@@ -25,6 +25,7 @@
 #include <ctime>
 
 #include "Player.h"
+#include "BarbershopMgr.h"
 #include "Language.h"
 #include "Database/DatabaseEnv.h"
 #include "Log.h"
@@ -1613,6 +1614,8 @@ void Player::Update(uint32 update_diff, uint32 p_time)
     });
 
     UpdateMirrorTimers(update_diff);
+
+    sBarbershopMgr.Update(this);
 
     //used to implement delayed far teleports
     SetCanDelayTeleport(true);
@@ -18297,8 +18300,13 @@ bool Player::SaveToDB(bool online, bool force, bool direct)
     uberInsert.addUInt32(GetLevel());
     uberInsert.addUInt32(GetUInt32Value(PLAYER_XP));
     uberInsert.addUInt32(GetMoney());
-    uberInsert.addUInt32(GetUInt32Value(PLAYER_BYTES));
-    uberInsert.addUInt32(GetUInt32Value(PLAYER_BYTES_2));
+
+    // A barbershop preview lives in these fields; save the look the player owns.
+    uint32 playerBytes = GetUInt32Value(PLAYER_BYTES);
+    uint32 playerBytes2 = GetUInt32Value(PLAYER_BYTES_2);
+    sBarbershopMgr.GetSaveBytes(this, playerBytes, playerBytes2);
+    uberInsert.addUInt32(playerBytes);
+    uberInsert.addUInt32(playerBytes2);
 
     // Nostalrius: Fix toggled PvP flag after relog.
     uint32 playerFlags = GetUInt32Value(PLAYER_FLAGS) & ~(PLAYER_FLAGS_PVP_DESIRED);
