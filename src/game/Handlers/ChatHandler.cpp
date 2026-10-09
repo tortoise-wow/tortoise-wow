@@ -408,6 +408,16 @@ void WorldSession::HandleMessagechatOpcode(WorldPacket & recv_data)
         }
     }
 
+    // Notify modules after validation, before the core broadcasts the message.
+    // This is an observation hook; modules cannot alter or suppress chat here.
+    if (_player)
+    {
+        ScriptRegistry<PlayerScript>::ForEachEnabledHook(PLAYERHOOK_ON_CHAT_COMMAND, [&](PlayerScript* script)
+        {
+            script->OnChatCommand(_player, type, msg, lang, to);
+        });
+    }
+
     // Message handling
     switch (type)
     {

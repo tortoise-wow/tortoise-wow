@@ -153,6 +153,12 @@ enum PlayerHook
     PLAYERHOOK_IS_MANAGED_BOT,
     PLAYERHOOK_GET_BOT_ROLES,
     PLAYERHOOK_ON_ADDON_MESSAGE,
+    PLAYERHOOK_IS_AI_CONTROLLED,
+    PLAYERHOOK_IS_MACHINE_DRIVEN,
+    PLAYERHOOK_HAS_AI_FOLLOWERS,
+    PLAYERHOOK_GET_ALLOWED_ROLES,
+    PLAYERHOOK_SET_FORCED_ROLE,
+    PLAYERHOOK_ON_CHAT_COMMAND,
     PLAYERHOOK_END
 };
 
@@ -211,6 +217,17 @@ class PlayerScript : public ScriptObject
         // A module may take an addon message as a command of its own. Return true
         // when the text was consumed; the core then does not relay it.
         virtual bool OnAddonMessage(Player* /*from*/, std::string const& /*msg*/) { return false; }
+
+        // Generic seams for modules that drive simulated characters. These
+        // deliberately describe what the core needs rather than naming a
+        // particular bot implementation.
+        virtual bool IsAIControlled(Player const* /*player*/) { return false; }
+        virtual bool IsMachineDriven(Player const* /*player*/) { return false; }
+        virtual bool HasAIFollowers(Player const* /*player*/) { return false; }
+        virtual bool GetAllowedRoles(Player const* /*player*/, uint8& /*roles*/) { return false; }
+        virtual void SetForcedRole(Player* /*player*/, uint8 /*role*/) {}
+        virtual void OnChatCommand(Player* /*player*/, uint32 /*type*/, std::string const& /*msg*/,
+                                   uint32 /*lang*/, std::string const& /*to*/) {}
 };
 
 class CreatureScript : public ScriptObject, public UpdatableScript<Creature>
@@ -608,6 +625,7 @@ enum ServerHook
     SERVERHOOK_ON_SOCKET_CLOSE,
     SERVERHOOK_CAN_PACKET_SEND,
     SERVERHOOK_CAN_PACKET_RECEIVE,
+    SERVERHOOK_ON_PACKET_HANDLED,
     SERVERHOOK_END
 };
 
@@ -628,6 +646,9 @@ class ServerScript : public ScriptObject
         virtual void OnSocketClose(WorldSocket* /*socket*/) {}
         virtual bool CanPacketSend(WorldSession* /*session*/, WorldPacket const& /*packet*/) { return true; }
         virtual bool CanPacketReceive(WorldSession* /*session*/, WorldPacket const& /*packet*/) { return true; }
+        // Observation hook after the opcode handler has completed. Unlike
+        // CanPacketReceive, this cannot suppress the packet.
+        virtual void OnPacketHandled(WorldSession* /*session*/, WorldPacket const& /*packet*/) {}
 };
 
 class MiscScript : public ScriptObject
