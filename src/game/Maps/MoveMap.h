@@ -27,8 +27,10 @@
 #include "Detour/Include/DetourNavMesh.h"
 #include "Detour/Include/DetourNavMeshQuery.h"
 
+#include <atomic>
 #include <thread>
 #include <shared_mutex>
+#include <utility>
 
 //  memory management
 inline void* dtCustomAlloc(size_t size, dtAllocHint /*hint*/)
@@ -67,6 +69,34 @@ namespace MMAP
         std::shared_mutex navMeshQueries_lock;
         MMapTileSet mmapLoadedTiles; // maps [map grid coords] to [dtTile]
         std::mutex tilesLoading_lock;
+
+        // dtNavMeshQuery objects are per-thread, but all of them read the same
+        // dtNavMesh. Tile insertion/removal mutates that shared mesh and must
+        // not overlap a query that can retain tile/poly pointers.
+        std::shared_mutex navMesh_lock;
+    };
+
+    class NavMeshQueryHandle
+    {
+        public:
+            NavMeshQueryHandle() = default;
+            NavMeshQueryHandle(NavMeshQueryHandle&&) noexcept = default;
+            NavMeshQueryHandle& operator=(NavMeshQueryHandle&&) noexcept = default;
+            NavMeshQueryHandle(const NavMeshQueryHandle&) = delete;
+            NavMeshQueryHandle& operator=(const NavMeshQueryHandle&) = delete;
+
+            dtNavMeshQuery const* get() const { return m_query; }
+            dtNavMeshQuery const* operator->() const { return m_query; }
+            explicit operator bool() const { return m_query != nullptr; }
+
+        private:
+            friend class MMapManager;
+
+            NavMeshQueryHandle(dtNavMeshQuery const* query, std::shared_lock<std::shared_mutex>&& lock)
+                : m_query(query), m_lock(std::move(lock)) {}
+
+            dtNavMeshQuery const* m_query = nullptr;
+            std::shared_lock<std::shared_mutex> m_lock;
     };
 
     typedef std::unordered_map<uint32, MMapData*> MMapDataSet;
@@ -85,23 +115,26 @@ namespace MMAP
             bool unloadMap(uint32 mapId);
             bool unloadMapInstance(uint32 mapId, std::thread::id instanceId);
 
-            // The returned [dtNavMeshQuery const*] is NOT threadsafe
-            // Returns a NavMeshQuery valid for current thread only.
-            dtNavMeshQuery const* GetNavMeshQuery(uint32 mapId);
-            dtNavMeshQuery const* GetModelNavMeshQuery(uint32 displayId);
-            dtNavMesh const* GetNavMesh(uint32 mapId);
+            // A handle pins the shared dtNavMesh against tile mutation for the
+            // lifetime of a complete logical query operation. Keep the handle
+            // alive while using the returned dtNavMeshQuery or dtPolyRef values.
+            NavMeshQueryHandle AcquireNavMeshQuery(uint32 mapId);
+            NavMeshQueryHandle AcquireModelNavMeshQuery(uint32 displayId);
 
-            uint32 getLoadedTilesCount() const { return loadedTiles; }
+            bool IsNavMeshLoaded(uint32 mapId);
+
+            uint32 getLoadedTilesCount() const { return loadedTiles.load(std::memory_order_relaxed); }
             uint32 getLoadedMapsCount() const { return loadedMMaps.size(); }
         private:
             bool loadMapData(uint32 mapId);
+            dtNavMeshQuery const* GetOrCreateNavMeshQuery(MMapData* mmap, uint32 identifier, bool model);
             static uint32 packTileID(int32 x, int32 y);
 
             MMapDataSet loadedMMaps;
             std::shared_mutex loadedMMaps_lock;
             MMapDataSet loadedModels;
 
-            uint32 loadedTiles;
+            std::atomic<uint32> loadedTiles;
             std::mutex lockForModels;
     };
 
