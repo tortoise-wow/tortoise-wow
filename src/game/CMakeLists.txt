@@ -87,6 +87,7 @@ set (game_SRCS
     Battlegrounds/BattleGroundWS.cpp
     Battlegrounds/BattleGroundBR.cpp
     Battlegrounds/BattleGroundSV.cpp
+    Battlegrounds/BattleGroundTG.cpp
     Chat/Channel.cpp
     Chat/ChannelMgr.cpp
     Chat/Chat.cpp
@@ -300,6 +301,9 @@ set (game_SRCS
     Battlegrounds/BattleGroundWS.h
     Battlegrounds/BattleGroundBR.h
     Battlegrounds/BattleGroundSV.h
+    Battlegrounds/BattleGroundTG.h
+    Battlegrounds/ThornGorgeRules.h
+    Battlegrounds/ThornGorgeDiagnostics.h
     Chat/Channel.h
     Chat/ChannelMgr.h
     Chat/Chat.h

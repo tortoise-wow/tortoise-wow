@@ -1746,9 +1746,10 @@ enum BattleGroundTypeId : uint32
     BATTLEGROUND_WS            = 2,
     BATTLEGROUND_AB            = 3,
     BATTLEGROUND_BR            = 4, // arena Blood Ring
-    BATTLEGROUND_SV            = 5
+    BATTLEGROUND_SV            = 5,
+    BATTLEGROUND_TG            = 6
 };
-#define MAX_BATTLEGROUND_TYPE_ID 6
+#define MAX_BATTLEGROUND_TYPE_ID 7
 
 inline BattleGroundTypeId GetBattleGroundTypeIdByMapId(uint32 mapId)
 {
@@ -1759,6 +1760,7 @@ inline BattleGroundTypeId GetBattleGroundTypeIdByMapId(uint32 mapId)
         case 529:   return BATTLEGROUND_AB;
         case 26:    return BATTLEGROUND_BR;
         case 27:    return BATTLEGROUND_SV;
+        case 821:   return BATTLEGROUND_TG;
         default:    return BATTLEGROUND_TYPE_NONE;
     }
 }
@@ -1772,6 +1774,7 @@ inline uint32 GetBattleGrounMapIdByTypeId(BattleGroundTypeId bgTypeId)
         case BATTLEGROUND_AB:   return 529;
         case BATTLEGROUND_BR:   return 26;
         case BATTLEGROUND_SV:   return 27;
+        case BATTLEGROUND_TG:   return 821;
         default:                return 0;   //none
     }
 
