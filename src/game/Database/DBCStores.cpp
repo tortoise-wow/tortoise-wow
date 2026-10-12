@@ -28,6 +28,7 @@
 #include "SpellMgr.h"
 #include "ObjectMgr.h"
 
+#include <deque>
 #include <map>
 #include <vector>
 #include <regex>
@@ -414,6 +415,79 @@ void LoadDBCStores(std::string const& dataPath)
     for (uint32 i = 1; i < sTaxiPathNodeStore.GetNumRows(); ++i)
         if (TaxiPathNodeEntry const* entry = sTaxiPathNodeStore.LookupEntry(i))
             sTaxiPathNodesByPath[entry->path].set(entry->index, entry);
+
+    // Count distinct filled node slots per path. A path is flyable only if it has nodes and every slot is filled.
+    // DBC rows can repeat a (path, index) pair, so count distinct slots, not rows.
+    // Path::operator[] dereferences the slot, so a null slot must not be read through it.
+    std::set<std::pair<uint32, uint32>> filledSlotSet;
+    for (uint32 i = 1; i < sTaxiPathNodeStore.GetNumRows(); ++i)
+        if (TaxiPathNodeEntry const* entry = sTaxiPathNodeStore.LookupEntry(i))
+            filledSlotSet.insert({entry->path, entry->index});
+    std::vector<uint32> filledSlots(pathCount, 0);
+    for (auto const& slot : filledSlotSet)
+        ++filledSlots[slot.first];
+    auto isTaxiPathComplete = [&](uint32 pathId)
+    {
+        return pathId < pathCount && !sTaxiPathNodesByPath[pathId].empty() && filledSlots[pathId] == sTaxiPathNodesByPath[pathId].size();
+    };
+
+    // Rebuild an incomplete path from its complete reverse path on the same map (path 355
+    // Shimmerstar Lake -> Valormok lacks its first three nodes; 356 flies the same route back).
+    // The rebuilt nodes are the reverse path's nodes in reverse order, with no flags or delays.
+    static std::deque<TaxiPathNodeEntry> rebuiltTaxiNodes;
+    for (auto const& src : sTaxiPathSetBySource)
+    {
+        for (auto const& dst : src.second)
+        {
+            uint32 const pathId = dst.second.ID;
+            if (pathId >= pathCount || isTaxiPathComplete(pathId))
+                continue;
+            auto const reverseSrc = sTaxiPathSetBySource.find(dst.first);
+            if (reverseSrc == sTaxiPathSetBySource.end())
+                continue;
+            auto const reverseDst = reverseSrc->second.find(src.first);
+            if (reverseDst == reverseSrc->second.end() || !isTaxiPathComplete(reverseDst->second.ID))
+                continue;
+            TaxiPathNodeList const& reverse = sTaxiPathNodesByPath[reverseDst->second.ID];
+            uint32 const count = reverse.size();
+            bool sameMap = true;
+            for (uint32 n = 0; n < count; ++n)
+                sameMap = sameMap && reverse[n].mapid == reverse[0].mapid;
+            if (!sameMap)
+                continue;
+            sTaxiPathNodesByPath[pathId].resize(count);
+            for (uint32 n = 0; n < count; ++n)
+            {
+                TaxiPathNodeEntry node = reverse[count - 1 - n];
+                node.path = pathId;
+                node.index = n;
+                node.actionFlag = 0;
+                node.delay = 0;
+                rebuiltTaxiNodes.push_back(node);
+                sTaxiPathNodesByPath[pathId].set(n, &rebuiltTaxiNodes.back());
+            }
+            filledSlots[pathId] = count;
+            sLog.outString("Taxi path %u (%u -> %u) had missing nodes, rebuilt from reverse path %u", pathId, src.first, dst.first, reverseDst->second.ID);
+        }
+    }
+
+    // Drop taxi routes whose path has no nodes or a null node slot. Flying such a path crashes
+    // FlightPathMovementGenerator (e.g. path 355 in the shipped TaxiPathNode.dbc), so GetTaxiPath must not return it.
+    for (auto src_i = sTaxiPathSetBySource.begin(); src_i != sTaxiPathSetBySource.end(); )
+    {
+        TaxiPathSetForSource& dests = src_i->second;
+        for (auto dst_i = dests.begin(); dst_i != dests.end(); )
+        {
+            if (!isTaxiPathComplete(dst_i->second.ID))
+            {
+                sLog.outError("Taxi path %u (%u -> %u) has missing nodes, disabling it", dst_i->second.ID, src_i->first, dst_i->first);
+                dst_i = dests.erase(dst_i);
+            }
+            else
+                ++dst_i;
+        }
+        src_i = dests.empty() ? sTaxiPathSetBySource.erase(src_i) : std::next(src_i);
+    }
 
     // Initialize global taxinodes mask
     // include existing nodes that have at least single not spell base (scripted) path
