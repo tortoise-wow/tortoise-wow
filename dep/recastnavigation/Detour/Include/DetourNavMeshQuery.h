@@ -167,6 +167,8 @@ class dtNavMeshQuery
 public:
 	dtNavMeshQuery();
 	~dtNavMeshQuery();
+	/// Includes private node pools/open list; excludes the shared mesh.
+	size_t getOwnedMemoryBytes() const;
 	
 	/// Initializes the query object.
 	///  @param[in]		nav			Pointer to the dtNavMesh object to use for all queries.
@@ -541,6 +543,7 @@ private:
 	dtStatus getPathToNode(struct dtNode* endNode, dtPolyRef* path, int* pathCount, int maxPath) const;
 	
 	const dtNavMesh* m_nav;				///< Pointer to navmesh data.
+	unsigned long long m_slicedMeshRevision = 0;
 
 	struct dtQueryData
 	{

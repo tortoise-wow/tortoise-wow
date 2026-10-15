@@ -36,7 +36,8 @@ class MovementBroadcaster final
 
     std::atomic_bool m_stop;
     std::vector<std::unique_ptr<std::thread, std::function<void(std::thread *)>>> m_threads;
-    std::chrono::milliseconds m_sleep_timer;
+    std::atomic<int64> m_sleep_ms;
+    mutable std::mutex m_stats_lock;
 
     std::vector<PlayersBCastSet> m_thread_players;
     std::vector<std::shared_mutex> m_thread_locks;
@@ -58,12 +59,12 @@ public:
 
     struct ThreadUpdateStats
     {
-        uint32 update_time;
-        uint32 num_packets;
-        int32 slow_instance;
+        uint32 update_time = 0;
+        uint32 num_packets = 0;
+        int32 slow_instance = -1;
     };
-    std::vector<ThreadUpdateStats> const& GetStats() const { return m_thread_update_stats; }
-    std::chrono::milliseconds GetSleepTimer() const { return m_sleep_timer; }
+    std::vector<ThreadUpdateStats> GetStats() const { std::lock_guard<std::mutex> lock(m_stats_lock); return m_thread_update_stats; }
+    std::chrono::milliseconds GetSleepTimer() const { return std::chrono::milliseconds(m_sleep_ms.load()); }
     std::size_t GetNumThreads() const { return m_num_threads; }
     bool IsMapSlow(uint32 instanceId);
     bool IsEnabled();

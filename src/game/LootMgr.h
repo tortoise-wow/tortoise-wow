@@ -30,6 +30,7 @@
 
 #include <map>
 #include <vector>
+#include <functional>
 
 #define MAX_NR_LOOT_ITEMS 16
 // note: the client cannot show more than 16 items total
@@ -210,12 +211,28 @@ class LootStore
         bool m_ratesAllowed;
 };
 
+// Non-owning rows; allocator/category types stay private to the native store.
+struct LootEntryView
+{
+    LootStoreItem const* data;
+    size_t count;
+    LootStoreItem const* begin() const { return data; }
+    LootStoreItem const* end() const { return count ? data + count : data; }
+    size_t size() const { return count; }
+    bool empty() const { return count == 0; }
+};
+
 class LootTemplate
 {
     class  LootGroup;                                       // A set of loot definitions for items (refs are not allowed inside)
     typedef std::vector<LootGroup> LootGroups;
 
     public:
+        LootEntryView GetEntries() const;
+        // Read on the same owner/lifetime contract as GetLootFor; no reload may
+        // run concurrently. Visitors must not mutate or retain these lists.
+        void VisitGroups(std::function<void(LootEntryView, LootEntryView)> const& visitor) const;
+
         // Adds an entry to the group (at loading stage)
         void AddEntry(LootStoreItem& item);
         // Rolls for every item in the template and adds the rolled items the the loot

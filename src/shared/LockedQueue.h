@@ -31,7 +31,7 @@ template <class T, class LockType, typename StorageType=std::deque<T> >
     class LockedQueue
 {
     //! Lock access to the queue.
-    LockType _lock;
+    mutable LockType _lock;
 
     //! Storage backing the queue.
     StorageType _queue;
@@ -134,6 +134,12 @@ template <class T, class LockType, typename StorageType=std::deque<T> >
         {
             std::unique_lock<LockType> g(this->_lock);
             return _queue.empty();
+        }
+
+        size_t size() const
+        {
+            std::unique_lock<LockType> g(this->_lock);
+            return _queue.size();
         }
 };
 #endif

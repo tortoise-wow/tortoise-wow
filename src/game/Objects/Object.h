@@ -33,6 +33,7 @@
 #include "DBCEnums.h"
 #include "Utilities/EventProcessor.h"
 #include "DynamicVisibilityMgr.h"
+#include "MovementViewerSet.h"
 
 #include <set>
 #include <string>
@@ -786,6 +787,10 @@ class WorldObject : public Object
                 explicit UpdateHelper(WorldObject * obj) : m_obj(obj) {}
                 ~UpdateHelper() { }
 
+                // Read without resetting: deferred background work must retain
+                // the real elapsed time used by spell, aura and regen clocks.
+                uint32 ElapsedTime(uint32 now) const { return m_obj->m_updateTracker.timeElapsed(now); }
+
                 void Update(uint32 time_diff)
                 {
                     m_obj->Update(m_obj->m_updateTracker.timeElapsed(), time_diff);
@@ -795,6 +800,23 @@ class WorldObject : public Object
                 void UpdateRealTime(uint32 now, uint32 time_diff)
                 {
                     m_obj->Update(m_obj->m_updateTracker.timeElapsed(now), time_diff);
+                    m_obj->m_updateTracker.ResetTo(now);
+                }
+
+                // Preserve true wall-clock time for player timers while
+                // bounding the map/AI time replayed after a deferred update.
+                void UpdateRealTime(uint32 now, uint32 time_diff, uint32 max_time_diff)
+                {
+                    uint32 const bounded_diff = max_time_diff ? std::min(time_diff, max_time_diff) : time_diff;
+                    m_obj->Update(m_obj->m_updateTracker.timeElapsed(now), bounded_diff);
+                    m_obj->m_updateTracker.ResetTo(now);
+                }
+
+                void UpdateRealTimeBounded(uint32 now, uint32 max_time_diff)
+                {
+                    uint32 const elapsed = m_obj->m_updateTracker.timeElapsed(now);
+                    uint32 const bounded_diff = max_time_diff ? std::min(elapsed, max_time_diff) : elapsed;
+                    m_obj->Update(elapsed, bounded_diff);
                     m_obj->m_updateTracker.ResetTo(now);
                 }
 
@@ -990,6 +1012,13 @@ class WorldObject : public Object
         // Send to players who have object at client
         void SendObjectMessageToSet(WorldPacket *data, bool self, WorldObject const* except = nullptr) const;
         void SendMovementMessageToSet(WorldPacket data, bool self, WorldObject const* except = nullptr);
+        void AddMovementViewer(ObjectGuid guid) { if (IsCreature()) m_movementViewers.Add(guid); }
+        void RemoveMovementViewer(ObjectGuid guid) { if (IsCreature()) m_movementViewers.Remove(guid); }
+        void RemoveFromWorld() override
+        {
+            Object::RemoveFromWorld();
+            m_movementViewers.Clear();
+        }
 
         virtual void SendMessageToSetInRange(WorldPacket *data, float dist, bool self) const;
         void SendMessageToSetExcept(WorldPacket *data, Player const* skipped_receiver) const;
@@ -1086,6 +1115,7 @@ class WorldObject : public Object
         void GetAlivePlayerListInRange(WorldObject const* pSource, std::list<Player*>& lList, float fMaxSearchRange) const;
 
         bool isActiveObject() const { return m_isActiveObject || m_viewPoint.hasViewers(); }
+        bool IsActiveObject() const { return isActiveObject(); }
         void SetActiveObjectState(bool on);
 
         ViewPoint& GetViewPoint() { return m_viewPoint; }
@@ -1207,6 +1237,9 @@ virtual uint32 GetLevel() const = 0;
 
         // Event handler
         EventProcessor m_Events;
+    public:
+        EventProcessor& GetEvents() { return m_Events; }
+    protected:
 
 		inline void SetExclusiveVisibleFor(WorldObject* visibleFor)
 		{
@@ -1224,6 +1257,7 @@ virtual uint32 GetLevel() const = 0;
         float m_visibilityModifier;
 
         Map * m_currMap;                                    //current object's Map location
+        MovementViewerSet<ObjectGuid> m_movementViewers;
 
         uint32 m_mapId;                                     // object at map with map_id
         uint32 m_InstanceId;                                // in map copy with instance id

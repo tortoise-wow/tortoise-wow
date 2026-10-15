@@ -1,3 +1,4 @@
+#include "Maps/AreaTriggerAccess.h"
 /*
  * Copyright (C) 2005-2011 MaNGOS <http://getmangos.com/>
  * Copyright (C) 2009-2011 MaNGOSZero <https://github.com/mangos/zero>
@@ -247,11 +248,8 @@ void WorldSession::HandleWhoOpcode(WorldPacket & recv_data)
         return;
     //recv_data.hexlike();
 
-    time_t t = time(nullptr);
-
-
-    if (t - m_lastWhoRequest < 30 && !(GetPlayer() && GetPlayer()->HasCustomFlag(CUSTOM_PLAYER_FLAG_BYPASS_WHO_COOLDOWN)))
-        return;
+    // No user-facing cooldown. ReceivedWhoRequest still coalesces an
+    // outstanding query; the native bounded world task queue owns execution.
 
     std::string player_name, guild_name;
 
@@ -322,9 +320,6 @@ void WorldSession::HandleWhoOpcode(WorldPacket & recv_data)
     // update it to show GMs with characters after 100 level
     if (task.level_max >= MAX_LEVEL)
         task.level_max = PLAYER_STRONG_MAX_LEVEL;
-
-    if (GetSecurity() == SEC_PLAYER)
-        m_lastWhoRequest = time(nullptr);
 
     SetReceivedWhoRequest(true);
     sWorld.AddAsyncTask(std::move(task));
@@ -732,6 +727,8 @@ void WorldSession::HandleReclaimCorpseOpcode(WorldPacket &recv_data)
             return;
     // resurrect
     GetPlayer()->ResurrectPlayer(GetPlayer()->InBattleGround() ? 1.0f : 0.5f);
+    if (!GetPlayer()->IsAlive())
+        return;
 
     // spawn bones
     GetPlayer()->SpawnCorpseBones();
@@ -859,83 +856,32 @@ void WorldSession::HandleAreaTriggerOpcode(WorldPacket & recv_data)
     if (!pTargetMap)
         return;
 
-    if (pTeleTrigger->requiredPhase > sWorld.GetContentPhase())
+    // Native scripts, quest/tavern/BG/zone handling above still run first.
+    // The shared check preserves phase, corpse entrance, level/challenge,
+    // native condition context and raid-combat rules without side effects.
+    const auto access = CheckAreaTriggerTeleportAccess(pPlayer, pTeleTrigger);
+    switch (access)
     {
-        SendAreaTriggerMessage(GetMangosString(LANG_INSTANCE_AVAILABLE_IN_PHASE), pTeleTrigger->requiredPhase + 1);
-        return;
-    }
-
-    // ghost resurrected at enter attempt to dungeon with corpse (including fail enter cases)
-    if (!pPlayer->IsAlive() && pTargetMap->IsDungeon())
-    {
-        int32 corpseMapId = 0;
-        if (Corpse *corpse = pPlayer->GetCorpse())
-            corpseMapId = corpse->GetMapId();
-
-        // check back way from corpse to entrance
-        uint32 instance_map = corpseMapId;
-        do
-        {
-            // most often fast case
-            if (instance_map == pTargetMap->id)
-                break;
-
-            MapEntry const* instance = sMapStorage.LookupEntry<MapEntry>(instance_map);
-            instance_map = instance && instance->IsDungeon() ? instance->parent : 0;
-        }
-        while (instance_map);
-
-        // corpse not in dungeon or some linked deep dungeons
-        if (!instance_map)
-        {
-            pPlayer->GetSession()->SendAreaTriggerMessage("You cannot enter %s while in ghost form.", pTargetMap->name);
+        case AreaTriggerTeleportAccess::Allowed:
+            break;
+        case AreaTriggerTeleportAccess::Phase:
+            SendAreaTriggerMessage(GetMangosString(LANG_INSTANCE_AVAILABLE_IN_PHASE), pTeleTrigger->requiredPhase + 1);
             return;
-        }
-
-        // need find areatrigger to inner dungeon for landing point
-        if (pTeleTrigger->destination.mapId != corpseMapId)
-            if (AreaTriggerTeleport const* corpseAt = sObjectMgr.GetMapEntranceTrigger(corpseMapId))
-                pTeleTrigger = corpseAt;
-    }
-
-    if (!pPlayer->IsGameMaster())
-    {
-        bool const bLevelCheck = pPlayer->GetLevel() < pTeleTrigger->requiredLevel && !sWorld.getConfig(CONFIG_BOOL_INSTANCE_IGNORE_LEVEL);
-        static constexpr uint32 AllowedLunaticMaps[] = { 36, 43, 389, 822 };
-        bool bLunaticLevelOverrideMaps = false;
-        for (uint32 mapId : AllowedLunaticMaps)
-        {
-            if (pTargetMap->id == mapId)
-            {
-                bLunaticLevelOverrideMaps = true;
-                break;
-            }
-        }
-
-        bool const bLunaticLevelOverride = bLunaticLevelOverrideMaps && pPlayer->HasChallenge(CHALLENGE_LUNATIC);
-        bool const bBlockedByLevel = bLevelCheck && !bLunaticLevelOverride;
-        bool const bConditionCheck = pTeleTrigger->requiredCondition && !IsConditionSatisfied(pTeleTrigger->requiredCondition, pPlayer, pPlayer->GetMap(), pPlayer, CONDITION_FROM_AREATRIGGER);
-
-        if (bBlockedByLevel || bConditionCheck)
-        {
-            if (pTeleTrigger->message.empty())
-            {
-                if (bBlockedByLevel)
-                    SendAreaTriggerMessage(GetMangosString(LANG_LEVEL_MINREQUIRED), pTeleTrigger->requiredLevel);
-            }
-            else
-            {
+        case AreaTriggerTeleportAccess::Corpse:
+            SendAreaTriggerMessage("You cannot enter %s while in ghost form.", pTargetMap->name);
+            return;
+        case AreaTriggerTeleportAccess::Level:
+        case AreaTriggerTeleportAccess::Condition:
+            if (!pTeleTrigger->message.empty())
                 SendAreaTriggerMessage(pTeleTrigger->message.c_str());
-            }
+            else if (access == AreaTriggerTeleportAccess::Level)
+                SendAreaTriggerMessage(GetMangosString(LANG_LEVEL_MINREQUIRED), pTeleTrigger->requiredLevel);
             return;
-        }
-
-        // Turtle: Don't allow leaving raid while in combat.
-        if (pPlayer->IsInCombat() && pTargetMap->IsContinent() && pPlayer->GetMap()->IsRaid())
-        {
+        case AreaTriggerTeleportAccess::Combat:
             SendAreaTriggerMessage("You are in combat.");
             return;
-        }
+        default:
+            return;
     }
 
     pPlayer->TeleportTo(pTeleTrigger->destination);

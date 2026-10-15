@@ -24,7 +24,54 @@
 #include "CreatureAIImpl.h"
 #include "NullCreatureAI.h"
 #include "GameEventMgr.h"
-#include "CreatureGroups.h" 
+#include "CreatureGroups.h"
+#include <cstdarg>
+#include <chrono>
+#include <mutex>
+#include <unordered_map>
+#include "Config/Config.h"
+
+namespace
+{
+// Only repetitive runtime DB-script warnings are coalesced. Startup validation,
+// crash reports and unrelated errors keep their existing logging behavior.
+void ScriptRuntimeError(char const* format, ...)
+{
+    char message[2048];
+    va_list args;
+    va_start(args, format);
+    ::vsnprintf(message, sizeof(message), format, args);
+    va_end(args);
+    // Common.h maps this to legacy _vsnprintf on Windows, which does not
+    // guarantee a terminator on truncation.
+    message[sizeof(message) - 1] = '\0';
+    uint32 const interval = uint32(std::clamp(sConfig.GetIntDefault("Diagnostics.RepeatedScriptWarningIntervalMs", 30000), 0, 300000));
+    if (!interval) { sLog.outError("%s", message); return; }
+    struct Entry { uint64 last = 0, suppressed = 0; };
+    static std::mutex mutex;
+    static std::unordered_map<std::string, Entry> entries;
+    uint64 const now = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+    uint64 repeats = 0;
+    {
+        std::lock_guard<std::mutex> lock(mutex);
+        auto found = entries.find(message);
+        if (found == entries.end())
+        {
+            // Bounded memory: on overflow, emit uncached messages normally.
+            if (entries.size() < 256) entries.emplace(message, Entry{now, 0});
+        }
+        else
+        {
+            if (now - found->second.last < interval) { ++found->second.suppressed; return; }
+            repeats = found->second.suppressed;
+            found->second = {now, 0};
+        }
+    }
+    sLog.outError("%s", message);
+    if (repeats) sLog.outError("DBSCRIPT_REPEATED suppressed=%llu interval_ms=%u", static_cast<unsigned long long>(repeats), interval);
+}
+}
+
 
 // Script commands should return false by default.
 // If they return true the rest of the script is aborted.
@@ -41,7 +88,7 @@ bool Map::ScriptCommand_Talk(const ScriptInfo& script, WorldObject* source, Worl
 
     if (!pSource)
     {
-        sLog.outError("SCRIPT_COMMAND_TALK (script id %u) call for a nullptr or non-worldobject source (TypeId: %u), skipping.", script.id, source ? source->GetTypeId() : 0);
+        ScriptRuntimeError("SCRIPT_COMMAND_TALK (script id %u) call for a nullptr or non-worldobject source (TypeId: %u), skipping.", script.id, source ? source->GetTypeId() : 0);
         return ShouldAbortScript(script);
     }
 
@@ -74,7 +121,7 @@ bool Map::ScriptCommand_Emote(const ScriptInfo& script, WorldObject* source, Wor
 
     if (!pSource)
     {
-        sLog.outError("SCRIPT_COMMAND_EMOTE (script id %u) call for a nullptr or non-worldobject source (TypeId: %u), skipping.", script.id, source ? source->GetTypeId() : 0);
+        ScriptRuntimeError("SCRIPT_COMMAND_EMOTE (script id %u) call for a nullptr or non-worldobject source (TypeId: %u), skipping.", script.id, source ? source->GetTypeId() : 0);
         return ShouldAbortScript(script);
     }
 
@@ -88,14 +135,14 @@ bool Map::ScriptCommand_Emote(const ScriptInfo& script, WorldObject* source, Wor
         Creature* pCreatureSource = pSource->ToCreature();
         if (!pCreatureSource)
         {
-            sLog.outError("SCRIPT_COMMAND_EMOTE (script id %u) call for targeted emote with non-creature source (TypeId: %u), skipping.", script.id, source ? source->GetTypeId() : 0);
+            ScriptRuntimeError("SCRIPT_COMMAND_EMOTE (script id %u) call for targeted emote with non-creature source (TypeId: %u), skipping.", script.id, source ? source->GetTypeId() : 0);
             return ShouldAbortScript(script);
         }
 
         Unit* pTarget = ToUnit(target);
         if (!pTarget)
         {
-            sLog.outError("SCRIPT_COMMAND_EMOTE (script id %u) call for targeted emote with non-unit target (TypeId: %u), skipping.", script.id, target ? target->GetTypeId() : 0);
+            ScriptRuntimeError("SCRIPT_COMMAND_EMOTE (script id %u) call for targeted emote with non-unit target (TypeId: %u), skipping.", script.id, target ? target->GetTypeId() : 0);
             return ShouldAbortScript(script);
         }
 
@@ -122,13 +169,13 @@ bool Map::ScriptCommand_FieldSet(const ScriptInfo& script, WorldObject* source, 
 {
     if (!source)
     {
-        sLog.outError("SCRIPT_COMMAND_FIELD_SET (script id %u) call for a nullptr object, skipping.", script.id);
+        ScriptRuntimeError("SCRIPT_COMMAND_FIELD_SET (script id %u) call for a nullptr object, skipping.", script.id);
         return ShouldAbortScript(script);
     }
 
     if (script.setField.fieldId <= OBJECT_FIELD_ENTRY || script.setField.fieldId >= source->GetValuesCount())
     {
-        sLog.outError("SCRIPT_COMMAND_FIELD_SET (script id %u) call for wrong field %u (max count: %u) in object (TypeId: %u).",
+        ScriptRuntimeError("SCRIPT_COMMAND_FIELD_SET (script id %u) call for wrong field %u (max count: %u) in object (TypeId: %u).",
             script.id, script.setField.fieldId, source->GetValuesCount(), source->GetTypeId());
         return ShouldAbortScript(script);
     }
@@ -145,7 +192,7 @@ bool Map::ScriptCommand_MoveTo(const ScriptInfo& script, WorldObject* source, Wo
 
     if (!pSource)
     {
-        sLog.outError("SCRIPT_COMMAND_MOVE_TO (script id %u) call for a nullptr or non-creature source (TypeId: %u), skipping.", script.id, source ? source->GetTypeId() : 0);
+        ScriptRuntimeError("SCRIPT_COMMAND_MOVE_TO (script id %u) call for a nullptr or non-creature source (TypeId: %u), skipping.", script.id, source ? source->GetTypeId() : 0);
         return ShouldAbortScript(script);
     }
 
@@ -169,7 +216,7 @@ bool Map::ScriptCommand_MoveTo(const ScriptInfo& script, WorldObject* source, Wo
             }
             else
             {
-                sLog.outError("SCRIPT_COMMAND_MOVE_TO (script id %u) call with datalong = %u for a nullptr or non-worldobject target, skipping.", script.id, script.moveTo.coordinatesType);
+                ScriptRuntimeError("SCRIPT_COMMAND_MOVE_TO (script id %u) call with datalong = %u for a nullptr or non-worldobject target, skipping.", script.id, script.moveTo.coordinatesType);
                 return ShouldAbortScript(script);
             }
             break;
@@ -185,7 +232,7 @@ bool Map::ScriptCommand_MoveTo(const ScriptInfo& script, WorldObject* source, Wo
             }
             else
             {
-                sLog.outError("SCRIPT_COMMAND_MOVE_TO (script id %u) call with datalong = %u for a nullptr or non-worldobject target, skipping.", script.id, script.moveTo.coordinatesType);
+                ScriptRuntimeError("SCRIPT_COMMAND_MOVE_TO (script id %u) call with datalong = %u for a nullptr or non-worldobject target, skipping.", script.id, script.moveTo.coordinatesType);
                 return ShouldAbortScript(script);
             }
             break;
@@ -221,13 +268,13 @@ bool Map::ScriptCommand_ModifyFlags(const ScriptInfo& script, WorldObject* sourc
 {
     if (!source)
     {
-        sLog.outError("SCRIPT_COMMAND_MODIFY_FLAGS (script id %u) call for a nullptr object, skipping.", script.id);
+        ScriptRuntimeError("SCRIPT_COMMAND_MODIFY_FLAGS (script id %u) call for a nullptr object, skipping.", script.id);
         return ShouldAbortScript(script);
     }
 
     if (script.modFlags.fieldId <= OBJECT_FIELD_ENTRY || script.modFlags.fieldId >= source->GetValuesCount())
     {
-        sLog.outError("SCRIPT_COMMAND_MODIFY_FLAGS (script id %u) call for wrong field %u (max count: %u) in object (TypeId: %u).",
+        ScriptRuntimeError("SCRIPT_COMMAND_MODIFY_FLAGS (script id %u) call for wrong field %u (max count: %u) in object (TypeId: %u).",
             script.id, script.modFlags.fieldId, source->GetValuesCount(), source->GetTypeId());
         return ShouldAbortScript(script);
     }
@@ -257,7 +304,7 @@ bool Map::ScriptCommand_InterruptCasts(const ScriptInfo& script, WorldObject* so
 
     if (!pSource)
     {
-        sLog.outError("SCRIPT_COMMAND_INTERRUPT_CAST (script id %u) call for a nullptr or non-unit source (TypeId: %u), skipping.", script.id, source ? source->GetTypeId() : 0);
+        ScriptRuntimeError("SCRIPT_COMMAND_INTERRUPT_CAST (script id %u) call for a nullptr or non-unit source (TypeId: %u), skipping.", script.id, source ? source->GetTypeId() : 0);
         return ShouldAbortScript(script);
     }
 
@@ -273,13 +320,13 @@ bool Map::ScriptCommand_TeleportTo(const ScriptInfo& script, WorldObject* source
 
     if (!pSource)
     {
-        sLog.outError("SCRIPT_COMMAND_TELEPORT_TO (script id %u) call for a nullptr or non-unit source (TypeId: %u), skipping.", script.id, source ? source->GetTypeId() : 0);
+        ScriptRuntimeError("SCRIPT_COMMAND_TELEPORT_TO (script id %u) call for a nullptr or non-unit source (TypeId: %u), skipping.", script.id, source ? source->GetTypeId() : 0);
         return ShouldAbortScript(script);
     }
 
     if (!pSource->FindMap())
     {
-        sLog.outError("SCRIPT_COMMAND_TELEPORT_TO (script id %u) call for source unit not in map (%s).", script.id, source->GetGuidStr().c_str());
+        ScriptRuntimeError("SCRIPT_COMMAND_TELEPORT_TO (script id %u) call for source unit not in map (%s).", script.id, source->GetGuidStr().c_str());
         return ShouldAbortScript(script);
     }
 
@@ -303,7 +350,7 @@ bool Map::ScriptCommand_QuestExplored(const ScriptInfo& script, WorldObject* sou
 
     if (!((pPlayer = ToPlayer(target)) || (pPlayer = ToPlayer(source))))
     {
-        sLog.outError("SCRIPT_COMMAND_QUEST_EXPLORED (script id %u) call for a nullptr player, skipping.", script.id);
+        ScriptRuntimeError("SCRIPT_COMMAND_QUEST_EXPLORED (script id %u) call for a nullptr player, skipping.", script.id);
         return ShouldAbortScript(script);
     }
 
@@ -344,7 +391,7 @@ bool Map::ScriptCommand_KillCredit(const ScriptInfo& script, WorldObject* source
     }
     else
     {
-        sLog.outError("SCRIPT_COMMAND_KILL_CREDIT (script id %u) call for a nullptr object, skipping.", script.id);
+        ScriptRuntimeError("SCRIPT_COMMAND_KILL_CREDIT (script id %u) call for a nullptr object, skipping.", script.id);
         return ShouldAbortScript(script);
     }
 
@@ -372,7 +419,7 @@ bool Map::ScriptCommand_RespawnGameObject(const ScriptInfo& script, WorldObject*
 
     if (!pGo)
     {
-        sLog.outError("SCRIPT_COMMAND_RESPAWN_GAMEOBJECT (script id %u) failed for gameobject (guid: %u).", script.id, guidlow);
+        ScriptRuntimeError("SCRIPT_COMMAND_RESPAWN_GAMEOBJECT (script id %u) failed for gameobject (guid: %u).", script.id, guidlow);
         return ShouldAbortScript(script);
     }
 
@@ -380,7 +427,7 @@ bool Map::ScriptCommand_RespawnGameObject(const ScriptInfo& script, WorldObject*
 
     if (pGo->GetGoType() == GAMEOBJECT_TYPE_FISHINGNODE || pGo->GetGoType() == GAMEOBJECT_TYPE_DOOR)
     {
-        sLog.outError("SCRIPT_COMMAND_RESPAWN_GAMEOBJECT (script id %u) can not be used with gameobject of type %u (guid: %u).", script.id, uint32(pGo->GetGoType()), script.respawnGo.goGuid);
+        ScriptRuntimeError("SCRIPT_COMMAND_RESPAWN_GAMEOBJECT (script id %u) can not be used with gameobject of type %u (guid: %u).", script.id, uint32(pGo->GetGoType()), script.respawnGo.goGuid);
         return ShouldAbortScript(script);
     }
 
@@ -400,7 +447,7 @@ bool Map::ScriptCommand_SummonCreature(ScriptInfo const& script, WorldObject* so
 {
     if (!script.summonCreature.creatureEntry)
     {
-        sLog.outError("SCRIPT_COMMAND_TEMP_SUMMON_CREATURE (script id %u) call for a nullptr creature, skipping.", script.id);
+        ScriptRuntimeError("SCRIPT_COMMAND_TEMP_SUMMON_CREATURE (script id %u) call for a nullptr creature, skipping.", script.id);
         return ShouldAbortScript(script);
     }
 
@@ -408,7 +455,7 @@ bool Map::ScriptCommand_SummonCreature(ScriptInfo const& script, WorldObject* so
 
     if (!pSummoner)
     {
-        sLog.outError("SCRIPT_COMMAND_TEMP_SUMMON_CREATURE (script id %u) call for a nullptr or non-worldobject source (TypeId: %u, skipping.", script.id, source ? source->GetTypeId() : 0);
+        ScriptRuntimeError("SCRIPT_COMMAND_TEMP_SUMMON_CREATURE (script id %u) call for a nullptr or non-worldobject source (TypeId: %u, skipping.", script.id, source ? source->GetTypeId() : 0);
         return ShouldAbortScript(script);
     }
 
@@ -447,7 +494,7 @@ bool Map::ScriptCommand_SummonCreature(ScriptInfo const& script, WorldObject* so
 
     if (!pCreature)
     {
-        sLog.outError("SCRIPT_COMMAND_TEMP_SUMMON (script id %u) failed for creature (entry: %u).", script.id, script.summonCreature.creatureEntry);
+        ScriptRuntimeError("SCRIPT_COMMAND_TEMP_SUMMON (script id %u) failed for creature (entry: %u).", script.id, script.summonCreature.creatureEntry);
         return ShouldAbortScript(script);
     }
 
@@ -490,13 +537,13 @@ bool Map::ScriptCommand_OpenDoor(const ScriptInfo& script, WorldObject* source, 
 
     if (!pDoor)
     {
-        sLog.outError("SCRIPT_COMMAND_OPEN_DOOR (script id %u) failed for gameobject (guid: %u).", script.id, guidlow);
+        ScriptRuntimeError("SCRIPT_COMMAND_OPEN_DOOR (script id %u) failed for gameobject (guid: %u).", script.id, guidlow);
         return ShouldAbortScript(script);
     }
 
     if (pDoor->GetGoType() != GAMEOBJECT_TYPE_DOOR)
     {
-        sLog.outError("SCRIPT_COMMAND_OPEN_DOOR (script id %u) failed for non-door(GoType: %u).", script.id, pDoor->GetGoType());
+        ScriptRuntimeError("SCRIPT_COMMAND_OPEN_DOOR (script id %u) failed for non-door(GoType: %u).", script.id, pDoor->GetGoType());
         return ShouldAbortScript(script);
     }
 
@@ -534,12 +581,12 @@ bool Map::ScriptCommand_CloseDoor(const ScriptInfo& script, WorldObject* source,
 
     if (!pDoor)
     {
-        sLog.outError("SCRIPT_COMMAND_CLOSE_DOOR (script id %u) failed for gameobject (guid: %u).", script.id, guidlow);
+        ScriptRuntimeError("SCRIPT_COMMAND_CLOSE_DOOR (script id %u) failed for gameobject (guid: %u).", script.id, guidlow);
         return ShouldAbortScript(script);
     }
     if (pDoor->GetGoType() != GAMEOBJECT_TYPE_DOOR)
     {
-        sLog.outError("SCRIPT_COMMAND_CLOSE_DOOR (script id %u) failed for non-door(GoType: %u).", script.id, pDoor->GetGoType());
+        ScriptRuntimeError("SCRIPT_COMMAND_CLOSE_DOOR (script id %u) failed for non-door(GoType: %u).", script.id, pDoor->GetGoType());
         return ShouldAbortScript(script);
     }
 
@@ -564,13 +611,13 @@ bool Map::ScriptCommand_ActivateGameObject(const ScriptInfo& script, WorldObject
 
     if (!((pUser = ToUnit(source)) || (pUser = ToUnit(target))))
     {
-        sLog.outError("SCRIPT_COMMAND_ACTIVATE_OBJECT (script id %u) call for a nullptr user, skipping.", script.id);
+        ScriptRuntimeError("SCRIPT_COMMAND_ACTIVATE_OBJECT (script id %u) call for a nullptr user, skipping.", script.id);
         return ShouldAbortScript(script);
     }
 
     if (!((pGo = ToGameObject(target)) || (pGo = ToGameObject(source))))
     {
-        sLog.outError("SCRIPT_COMMAND_ACTIVATE_OBJECT (script id %u) call for a nullptr gameobject, skipping.", script.id);
+        ScriptRuntimeError("SCRIPT_COMMAND_ACTIVATE_OBJECT (script id %u) call for a nullptr gameobject, skipping.", script.id);
         return ShouldAbortScript(script);
     }
 
@@ -585,7 +632,7 @@ bool Map::ScriptCommand_RemoveAura(const ScriptInfo& script, WorldObject* source
 
     if (!pSource)
     {
-        sLog.outError("SCRIPT_COMMAND_REMOVE_AURA (script id %u) call for a nullptr or non-unit source (TypeId: %u), skipping.", script.id, source ? source->GetTypeId() : 0);
+        ScriptRuntimeError("SCRIPT_COMMAND_REMOVE_AURA (script id %u) call for a nullptr or non-unit source (TypeId: %u), skipping.", script.id, source ? source->GetTypeId() : 0);
         return ShouldAbortScript(script);
     }
 
@@ -605,7 +652,7 @@ bool Map::ScriptCommand_CastSpell(const ScriptInfo& script, WorldObject* source,
     
     if (!source)
     {
-        sLog.outError("SCRIPT_COMMAND_CAST_SPELL (script id %u) call for a nullptr source, skipping.", script.id);
+        ScriptRuntimeError("SCRIPT_COMMAND_CAST_SPELL (script id %u) call for a nullptr source, skipping.", script.id);
         return ShouldAbortScript(script);
     }
 
@@ -637,7 +684,7 @@ bool Map::ScriptCommand_PlaySound(const ScriptInfo& script, WorldObject* source,
 
     if (!pSource)
     {
-        sLog.outError("SCRIPT_COMMAND_PLAY_SOUND (script id %u) call for a nullptr or non-worldobject source (TypeId: %u), skipping.", script.id, source ? source->GetTypeId() : 0);
+        ScriptRuntimeError("SCRIPT_COMMAND_PLAY_SOUND (script id %u) call for a nullptr or non-worldobject source (TypeId: %u), skipping.", script.id, source ? source->GetTypeId() : 0);
         return ShouldAbortScript(script);
     }
 
@@ -645,7 +692,7 @@ bool Map::ScriptCommand_PlaySound(const ScriptInfo& script, WorldObject* source,
 
     if ((script.playSound.flags & SF_PLAYSOUND_ONLY_TO_TARGET) && !(pTarget = ToPlayer(target)))
     {
-        sLog.outError("SCRIPT_COMMAND_PLAY_SOUND (script id %u) in targeted mode call for a nullptr or non-player target (TypeId: %u), skipping.", script.id, target ? target->GetTypeId() : 0);
+        ScriptRuntimeError("SCRIPT_COMMAND_PLAY_SOUND (script id %u) in targeted mode call for a nullptr or non-player target (TypeId: %u), skipping.", script.id, target ? target->GetTypeId() : 0);
         return ShouldAbortScript(script);
     }
 
@@ -666,13 +713,40 @@ bool Map::ScriptCommand_CreateItem(const ScriptInfo& script, WorldObject* source
 
     if (!((pReceiver = ToPlayer(target)) || (pReceiver = ToPlayer(source))))
     {
-        sLog.outError("SCRIPT_COMMAND_CREATE_ITEM (script id %u) call for a nullptr or non-player object (TypeIdSource: %u)(TypeIdTarget: %u), skipping.", script.id, source ? source->GetTypeId() : 0, target ? target->GetTypeId() : 0);
+        ScriptRuntimeError("SCRIPT_COMMAND_CREATE_ITEM (script id %u) call for a nullptr or non-player object (TypeIdSource: %u)(TypeIdTarget: %u), skipping.", script.id, source ? source->GetTypeId() : 0, target ? target->GetTypeId() : 0);
         return ShouldAbortScript(script);
     }
 
-    if (Item* pItem = pReceiver->StoreNewItemInInventorySlot(script.createItem.itemId, script.createItem.amount))
-        pReceiver->SendNewItem(pItem, script.createItem.amount, true, false);
+    uint32 const moneyCost = script.createItem.moneyCost;
+    if (moneyCost && pReceiver->GetMoney() < moneyCost)
+    {
+        pReceiver->SendBuyError(BUY_ERR_NOT_ENOUGHT_MONEY, ToCreature(source), script.createItem.itemId, 0);
+        return ShouldAbortScript(script);
+    }
 
+    ItemPosCountVec dest;
+    InventoryResult const inventoryResult = pReceiver->CanStoreNewItem(
+        NULL_BAG, NULL_SLOT, dest, script.createItem.itemId, script.createItem.amount);
+    if (inventoryResult != EQUIP_ERR_OK)
+    {
+        pReceiver->SendEquipError(inventoryResult, nullptr, nullptr, script.createItem.itemId);
+        return ShouldAbortScript(script);
+    }
+
+    if (moneyCost)
+        pReceiver->ModifyMoney(-int32(moneyCost));
+
+    Item* pItem = pReceiver->StoreNewItem(
+        dest, script.createItem.itemId, true,
+        Item::GenerateItemRandomPropertyId(script.createItem.itemId));
+    if (!pItem)
+    {
+        if (moneyCost)
+            pReceiver->ModifyMoney(int32(moneyCost));
+        return ShouldAbortScript(script);
+    }
+
+    pReceiver->SendNewItem(pItem, script.createItem.amount, true, false);
     return false;
 }
 
@@ -708,7 +782,7 @@ bool Map::ScriptCommand_DespawnCreature(const ScriptInfo& script, WorldObject* s
 
     if (!pSource)
     {
-        sLog.outError("SCRIPT_COMMAND_DESPAWN_CREATURE (script id %u) call for a nullptr or non-creature source (TypeId: %u), skipping.", script.id, source ? source->GetTypeId() : 0);
+        ScriptRuntimeError("SCRIPT_COMMAND_DESPAWN_CREATURE (script id %u) call for a nullptr or non-creature source (TypeId: %u), skipping.", script.id, source ? source->GetTypeId() : 0);
         return ShouldAbortScript(script);
     }
 
@@ -727,7 +801,7 @@ bool Map::ScriptCommand_SetEquipment(const ScriptInfo& script, WorldObject* sour
 
     if (!pSource)
     {
-        sLog.outError("SCRIPT_COMMAND_DESPAWN_CREATURE (script id %u) call for a nullptr or non-creature source (TypeId: %u), skipping.", script.id, source ? source->GetTypeId() : 0);
+        ScriptRuntimeError("SCRIPT_COMMAND_DESPAWN_CREATURE (script id %u) call for a nullptr or non-creature source (TypeId: %u), skipping.", script.id, source ? source->GetTypeId() : 0);
         return ShouldAbortScript(script);
     }
 
@@ -764,7 +838,7 @@ bool Map::ScriptCommand_SetMovementType(const ScriptInfo& script, WorldObject* s
         pTarget = ToUnit(source);
     else
     {
-        sLog.outError("SCRIPT_COMMAND_MOVEMENT (script id %u) call for a nullptr or non-creature source and target (TypeIdSource: %u)(TypeIdTarget: %u), skipping", script.id, source ? source->GetTypeId() : 0, target ? target->GetTypeId() : 0);
+        ScriptRuntimeError("SCRIPT_COMMAND_MOVEMENT (script id %u) call for a nullptr or non-creature source and target (TypeIdSource: %u)(TypeIdTarget: %u), skipping", script.id, source ? source->GetTypeId() : 0, target ? target->GetTypeId() : 0);
         return ShouldAbortScript(script);
     }
 
@@ -832,7 +906,7 @@ bool Map::ScriptCommand_SetMovementType(const ScriptInfo& script, WorldObject* s
                 pSource->MoveAwayFromTarget(pTarget, script.x);
             break;
         default:
-            sLog.outError("SCRIPT_COMMAND_MOVEMENT (script id %u) call for an invalid motion type (MotionType: %u), skipping.", script.id, script.movement.movementType);
+            ScriptRuntimeError("SCRIPT_COMMAND_MOVEMENT (script id %u) call for an invalid motion type (MotionType: %u), skipping.", script.id, script.movement.movementType);
             return ShouldAbortScript(script);
     }
 
@@ -846,7 +920,7 @@ bool Map::ScriptCommand_SetActiveObject(const ScriptInfo& script, WorldObject* s
 
     if (!((pSource = ToCreature(source)) || (pSource = ToCreature(target))))
     {
-        sLog.outError("SCRIPT_COMMAND_SET_ACTIVEOBJECT (script id %u) call for a nullptr or non-creature source and target (TypeIdSource: %u)(TypeIdTarget: %u), skipping.", script.id, source ? source->GetTypeId() : 0, target ? target->GetTypeId() : 0);
+        ScriptRuntimeError("SCRIPT_COMMAND_SET_ACTIVEOBJECT (script id %u) call for a nullptr or non-creature source and target (TypeIdSource: %u)(TypeIdTarget: %u), skipping.", script.id, source ? source->GetTypeId() : 0, target ? target->GetTypeId() : 0);
         return ShouldAbortScript(script);
     }
 
@@ -862,7 +936,7 @@ bool Map::ScriptCommand_SetFaction(const ScriptInfo& script, WorldObject* source
 
     if (!((pSource = ToCreature(source)) || (pSource = ToCreature(target))))
     {
-        sLog.outError("SCRIPT_COMMAND_SET_FACTION (script id %u) call for a nullptr or non-creature source and target (TypeIdSource: %u)(TypeIdTarget: %u), skipping.", script.id, source ? source->GetTypeId() : 0, target ? target->GetTypeId() : 0);
+        ScriptRuntimeError("SCRIPT_COMMAND_SET_FACTION (script id %u) call for a nullptr or non-creature source and target (TypeIdSource: %u)(TypeIdTarget: %u), skipping.", script.id, source ? source->GetTypeId() : 0, target ? target->GetTypeId() : 0);
         return ShouldAbortScript(script);
     }
 
@@ -881,7 +955,7 @@ bool Map::ScriptCommand_Morph(const ScriptInfo& script, WorldObject* source, Wor
 
     if (!((pSource = ToUnit(source)) || (pSource = ToUnit(target))))
     {
-        sLog.outError("SCRIPT_COMMAND_MORPH_TO_ENTRY_OR_MODEL (script id %u) call for a nullptr or non-unit source and target (TypeIdSource: %u)(TypeIdTarget: %u), skipping.", script.id, source ? source->GetTypeId() : 0, target ? target->GetTypeId() : 0);
+        ScriptRuntimeError("SCRIPT_COMMAND_MORPH_TO_ENTRY_OR_MODEL (script id %u) call for a nullptr or non-unit source and target (TypeIdSource: %u)(TypeIdTarget: %u), skipping.", script.id, source ? source->GetTypeId() : 0, target ? target->GetTypeId() : 0);
         return ShouldAbortScript(script);
     }
 
@@ -910,7 +984,7 @@ bool Map::ScriptCommand_Mount(ScriptInfo const& script, WorldObject* source, Wor
 
     if (!pSource)
     {
-        sLog.outError("SCRIPT_COMMAND_MOUNT_TO_ENTRY_OR_MODEL (script id %u) call for a nullptr or non-unit source and target (TypeIdSource: %u)(TypeIdTarget: %u), skipping.", script.id, source ? source->GetTypeId() : 0, target ? target->GetTypeId() : 0);
+        ScriptRuntimeError("SCRIPT_COMMAND_MOUNT_TO_ENTRY_OR_MODEL (script id %u) call for a nullptr or non-unit source and target (TypeIdSource: %u)(TypeIdTarget: %u), skipping.", script.id, source ? source->GetTypeId() : 0, target ? target->GetTypeId() : 0);
         return ShouldAbortScript(script);
     }
 
@@ -933,7 +1007,7 @@ bool Map::ScriptCommand_Mount(ScriptInfo const& script, WorldObject* source, Wor
         Creature* pCreature = ToCreature(source);
         if (!pCreature)
         {
-            sLog.outError("SCRIPT_COMMAND_MOUNT_TO_ENTRY_OR_MODEL (script id %u) call for a nullptr or non-creature source and target (TypeIdSource: %u)(TypeIdTarget: %u), skipping.", script.id, source ? source->GetTypeId() : 0, target ? target->GetTypeId() : 0);
+            ScriptRuntimeError("SCRIPT_COMMAND_MOUNT_TO_ENTRY_OR_MODEL (script id %u) call for a nullptr or non-creature source and target (TypeIdSource: %u)(TypeIdTarget: %u), skipping.", script.id, source ? source->GetTypeId() : 0, target ? target->GetTypeId() : 0);
             return ShouldAbortScript(script);
         }
         pCreature->SetDefaultMount(displayId);
@@ -949,7 +1023,7 @@ bool Map::ScriptCommand_SetRun(const ScriptInfo& script, WorldObject* source, Wo
 
     if (!((pSource = ToCreature(source)) || (pSource = ToCreature(target))))
     {
-        sLog.outError("SCRIPT_COMMAND_SET_RUN (script id %u) call for a nullptr or non-creature source and target (TypeIdSource: %u)(TypeIdTarget: %u), skipping.", script.id, source ? source->GetTypeId() : 0, target ? target->GetTypeId() : 0);
+        ScriptRuntimeError("SCRIPT_COMMAND_SET_RUN (script id %u) call for a nullptr or non-creature source and target (TypeIdSource: %u)(TypeIdTarget: %u), skipping.", script.id, source ? source->GetTypeId() : 0, target ? target->GetTypeId() : 0);
         return ShouldAbortScript(script);
     }
 
@@ -966,7 +1040,7 @@ bool Map::ScriptCommand_AttackStart(const ScriptInfo& script, WorldObject* sourc
 
     if (!pAttacker || !pTarget)
     {
-        sLog.outError("SCRIPT_COMMAND_ATTACK_START (script id %u) call for a nullptr source or target (TypeIdSource: %u)(TypeIdTarget: %u), skipping.", script.id, source ? source->GetTypeId() : 0, target ? target->GetTypeId() : 0);
+        ScriptRuntimeError("SCRIPT_COMMAND_ATTACK_START (script id %u) call for a nullptr source or target (TypeIdSource: %u)(TypeIdTarget: %u), skipping.", script.id, source ? source->GetTypeId() : 0, target ? target->GetTypeId() : 0);
         return ShouldAbortScript(script);
     }
 
@@ -975,7 +1049,7 @@ bool Map::ScriptCommand_AttackStart(const ScriptInfo& script, WorldObject* sourc
 
     if (!pAttacker->IsValidAttackTarget(pTarget) || !pAttacker->IsInMap(pTarget))
     {
-        sLog.outError("SCRIPT_COMMAND_ATTACK_START (script id %u) for an invalid attack target, skipping.", script.id);
+        ScriptRuntimeError("SCRIPT_COMMAND_ATTACK_START (script id %u) for an invalid attack target, skipping.", script.id);
         return ShouldAbortScript(script);
     }
 
@@ -1000,7 +1074,7 @@ bool Map::ScriptCommand_UpdateEntry(const ScriptInfo& script, WorldObject* sourc
 
     if (!pSource)
     {
-        sLog.outError("SCRIPT_COMMAND_UPDATE_ENTRY (script id %u) call for a nullptr or non-creature source (TypeId: %u), skipping.", script.id, source ? source->GetTypeId() : 0);
+        ScriptRuntimeError("SCRIPT_COMMAND_UPDATE_ENTRY (script id %u) call for a nullptr or non-creature source (TypeId: %u), skipping.", script.id, source ? source->GetTypeId() : 0);
         return ShouldAbortScript(script);
     }
 
@@ -1017,7 +1091,7 @@ bool Map::ScriptCommand_SetStandState(const ScriptInfo& script, WorldObject* sou
 
     if (!pSource)
     {
-        sLog.outError("SCRIPT_COMMAND_STAND_STATE (script id %u) call for a nullptr or non-unit source (TypeId: %u), skipping", script.id, source ? source->GetTypeId() : 0);
+        ScriptRuntimeError("SCRIPT_COMMAND_STAND_STATE (script id %u) call for a nullptr or non-unit source (TypeId: %u), skipping", script.id, source ? source->GetTypeId() : 0);
         return ShouldAbortScript(script);
     }
 
@@ -1036,7 +1110,7 @@ bool Map::ScriptCommand_ModifyThreat(const ScriptInfo& script, WorldObject* sour
 
     if (!pSource)
     {
-        sLog.outError("SCRIPT_COMMAND_MODIFY_THREAT (script id %u) call for a nullptr or non-creature source (TypeId: %u), skipping.", script.id, source ? source->GetTypeId() : 0);
+        ScriptRuntimeError("SCRIPT_COMMAND_MODIFY_THREAT (script id %u) call for a nullptr or non-creature source (TypeId: %u), skipping.", script.id, source ? source->GetTypeId() : 0);
         return ShouldAbortScript(script);
     }
 
@@ -1063,7 +1137,7 @@ bool Map::ScriptCommand_SendTaxiPath(const ScriptInfo& script, WorldObject* sour
 
     if (!((pPlayer = ToPlayer(target)) || (pPlayer = ToPlayer(source))))
     {
-        sLog.outError("SCRIPT_COMMAND_SEND_TAXI_PATH (script id %u) call for a non-player source and target (TypeIdSource: %u)(TypeIdTarget: %u), skipping.", script.id, source ? source->GetTypeId() : 0, target ? target->GetTypeId() : 0);
+        ScriptRuntimeError("SCRIPT_COMMAND_SEND_TAXI_PATH (script id %u) call for a non-player source and target (TypeIdSource: %u)(TypeIdTarget: %u), skipping.", script.id, source ? source->GetTypeId() : 0, target ? target->GetTypeId() : 0);
         return ShouldAbortScript(script);
     }
 
@@ -1084,7 +1158,7 @@ bool Map::ScriptCommand_TerminateScript(const ScriptInfo& script, WorldObject* s
         WorldObject* pSearcher;
         if (!((pSearcher = source) || (pSearcher = target)))
         {
-            sLog.outError("SCRIPT_COMMAND_TERMINATE_SCRIPT (script id %u) call for a nullptr object, skipping.", script.id);
+            ScriptRuntimeError("SCRIPT_COMMAND_TERMINATE_SCRIPT (script id %u) call for a nullptr object, skipping.", script.id);
             return ShouldAbortScript(script);
         }
 
@@ -1133,7 +1207,7 @@ bool Map::ScriptCommand_Evade(const ScriptInfo& script, WorldObject* source, Wor
 
     if (!((pSource = ToCreature(source)) || (pSource = ToCreature(target))))
     {
-        sLog.outError("SCRIPT_COMMAND_ENTER_EVADE_MODE (script id %u) call for a nullptr or non-creature source and target (TypeIdSource: %u)(TypeIdTarget: %u), skipping.", script.id, source ? source->GetTypeId() : 0, target ? target->GetTypeId() : 0);
+        ScriptRuntimeError("SCRIPT_COMMAND_ENTER_EVADE_MODE (script id %u) call for a nullptr or non-creature source and target (TypeIdSource: %u)(TypeIdTarget: %u), skipping.", script.id, source ? source->GetTypeId() : 0, target ? target->GetTypeId() : 0);
         return ShouldAbortScript(script);
     }
 
@@ -1152,7 +1226,7 @@ bool Map::ScriptCommand_SetHomePosition(const ScriptInfo& script, WorldObject* s
 
     if (!((pSource = ToCreature(source)) || (pSource = ToCreature(target))))
     {
-        sLog.outError("SCRIPT_COMMAND_SET_HOME_POSITION (script id %u) call for a nullptr or non-creature source and target (TypeIdSource: %u)(TypeIdTarget: %u), skipping.", script.id, source ? source->GetTypeId() : 0, target ? target->GetTypeId() : 0);
+        ScriptRuntimeError("SCRIPT_COMMAND_SET_HOME_POSITION (script id %u) call for a nullptr or non-creature source and target (TypeIdSource: %u)(TypeIdTarget: %u), skipping.", script.id, source ? source->GetTypeId() : 0, target ? target->GetTypeId() : 0);
         return ShouldAbortScript(script);
     }
 
@@ -1185,7 +1259,7 @@ bool Map::ScriptCommand_TurnTo(const ScriptInfo& script, WorldObject* source, Wo
 
     if (!pSource)
     {
-        sLog.outError("SCRIPT_COMMAND_TURN_TO (script id %u) call for a nullptr or non-unit source (TypeId: %u), skipping.", script.id, source ? source->GetTypeId() : 0);
+        ScriptRuntimeError("SCRIPT_COMMAND_TURN_TO (script id %u) call for a nullptr or non-unit source (TypeId: %u), skipping.", script.id, source ? source->GetTypeId() : 0);
         return ShouldAbortScript(script);
     }
 
@@ -1200,7 +1274,7 @@ bool Map::ScriptCommand_TurnTo(const ScriptInfo& script, WorldObject* source, Wo
                 pSource->SetFacingToObject(pTarget);
             else
             {
-                sLog.outError("SCRIPT_COMMAND_TURN_TO (script id %u) call with datalong=0 for a non-worldobject target (TypeId: %u), skipping", script.id, target ? target->GetTypeId() : 0);
+                ScriptRuntimeError("SCRIPT_COMMAND_TURN_TO (script id %u) call with datalong=0 for a non-worldobject target (TypeId: %u), skipping", script.id, target ? target->GetTypeId() : 0);
                 return ShouldAbortScript(script);
             }
             break;
@@ -1222,7 +1296,7 @@ bool Map::ScriptCommand_MeetingStone(const ScriptInfo& script, WorldObject* sour
 
     if (!((pPlayer = ToPlayer(target)) || (pPlayer = ToPlayer(source))))
     {
-        sLog.outError("SCRIPT_COMMAND_MEETINGSTONE (script id %u) call for a nullptr or non-player source and target (TypeIdSource: %u)(TypeIdTarget: %u), skipping.", script.id, source ? source->GetTypeId() : 0, target ? target->GetTypeId() : 0);
+        ScriptRuntimeError("SCRIPT_COMMAND_MEETINGSTONE (script id %u) call for a nullptr or non-player source and target (TypeIdSource: %u)(TypeIdTarget: %u), skipping.", script.id, source ? source->GetTypeId() : 0, target ? target->GetTypeId() : 0);
         return ShouldAbortScript(script);
     }
 
@@ -1239,7 +1313,7 @@ bool Map::ScriptCommand_SetData(const ScriptInfo& script, WorldObject* source, W
     
     if (!pInst)
     {
-        sLog.outError("SCRIPT_COMMAND_SET_INST_DATA (script id %u) call for map without an instance script, skipping.", script.id);
+        ScriptRuntimeError("SCRIPT_COMMAND_SET_INST_DATA (script id %u) call for map without an instance script, skipping.", script.id);
         return ShouldAbortScript(script);
     }
 
@@ -1270,7 +1344,7 @@ bool Map::ScriptCommand_SetData64(const ScriptInfo& script, WorldObject* source,
     
     if (!pInst)
     {
-        sLog.outError("SCRIPT_COMMAND_SET_INST_DATA64 (script id %u) call for map without an instance script, skipping.", script.id);
+        ScriptRuntimeError("SCRIPT_COMMAND_SET_INST_DATA64 (script id %u) call for map without an instance script, skipping.", script.id);
         return ShouldAbortScript(script);
     }
 
@@ -1287,7 +1361,7 @@ bool Map::ScriptCommand_SetData64(const ScriptInfo& script, WorldObject* source,
                 pInst->SetData64(script.setData64.field, source->GetGUID());
             else
             {
-                sLog.outError("SCRIPT_COMMAND_SET_INST_DATA64 (script id %u) call for a nullptr source, skipping.", script.id);
+                ScriptRuntimeError("SCRIPT_COMMAND_SET_INST_DATA64 (script id %u) call for a nullptr source, skipping.", script.id);
                 return ShouldAbortScript(script);
             }
             break;
@@ -1344,7 +1418,7 @@ bool Map::ScriptCommand_RemoveItem(const ScriptInfo& script, WorldObject* source
 
     if (!((pPlayer = ToPlayer(target)) || (pPlayer = ToPlayer(source))))
     {
-        sLog.outError("SCRIPT_COMMAND_REMOVE_ITEM (script id %u) call for a nullptr or non-player source and target (TypeIdSource: %u)(TypeIdTarget: %u), skipping.", script.id, source ? source->GetTypeId() : 0, target ? target->GetTypeId() : 0);
+        ScriptRuntimeError("SCRIPT_COMMAND_REMOVE_ITEM (script id %u) call for a nullptr or non-player source and target (TypeIdSource: %u)(TypeIdTarget: %u), skipping.", script.id, source ? source->GetTypeId() : 0, target ? target->GetTypeId() : 0);
         return ShouldAbortScript(script);
     }
 
@@ -1360,7 +1434,7 @@ bool Map::ScriptCommand_RemoveGameObject(const ScriptInfo& script, WorldObject* 
 
     if (!((pGo = ToGameObject(target)) || (pGo = ToGameObject(source))))
     {
-        sLog.outError("SCRIPT_COMMAND_REMOVE_OBJECT (script id %u) call for a nullptr gameobject, skipping.", script.id);
+        ScriptRuntimeError("SCRIPT_COMMAND_REMOVE_OBJECT (script id %u) call for a nullptr gameobject, skipping.", script.id);
         return ShouldAbortScript(script);
     }
 
@@ -1376,7 +1450,7 @@ bool Map::ScriptCommand_SetMeleeAttack(const ScriptInfo& script, WorldObject* so
 
     if (!pSource)
     {
-        sLog.outError("SCRIPT_COMMAND_SET_MELEE_ATTACK (script id %u) call for a nullptr or non-creature source (TypeId: %u), skipping.", script.id, source ? source->GetTypeId() : 0);
+        ScriptRuntimeError("SCRIPT_COMMAND_SET_MELEE_ATTACK (script id %u) call for a nullptr or non-creature source (TypeId: %u), skipping.", script.id, source ? source->GetTypeId() : 0);
         return ShouldAbortScript(script);
     }
 
@@ -1395,7 +1469,7 @@ bool Map::ScriptCommand_SetCombatMovement(const ScriptInfo& script, WorldObject*
 
     if (!pSource)
     {
-        sLog.outError("SCRIPT_COMMAND_SET_COMBAT_MOVEMENT (script id %u) call for a nullptr or non-creature source (TypeId: %u), skipping.", script.id, source ? source->GetTypeId() : 0);
+        ScriptRuntimeError("SCRIPT_COMMAND_SET_COMBAT_MOVEMENT (script id %u) call for a nullptr or non-creature source (TypeId: %u), skipping.", script.id, source ? source->GetTypeId() : 0);
         return ShouldAbortScript(script);
     }
 
@@ -1414,7 +1488,7 @@ bool Map::ScriptCommand_SetPhase(const ScriptInfo& script, WorldObject* source, 
 
     if (!pSource)
     {
-        sLog.outError("SCRIPT_COMMAND_SET_PHASE (script id %u) call for a nullptr or non-creature source (TypeId: %u), skipping.", script.id, source ? source->GetTypeId() : 0);
+        ScriptRuntimeError("SCRIPT_COMMAND_SET_PHASE (script id %u) call for a nullptr or non-creature source (TypeId: %u), skipping.", script.id, source ? source->GetTypeId() : 0);
         return ShouldAbortScript(script);
     }
 
@@ -1458,7 +1532,7 @@ bool Map::ScriptCommand_SetPhaseRandom(const ScriptInfo& script, WorldObject* so
 
     if (!pSource)
     {
-        sLog.outError("SCRIPT_COMMAND_SET_PHASE_RANDOM (script id %u) call for a nullptr or non-creature source (TypeId: %u), skipping.", script.id, source ? source->GetTypeId() : 0);
+        ScriptRuntimeError("SCRIPT_COMMAND_SET_PHASE_RANDOM (script id %u) call for a nullptr or non-creature source (TypeId: %u), skipping.", script.id, source ? source->GetTypeId() : 0);
         return ShouldAbortScript(script);
     }
 
@@ -1489,7 +1563,7 @@ bool Map::ScriptCommand_SetPhaseRange(const ScriptInfo& script, WorldObject* sou
 
     if (!pSource)
     {
-        sLog.outError("SCRIPT_COMMAND_SET_PHASE_RANGE (script id %u) call for a nullptr or non-creature source (TypeId: %u), skipping.", script.id, source ? source->GetTypeId() : 0);
+        ScriptRuntimeError("SCRIPT_COMMAND_SET_PHASE_RANGE (script id %u) call for a nullptr or non-creature source (TypeId: %u), skipping.", script.id, source ? source->GetTypeId() : 0);
         return ShouldAbortScript(script);
     }
 
@@ -1510,7 +1584,7 @@ bool Map::ScriptCommand_Flee(const ScriptInfo& script, WorldObject* source, Worl
 
     if (!pSource)
     {
-        sLog.outError("SCRIPT_COMMAND_FLEE (script id %u) call for a nullptr or non-creature source (TypeId: %u), skipping.", script.id, source ? source->GetTypeId() : 0);
+        ScriptRuntimeError("SCRIPT_COMMAND_FLEE (script id %u) call for a nullptr or non-creature source (TypeId: %u), skipping.", script.id, source ? source->GetTypeId() : 0);
         return ShouldAbortScript(script);
     }
 
@@ -1537,7 +1611,7 @@ bool Map::ScriptCommand_DealDamage(const ScriptInfo& script, WorldObject* source
 
     if (!pSource)
     {
-        sLog.outError("SCRIPT_COMMAND_DEAL_DAMAGE (script id %u) call for a nullptr or non-unit source (TypeId: %u), skipping.", script.id, source ? source->GetTypeId() : 0);
+        ScriptRuntimeError("SCRIPT_COMMAND_DEAL_DAMAGE (script id %u) call for a nullptr or non-unit source (TypeId: %u), skipping.", script.id, source ? source->GetTypeId() : 0);
         return ShouldAbortScript(script);
     }
 
@@ -1545,7 +1619,7 @@ bool Map::ScriptCommand_DealDamage(const ScriptInfo& script, WorldObject* source
 
     if (!pTarget)
     {
-        sLog.outError("SCRIPT_COMMAND_DEAL_DAMAGE (script id %u) call for a nullptr or non-unit target (TypeId: %u), skipping.", script.id, target ? target->GetTypeId() : 0);
+        ScriptRuntimeError("SCRIPT_COMMAND_DEAL_DAMAGE (script id %u) call for a nullptr or non-unit target (TypeId: %u), skipping.", script.id, target ? target->GetTypeId() : 0);
         return ShouldAbortScript(script);
     }
 
@@ -1565,7 +1639,7 @@ bool Map::ScriptCommand_ZoneCombatPulse(const ScriptInfo& script, WorldObject* s
 
     if (!pSource)
     {
-        sLog.outError("SCRIPT_COMMAND_ZONE_COMBAT_PULSE (script id %u) call for a nullptr or non-creature source (TypeId: %u), skipping.", script.id, source ? source->GetTypeId() : 0);
+        ScriptRuntimeError("SCRIPT_COMMAND_ZONE_COMBAT_PULSE (script id %u) call for a nullptr or non-creature source (TypeId: %u), skipping.", script.id, source ? source->GetTypeId() : 0);
         return ShouldAbortScript(script);
     }
 
@@ -1584,7 +1658,7 @@ bool Map::ScriptCommand_CallForHelp(const ScriptInfo& script, WorldObject* sourc
 
     if (!pSource)
     {
-        sLog.outError("SCRIPT_COMMAND_CALL_FOR_HELP (script id %u) call for a nullptr or non-creature source (TypeId: %u), skipping.", script.id, source ? source->GetTypeId() : 0);
+        ScriptRuntimeError("SCRIPT_COMMAND_CALL_FOR_HELP (script id %u) call for a nullptr or non-creature source (TypeId: %u), skipping.", script.id, source ? source->GetTypeId() : 0);
         return ShouldAbortScript(script);
     }
 
@@ -1603,7 +1677,7 @@ bool Map::ScriptCommand_SetSheath(const ScriptInfo& script, WorldObject* source,
 
     if (!pSource)
     {
-        sLog.outError("SCRIPT_COMMAND_SET_SHEATH (script id %u) call for a nullptr or non-unit source (TypeId: %u), skipping.", script.id, source ? source->GetTypeId() : 0);
+        ScriptRuntimeError("SCRIPT_COMMAND_SET_SHEATH (script id %u) call for a nullptr or non-unit source (TypeId: %u), skipping.", script.id, source ? source->GetTypeId() : 0);
         return ShouldAbortScript(script);
     }
 
@@ -1619,7 +1693,7 @@ bool Map::ScriptCommand_Invincibility(const ScriptInfo& script, WorldObject* sou
 
     if (!pSource)
     {
-        sLog.outError("SCRIPT_COMMAND_INVINCIBILITY (script id %u) call for a nullptr or non-creature source (TypeId: %u), skipping.", script.id, source ? source->GetTypeId() : 0);
+        ScriptRuntimeError("SCRIPT_COMMAND_INVINCIBILITY (script id %u) call for a nullptr or non-creature source (TypeId: %u), skipping.", script.id, source ? source->GetTypeId() : 0);
         return ShouldAbortScript(script);
     }
 
@@ -1658,7 +1732,7 @@ bool Map::ScriptCommand_CreatureSpells(const ScriptInfo& script, WorldObject* so
 
     if (!pSource)
     {
-        sLog.outError("SCRIPT_COMMAND_CREATURE_SPELLS (script id %u) call for a nullptr or non-creature source (TypeId: %u), skipping.", script.id, source ? source->GetTypeId() : 0);
+        ScriptRuntimeError("SCRIPT_COMMAND_CREATURE_SPELLS (script id %u) call for a nullptr or non-creature source (TypeId: %u), skipping.", script.id, source ? source->GetTypeId() : 0);
         return ShouldAbortScript(script);
     }
 
@@ -1698,7 +1772,7 @@ bool Map::ScriptCommand_RemoveGuardians(const ScriptInfo& script, WorldObject* s
 
     if (!pSource)
     {
-        sLog.outError("SCRIPT_COMMAND_REMOVE_GUARDIANS (script id %u) call for a nullptr or non-unit source (TypeId: %u), skipping.", script.id, source ? source->GetTypeId() : 0);
+        ScriptRuntimeError("SCRIPT_COMMAND_REMOVE_GUARDIANS (script id %u) call for a nullptr or non-unit source (TypeId: %u), skipping.", script.id, source ? source->GetTypeId() : 0);
         return ShouldAbortScript(script);
     }
     
@@ -1719,7 +1793,7 @@ bool Map::ScriptCommand_AddSpellCooldown(const ScriptInfo& script, WorldObject* 
 
     if (!pSource)
     {
-        sLog.outError("SCRIPT_COMMAND_ADD_SPELL_COOLDOWN (script id %u) call for a nullptr or non-unit source (TypeId: %u), skipping.", script.id, source ? source->GetTypeId() : 0);
+        ScriptRuntimeError("SCRIPT_COMMAND_ADD_SPELL_COOLDOWN (script id %u) call for a nullptr or non-unit source (TypeId: %u), skipping.", script.id, source ? source->GetTypeId() : 0);
         return ShouldAbortScript(script);
     }
 
@@ -1737,7 +1811,7 @@ bool Map::ScriptCommand_RemoveSpellCooldown(const ScriptInfo& script, WorldObjec
 
     if (!pSource)
     {
-        sLog.outError("SCRIPT_COMMAND_REMOVE_SPELL_COOLDOWN (script id %u) call for a nullptr or non-unit source (TypeId: %u), skipping.", script.id, source ? source->GetTypeId() : 0);
+        ScriptRuntimeError("SCRIPT_COMMAND_REMOVE_SPELL_COOLDOWN (script id %u) call for a nullptr or non-unit source (TypeId: %u), skipping.", script.id, source ? source->GetTypeId() : 0);
         return ShouldAbortScript(script);
     }
 
@@ -1756,7 +1830,7 @@ bool Map::ScriptCommand_SetReactState(const ScriptInfo& script, WorldObject* sou
 
     if (!pSource)
     {
-        sLog.outError("SCRIPT_COMMAND_SET_REACT_STATE (script id %u) call for a nullptr or non-creature source (TypeId: %u), skipping.", script.id, source ? source->GetTypeId() : 0);
+        ScriptRuntimeError("SCRIPT_COMMAND_SET_REACT_STATE (script id %u) call for a nullptr or non-creature source (TypeId: %u), skipping.", script.id, source ? source->GetTypeId() : 0);
         return ShouldAbortScript(script);
     }
 
@@ -1772,7 +1846,7 @@ bool Map::ScriptCommand_StartWaypoints(const ScriptInfo& script, WorldObject* so
 
     if (!pSource)
     {
-        sLog.outError("SCRIPT_COMMAND_START_WAYPOINTS (script id %u) call for a nullptr or non-creature source (TypeId: %u), skipping.", script.id, source ? source->GetTypeId() : 0);
+        ScriptRuntimeError("SCRIPT_COMMAND_START_WAYPOINTS (script id %u) call for a nullptr or non-creature source (TypeId: %u), skipping.", script.id, source ? source->GetTypeId() : 0);
         return ShouldAbortScript(script);
     }
 
@@ -1812,7 +1886,7 @@ bool Map::ScriptCommand_AddMapEventTarget(const ScriptInfo& script, WorldObject*
 {
     if (!source)
     {
-        sLog.outError("SCRIPT_COMMAND_ADD_MAP_EVENT_TARGET (script id %u) call for a nullptr source, skipping.", script.id);
+        ScriptRuntimeError("SCRIPT_COMMAND_ADD_MAP_EVENT_TARGET (script id %u) call for a nullptr source, skipping.", script.id);
         return ShouldAbortScript(script);
     }
 
@@ -1820,7 +1894,7 @@ bool Map::ScriptCommand_AddMapEventTarget(const ScriptInfo& script, WorldObject*
 
     if (!pEvent)
     {
-        sLog.outError("SCRIPT_COMMAND_ADD_MAP_EVENT_TARGET (script id %u) call for a non-existing scripted map event (EventId: %u), skipping.", script.id, script.addMapEventTarget.eventId);
+        ScriptRuntimeError("SCRIPT_COMMAND_ADD_MAP_EVENT_TARGET (script id %u) call for a non-existing scripted map event (EventId: %u), skipping.", script.id, script.addMapEventTarget.eventId);
         return ShouldAbortScript(script);
     }
 
@@ -1836,7 +1910,7 @@ bool Map::ScriptCommand_RemoveMapEventTarget(const ScriptInfo& script, WorldObje
 
     if (!pEvent)
     {
-        sLog.outError("SCRIPT_COMMAND_REMOVE_MAP_EVENT_TARGET (script id %u) call for a non-existing scripted map event (EventId: %u), skipping.", script.id, script.removeMapEventTarget.eventId);
+        ScriptRuntimeError("SCRIPT_COMMAND_REMOVE_MAP_EVENT_TARGET (script id %u) call for a non-existing scripted map event (EventId: %u), skipping.", script.id, script.removeMapEventTarget.eventId);
         return ShouldAbortScript(script);
     }
 
@@ -1862,7 +1936,7 @@ bool Map::ScriptCommand_RemoveMapEventTarget(const ScriptInfo& script, WorldObje
         {
             if (!script.removeMapEventTarget.conditionId)
             {
-                sLog.outError("SCRIPT_COMMAND_REMOVE_MAP_EVENT_TARGET (script id %u) call with `datalong3`=%u but without a condition Id, skipping.", script.id, script.removeMapEventTarget.targets);
+                ScriptRuntimeError("SCRIPT_COMMAND_REMOVE_MAP_EVENT_TARGET (script id %u) call with `datalong3`=%u but without a condition Id, skipping.", script.id, script.removeMapEventTarget.targets);
                 return ShouldAbortScript(script);
             }
 
@@ -1900,7 +1974,7 @@ bool Map::ScriptCommand_SetMapEventData(const ScriptInfo& script, WorldObject* s
 
     if (!pEvent)
     {
-        sLog.outError("SCRIPT_COMMAND_SET_MAP_EVENT_DATA (script id %u) call for a non-existing scripted map event (EventId: %u), skipping.", script.id, script.setMapEventData.eventId);
+        ScriptRuntimeError("SCRIPT_COMMAND_SET_MAP_EVENT_DATA (script id %u) call for a non-existing scripted map event (EventId: %u), skipping.", script.id, script.setMapEventData.eventId);
         return ShouldAbortScript(script);
     }
 
@@ -1933,7 +2007,7 @@ bool Map::ScriptCommand_SendMapEvent(const ScriptInfo& script, WorldObject* sour
 
     if (!pEvent)
     {
-        sLog.outError("SCRIPT_COMMAND_SEND_MAP_EVENT (script id %u) call for a non-existing scripted map event (EventId: %u), skipping.", script.id, script.sendMapEvent.eventId);
+        ScriptRuntimeError("SCRIPT_COMMAND_SEND_MAP_EVENT (script id %u) call for a non-existing scripted map event (EventId: %u), skipping.", script.id, script.sendMapEvent.eventId);
         return ShouldAbortScript(script);
     }
 
@@ -1966,7 +2040,7 @@ bool Map::ScriptCommand_SetDefaultMovement(const ScriptInfo& script, WorldObject
 
     if (!pSource)
     {
-        sLog.outError("SCRIPT_COMMAND_SET_DEFAULT_MOVEMENT (script id %u) call for a nullptr or non-creature source (TypeId: %u), skipping.", script.id, source ? source->GetTypeId() : 0);
+        ScriptRuntimeError("SCRIPT_COMMAND_SET_DEFAULT_MOVEMENT (script id %u) call for a nullptr or non-creature source (TypeId: %u), skipping.", script.id, source ? source->GetTypeId() : 0);
         return ShouldAbortScript(script);
     }
 
@@ -1986,7 +2060,7 @@ bool Map::ScriptCommand_StartScriptForAll(const ScriptInfo& script, WorldObject*
 {
     if (!source)
     {
-        sLog.outError("SCRIPT_COMMAND_START_SCRIPT_FOR_ALL (script id %u) call for a nullptr source, skipping.", script.id);
+        ScriptRuntimeError("SCRIPT_COMMAND_START_SCRIPT_FOR_ALL (script id %u) call for a nullptr source, skipping.", script.id);
         return ShouldAbortScript(script);
     }
 
@@ -2044,7 +2118,7 @@ bool Map::ScriptCommand_EditMapEvent(const ScriptInfo& script, WorldObject* sour
 
     if (!pEvent)
     {
-        sLog.outError("SCRIPT_COMMAND_EDIT_MAP_EVENT (script id %u) call for a non-existing scripted map event (EventId: %u), skipping.", script.id, script.editMapEvent.eventId);
+        ScriptRuntimeError("SCRIPT_COMMAND_EDIT_MAP_EVENT (script id %u) call for a non-existing scripted map event (EventId: %u), skipping.", script.id, script.editMapEvent.eventId);
         return ShouldAbortScript(script);
     }
 
@@ -2073,7 +2147,7 @@ bool Map::ScriptCommand_FailQuest(const ScriptInfo& script, WorldObject* source,
         pSource->GroupEventFailHappens(script.failQuest.questId);
     else
     {
-        sLog.outError("SCRIPT_COMMAND_FAIL_QUEST (script id %u) call for a nullptr object, skipping.", script.id);
+        ScriptRuntimeError("SCRIPT_COMMAND_FAIL_QUEST (script id %u) call for a nullptr object, skipping.", script.id);
         return ShouldAbortScript(script);
     }
 
@@ -2087,7 +2161,7 @@ bool Map::ScriptCommand_RespawnCreature(const ScriptInfo& script, WorldObject* s
 
     if (!pSource)
     {
-        sLog.outError("SCRIPT_COMMAND_RESPAWN_CREATURE (script id %u) call for a nullptr or non-creature source (TypeId: %u), skipping.", script.id, source ? source->GetTypeId() : 0);
+        ScriptRuntimeError("SCRIPT_COMMAND_RESPAWN_CREATURE (script id %u) call for a nullptr or non-creature source (TypeId: %u), skipping.", script.id, source ? source->GetTypeId() : 0);
         return ShouldAbortScript(script);
     }
 
@@ -2111,7 +2185,7 @@ bool Map::ScriptCommand_AssistUnit(const ScriptInfo& script, WorldObject* source
 
     if (!pSource)
     {
-        sLog.outError("SCRIPT_COMMAND_ASSIST_UNIT (script id %u) call for a nullptr or non-creature source (TypeId: %u), skipping.", script.id, source ? source->GetTypeId() : 0);
+        ScriptRuntimeError("SCRIPT_COMMAND_ASSIST_UNIT (script id %u) call for a nullptr or non-creature source (TypeId: %u), skipping.", script.id, source ? source->GetTypeId() : 0);
         return ShouldAbortScript(script);
     }
 
@@ -2119,7 +2193,7 @@ bool Map::ScriptCommand_AssistUnit(const ScriptInfo& script, WorldObject* source
 
     if (!pTarget)
     {
-        sLog.outError("SCRIPT_COMMAND_ASSIST_UNIT (script id %u) call for a nullptr or non-unit target (TypeId: %u), skipping.", script.id, target ? target->GetTypeId() : 0);
+        ScriptRuntimeError("SCRIPT_COMMAND_ASSIST_UNIT (script id %u) call for a nullptr or non-unit target (TypeId: %u), skipping.", script.id, target ? target->GetTypeId() : 0);
         return ShouldAbortScript(script);
     }
 
@@ -2144,7 +2218,7 @@ bool Map::ScriptCommand_CombatStop(const ScriptInfo& script, WorldObject* source
 
     if (!pSource)
     {
-        sLog.outError("SCRIPT_COMMAND_COMBAT_STOP (script id %u) call for a nullptr or non-unit source (TypeId: %u), skipping.", script.id, source ? source->GetTypeId() : 0);
+        ScriptRuntimeError("SCRIPT_COMMAND_COMBAT_STOP (script id %u) call for a nullptr or non-unit source (TypeId: %u), skipping.", script.id, source ? source->GetTypeId() : 0);
         return ShouldAbortScript(script);
     }
 
@@ -2164,7 +2238,7 @@ bool Map::ScriptCommand_AddAura(const ScriptInfo& script, WorldObject* source, W
 
     if (!pSource)
     {
-        sLog.outError("SCRIPT_COMMAND_ADD_AURA (script id %u) call for a nullptr or non-unit source (TypeId: %u), skipping.", script.id, source ? source->GetTypeId() : 0);
+        ScriptRuntimeError("SCRIPT_COMMAND_ADD_AURA (script id %u) call for a nullptr or non-unit source (TypeId: %u), skipping.", script.id, source ? source->GetTypeId() : 0);
         return ShouldAbortScript(script);
     }
 
@@ -2180,7 +2254,7 @@ bool Map::ScriptCommand_AddThreat(const ScriptInfo& script, WorldObject* source,
 
     if (!pSource)
     {
-        sLog.outError("SCRIPT_COMMAND_ADD_THREAT (script id %u) call for a nullptr or non-creature source (TypeId: %u), skipping.", script.id, source ? source->GetTypeId() : 0);
+        ScriptRuntimeError("SCRIPT_COMMAND_ADD_THREAT (script id %u) call for a nullptr or non-creature source (TypeId: %u), skipping.", script.id, source ? source->GetTypeId() : 0);
         return ShouldAbortScript(script);
     }
 
@@ -2191,7 +2265,7 @@ bool Map::ScriptCommand_AddThreat(const ScriptInfo& script, WorldObject* source,
 
     if (!pTarget)
     {
-        sLog.outError("SCRIPT_COMMAND_ADD_THREAT (script id %u) call for a nullptr or non-unit target (TypeId: %u), skipping.", script.id, target ? target->GetTypeId() : 0);
+        ScriptRuntimeError("SCRIPT_COMMAND_ADD_THREAT (script id %u) call for a nullptr or non-unit target (TypeId: %u), skipping.", script.id, target ? target->GetTypeId() : 0);
         return ShouldAbortScript(script);
     }
 
@@ -2206,7 +2280,7 @@ bool Map::ScriptCommand_SummonObject(const ScriptInfo& script, WorldObject* sour
 {
     if (!source)
     {
-        sLog.outError("SCRIPT_COMMAND_SUMMON_OBJECT (script id %u) call for a nullptr source, skipping.", script.id);
+        ScriptRuntimeError("SCRIPT_COMMAND_SUMMON_OBJECT (script id %u) call for a nullptr source, skipping.", script.id);
         return ShouldAbortScript(script);
     }
 
@@ -2227,7 +2301,7 @@ bool Map::ScriptCommand_SetFly(const ScriptInfo& script, WorldObject* source, Wo
 
     if (!pSource)
     {
-        sLog.outError("SCRIPT_COMMAND_SET_FLY (script id %u) call for a nullptr or non-unit source (TypeId: %u), skipping.", script.id, source ? source->GetTypeId() : 0);
+        ScriptRuntimeError("SCRIPT_COMMAND_SET_FLY (script id %u) call for a nullptr or non-unit source (TypeId: %u), skipping.", script.id, source ? source->GetTypeId() : 0);
         return ShouldAbortScript(script);
     }
 
@@ -2243,7 +2317,7 @@ bool Map::ScriptCommand_JoinCreatureGroup(const ScriptInfo& script, WorldObject*
 
     if (!pSource)
     {
-        sLog.outError("SCRIPT_COMMAND_JOIN_CREATURE_GROUP (script id %u) call for a nullptr or non-creature source (TypeId: %u), skipping.", script.id, source ? source->GetTypeId() : 0);
+        ScriptRuntimeError("SCRIPT_COMMAND_JOIN_CREATURE_GROUP (script id %u) call for a nullptr or non-creature source (TypeId: %u), skipping.", script.id, source ? source->GetTypeId() : 0);
         return ShouldAbortScript(script);
     }
 
@@ -2251,7 +2325,7 @@ bool Map::ScriptCommand_JoinCreatureGroup(const ScriptInfo& script, WorldObject*
 
     if (!pTarget)
     {
-        sLog.outError("SCRIPT_COMMAND_JOIN_CREATURE_GROUP (script id %u) call for a nullptr or non-creature target (TypeId: %u), skipping.", script.id, target ? target->GetTypeId() : 0);
+        ScriptRuntimeError("SCRIPT_COMMAND_JOIN_CREATURE_GROUP (script id %u) call for a nullptr or non-creature target (TypeId: %u), skipping.", script.id, target ? target->GetTypeId() : 0);
         return ShouldAbortScript(script);
     }
 
@@ -2267,7 +2341,7 @@ bool Map::ScriptCommand_LeaveCreatureGroup(const ScriptInfo& script, WorldObject
 
     if (!pSource)
     {
-        sLog.outError("SCRIPT_COMMAND_LEAVE_CREATURE_GROUP (script id %u) call for a nullptr or non-creature source (TypeId: %u), skipping.", script.id, source ? source->GetTypeId() : 0);
+        ScriptRuntimeError("SCRIPT_COMMAND_LEAVE_CREATURE_GROUP (script id %u) call for a nullptr or non-creature source (TypeId: %u), skipping.", script.id, source ? source->GetTypeId() : 0);
         return ShouldAbortScript(script);
     }
 
@@ -2283,7 +2357,7 @@ bool Map::ScriptCommand_SetGoState(const ScriptInfo& script, WorldObject* source
 
     if (!((pGo = ToGameObject(target)) || (pGo = ToGameObject(source))))
     {
-        sLog.outError("SCRIPT_COMMAND_SET_GO_STATE (script id %u) call for a nullptr gameobject, skipping.", script.id);
+        ScriptRuntimeError("SCRIPT_COMMAND_SET_GO_STATE (script id %u) call for a nullptr gameobject, skipping.", script.id);
         return ShouldAbortScript(script);
     }
 
@@ -2312,7 +2386,7 @@ bool Map::ScriptCommand_DespawnGameObject(ScriptInfo const& script, WorldObject*
 
     if (!pGo)
     {
-        sLog.outError("SCRIPT_COMMAND_DESPAWN_GAMEOBJECT (script id %u) failed for gameobject (guid: %u).", script.id, guidlow);
+        ScriptRuntimeError("SCRIPT_COMMAND_DESPAWN_GAMEOBJECT (script id %u) failed for gameobject (guid: %u).", script.id, guidlow);
         return ShouldAbortScript(script);
     }
 
@@ -2333,7 +2407,7 @@ bool Map::ScriptCommand_LoadGameObject(ScriptInfo const& script, WorldObject* so
 
     if (GetId() != pGameObjectData->position.mapId)
     {
-        sLog.outError("SCRIPT_COMMAND_LOAD_GAMEOBJECT_SPAWN (script id %u) tried to spawn guid %u on wrong map %u.", script.id, script.loadGo.goGuid, GetId());
+        ScriptRuntimeError("SCRIPT_COMMAND_LOAD_GAMEOBJECT_SPAWN (script id %u) tried to spawn guid %u on wrong map %u.", script.id, script.loadGo.goGuid, GetId());
         return ShouldAbortScript(script);
     }
 
@@ -2356,14 +2430,14 @@ bool Map::ScriptCommand_QuestCredit(ScriptInfo const& script, WorldObject* sourc
 
     if (!((pPlayer = ToPlayer(target)) || (pPlayer = ToPlayer(source))))
     {
-        sLog.outError("SCRIPT_COMMAND_QUEST_CREDIT (script id %u) call for a nullptr player, skipping.", script.id);
+        ScriptRuntimeError("SCRIPT_COMMAND_QUEST_CREDIT (script id %u) call for a nullptr player, skipping.", script.id);
         return ShouldAbortScript(script);
     }
 
     WorldObject* pWorldObject = source && !source->IsPlayer() ? source : (target && !target->IsPlayer() ? target : nullptr);
     if (!pWorldObject)
     {
-        sLog.outError("SCRIPT_COMMAND_QUEST_CREDIT (script id %u) call for a nullptr target, skipping.", script.id);
+        ScriptRuntimeError("SCRIPT_COMMAND_QUEST_CREDIT (script id %u) call for a nullptr target, skipping.", script.id);
         return ShouldAbortScript(script);
     }
 
@@ -2379,7 +2453,7 @@ bool Map::ScriptCommand_SetGossipMenu(ScriptInfo const& script, WorldObject* sou
 
     if (!pSource)
     {
-        sLog.outError("SCRIPT_COMMAND_SET_GOSSIP_MENU (script id %u) call for a nullptr or non-creature source (TypeId: %u), skipping.", script.id, source ? source->GetTypeId() : 0);
+        ScriptRuntimeError("SCRIPT_COMMAND_SET_GOSSIP_MENU (script id %u) call for a nullptr or non-creature source (TypeId: %u), skipping.", script.id, source ? source->GetTypeId() : 0);
         return ShouldAbortScript(script);
     }
 
@@ -2395,7 +2469,7 @@ bool Map::ScriptCommand_SendScriptEvent(ScriptInfo const& script, WorldObject* s
 
     if (!pSource)
     {
-        sLog.outError("SCRIPT_COMMAND_SEND_SCRIPT_EVENT (script id %u) call for a nullptr or non-creature source (TypeId: %u), skipping.", script.id, source ? source->GetTypeId() : 0);
+        ScriptRuntimeError("SCRIPT_COMMAND_SEND_SCRIPT_EVENT (script id %u) call for a nullptr or non-creature source (TypeId: %u), skipping.", script.id, source ? source->GetTypeId() : 0);
         return ShouldAbortScript(script);
     }
 
@@ -2414,7 +2488,7 @@ bool Map::ScriptCommand_SetPvP(ScriptInfo const& script, WorldObject* source, Wo
 
     if (!((pSource = ToPlayer(target)) || (pSource = ToPlayer(source))))
     {
-        sLog.outError("SCRIPT_COMMAND_SET_PVP (script id %u) call for a nullptr or non-player object (TypeIdSource: %u)(TypeIdTarget: %u), skipping.", script.id, source ? source->GetTypeId() : 0, target ? target->GetTypeId() : 0);
+        ScriptRuntimeError("SCRIPT_COMMAND_SET_PVP (script id %u) call for a nullptr or non-player object (TypeIdSource: %u)(TypeIdTarget: %u), skipping.", script.id, source ? source->GetTypeId() : 0, target ? target->GetTypeId() : 0);
         return ShouldAbortScript(script);
     }
 
@@ -2432,7 +2506,7 @@ bool Map::ScriptCommand_ResetDoorOrButton(ScriptInfo const& script, WorldObject*
 
     if (!((pGo = ToGameObject(target)) || (pGo = ToGameObject(source))))
     {
-        sLog.outError("SCRIPT_COMMAND_RESET_DOOR_OR_BUTTON (script id %u) call for a nullptr gameobject, skipping.", script.id);
+        ScriptRuntimeError("SCRIPT_COMMAND_RESET_DOOR_OR_BUTTON (script id %u) call for a nullptr gameobject, skipping.", script.id);
         return ShouldAbortScript(script);
     }
 
@@ -2447,7 +2521,7 @@ bool Map::ScriptCommand_SetCommandState(ScriptInfo const& script, WorldObject* s
 
     if (!pSource)
     {
-        sLog.outError("SCRIPT_COMMAND_SET_COMMAND_STATE (script id %u) call for a nullptr or non-creature source (TypeId: %u), skipping.", script.id, source ? source->GetTypeId() : 0);
+        ScriptRuntimeError("SCRIPT_COMMAND_SET_COMMAND_STATE (script id %u) call for a nullptr or non-creature source (TypeId: %u), skipping.", script.id, source ? source->GetTypeId() : 0);
         return ShouldAbortScript(script);
     }
 
@@ -2463,7 +2537,7 @@ bool Map::ScriptCommand_PlayCustomAnim(ScriptInfo const& script, WorldObject* so
 
     if (!((pGo = ToGameObject(target)) || (pGo = ToGameObject(source))))
     {
-        sLog.outError("SCRIPT_COMMAND_PLAY_CUSTOM_ANIM (script id %u) call for a nullptr gameobject, skipping.", script.id);
+        ScriptRuntimeError("SCRIPT_COMMAND_PLAY_CUSTOM_ANIM (script id %u) call for a nullptr gameobject, skipping.", script.id);
         return ShouldAbortScript(script);
     }
 
@@ -2478,7 +2552,7 @@ bool Map::ScriptCommand_StartScriptOnGroup(ScriptInfo const& script, WorldObject
 
     if (!pSource)
     {
-        sLog.outError("SCRIPT_COMMAND_START_SCRIPT_ON_GROUP (script id %u) call for a nullptr or non-unit source (TypeId: %u), skipping.", script.id, source ? source->GetTypeId() : 0);
+        ScriptRuntimeError("SCRIPT_COMMAND_START_SCRIPT_ON_GROUP (script id %u) call for a nullptr or non-unit source (TypeId: %u), skipping.", script.id, source ? source->GetTypeId() : 0);
         return ShouldAbortScript(script);
     }
 

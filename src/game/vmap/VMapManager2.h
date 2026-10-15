@@ -118,6 +118,7 @@ namespace VMAP
                 return getMapFileName(pMapId);
             }
             bool existsMap(const char* pBasePath, unsigned int pMapId, int x, int y) override;
+            bool isMapTileLoaded(unsigned int mapId, int x, int y) const override;
 
 #ifdef MMAP_GENERATOR
         public:

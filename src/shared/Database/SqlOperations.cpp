@@ -20,6 +20,7 @@
  */
 
 #include "SqlOperations.h"
+#include "ArchitectureDiagnostics.h"
 #include "SqlDelayThread.h"
 #include "DatabaseEnv.h"
 #include "DatabaseImpl.h"
@@ -54,26 +55,39 @@ SqlTransaction::~SqlTransaction()
 
 bool SqlTransaction::Execute(SqlConnection *conn)
 {
-    if(m_queue.empty())
-        return true;
-
+    if (m_queue.empty()) return true;
     LOCK_DB_CONN(conn);
-
-    conn->BeginTransaction();
-
-    const int nItems = m_queue.size();
-    for (int i = 0; i < nItems; ++i)
+    // Only explicitly replayable native saves opt in. Mixed-engine databases
+    // retain failure behavior until their transactional migration is installed.
+    unsigned const attempts = m_retryDeadlock && conn->CanReplayTransaction() ? 3 : 1;
+    for (unsigned attempt = 0; attempt < attempts; ++attempt)
     {
-        SqlOperation * pStmt = m_queue[i];
-
-        if(!pStmt->Execute(conn))
+        if (!conn->BeginTransaction()) return false;
+        bool failed = false;
+        bool deadlock = false;
+        for (SqlOperation* statement : m_queue)
         {
+            conn->SetStatementDeadlock(false);
+            if (!statement->Execute(conn))
+            {
+                failed = true;
+                deadlock = conn->LastStatementWasDeadlock();
+                break;
+            }
+        }
+        if (!failed)
+        {
+            // A lost COMMIT response is ambiguous; never replay it.
+            if (conn->CommitTransaction()) return true;
             conn->RollbackTransaction();
             return false;
         }
+        if (!conn->RollbackTransaction()) return false;
+        if (!deadlock || attempt + 1 == attempts) return false;
+        sLog.outError("DB_TRANSACTION_RETRY serial=%u attempt=%u statements=%zu reason=deadlock",
+            GetSerialId(), attempt + 2, m_queue.size());
     }
-
-    return conn->CommitTransaction();
+    return false;
 }
 
 SqlPreparedRequest::SqlPreparedRequest(int nIndex, SqlStmtParameters * arg ) : m_nIndex(nIndex), m_param(arg)
@@ -102,73 +116,74 @@ bool SqlQuery::Execute(SqlConnection *conn)
     /// execute the query and store the result in the callback
     m_callback->SetResult(conn->Query(m_sql));
     /// add the callback to the sql result queue of the thread it originated from
-    m_queue->add(m_callback);
+    m_queue->Add(m_callback, m_highPriority);
 
     return true;
 }
 
 void SqlResultQueue::Update(uint32 timeout)
 {
-    uint32 begin = WorldTimer::getMSTime();
-    /// execute the callbacks waiting in the synchronization queue
-    MaNGOS::IQueryCallback* callback = NULL;
-    int n = 0;
-    while (next(callback))
+    uint32 const begin = WorldTimer::getMSTime();
+    // CMaNGOS-style owner-thread completion. Async queries remain async; only
+    // application of their results is serialized with world/map lifetime.
+    // A bounded count also guarantees progress when the clock has low resolution.
+    for (unsigned n = 0; n < 64; ++n)
     {
-        if (!callback->IsThreadSafe())
-        {
-            _threadUnsafeWaitingQueries.add(callback);
-            ++numUnsafeQueries;
-        }
-        else
-        {
-            ++n;
-            //caller->queue.add(callback);
-            m_callbackThreads << [callback, n](){
-                callback->Execute();
-                delete callback;
-            };
-        }
-    }
-    std::future<void> job = m_callbackThreads->processWorkload();
-    MaNGOS::IQueryCallback* s = NULL;
-    while (_threadUnsafeWaitingQueries.next(s))
-    {
-        s->Execute();
-        delete s;
-        --numUnsafeQueries;
-        if (timeout && WorldTimer::getMSTimeDiffToNow(begin) > timeout)
+        if (n && timeout && WorldTimer::getMSTimeDiffToNow(begin) >= timeout)
             break;
+        MaNGOS::IQueryCallback* callback = nullptr;
+        bool found = false;
+        // Prefer player logins, but do not starve background bot completions.
+        if (++m_priorityBurst >= 8)
+        {
+            m_priorityBurst = 0;
+            found = nextCallback(callback, false);
+        }
+        if (!found)
+            found = nextCallback(callback, true) || nextCallback(callback, false);
+        if (!found)
+            break;
+        std::unique_ptr<MaNGOS::IQueryCallback> owned(callback);
+        uint32 const start = WorldTimer::getMSTime();
+        {
+            TurtleDiagnostics::Scope diagnosticCallback(TurtleDiagnostics::Callback);
+            owned->Execute();
+        }
+        uint32 const elapsed = WorldTimer::getMSTimeDiffToNow(start);
+        if (elapsed >= 100)
+            sLog.out(LOG_PERFORMANCE, "DB_CALLBACK_SLOW elapsed_ms=%u high_priority=%u pending=%zu",
+                elapsed, owned->IsHighPriority() ? 1 : 0, PendingCount());
     }
-
-    if (numUnsafeQueries > 1000) // Bottleneck here
-        sLog.out(LOG_PERFORMANCE, "Database: %u unsafe queries remaining!", numUnsafeQueries);
-
-    if (job.valid())
-        job.wait();
 }
 
-#ifndef DO_POSTGRESQL
-using SqlResultQueueWorker = ThreadPool::ThreadPool::MySQL<>;
-#else
-using SqlResultQueueWorker = ThreadPool::SingleQueue;
-#endif
-
-SqlResultQueue::SqlResultQueue(const char* Name) :
-    numUnsafeQueries(0)
+bool SqlResultQueue::nextCallback(MaNGOS::IQueryCallback*& callback, bool priority)
 {
-    char PoolName[128];
-    sprintf(PoolName, "SqlCallback %s", Name);
-    m_callbackThreads.reset(new ThreadPool(6, PoolName));
-    m_callbackThreads->start<SqlResultQueueWorker>();
+    // Legacy owner-only queues remain supported for shutdown/draining.
+    if (priority ? _priorityThreadUnsafeWaitingQueries.next(callback) : _threadUnsafeWaitingQueries.next(callback))
+    {
+        if (numUnsafeQueries)
+            --numUnsafeQueries;
+        return true;
+    }
+    return priority ? _priorityWaitingQueries.next(callback) : next(callback);
 }
 
+SqlResultQueue::SqlResultQueue(const char* /*Name*/) : numUnsafeQueries(0) {}
 SqlResultQueue::~SqlResultQueue(){}
+
+void SqlResultQueue::Add(MaNGOS::IQueryCallback* callback, bool highPriority)
+{
+    callback->SetHighPriority(highPriority);
+    if (highPriority)
+        _priorityWaitingQueries.add(callback);
+    else
+        add(callback);
+}
 
 void SqlResultQueue::CancelAll()
 {
     MaNGOS::IQueryCallback* cb;
-    while (next(cb))
+    while (nextCallback(cb, true) || nextCallback(cb, false))
     {
         cb->SetResult(nullptr);
         cb->Execute();
@@ -176,16 +191,19 @@ void SqlResultQueue::CancelAll()
     }
 }
 
-bool SqlQueryHolder::Execute(MaNGOS::IQueryCallback * callback, Database *database, SqlResultQueue *queue)
+bool SqlQueryHolder::Execute(MaNGOS::IQueryCallback * callback, Database *database, SqlResultQueue *queue, bool highPriority)
 {
     if(!callback || !database || !queue)
         return false;
 
     /// delay the execution of the queries, sync them with the delay thread
     /// which will in turn resync on execution (via the queue) and call back
-    SqlQueryHolderEx *holderEx = new SqlQueryHolderEx(this, callback, queue, serialId);
+    SqlQueryHolderEx *holderEx = new SqlQueryHolderEx(this, callback, queue, serialId, highPriority);
 
-    database->AddToSerialDelayQueue(holderEx);
+    if (highPriority)
+        database->AddToPrioritySerialDelayQueue(holderEx);
+    else
+        database->AddToSerialDelayQueue(holderEx);
     return true;
 }
 
@@ -311,7 +329,7 @@ bool SqlQueryHolderEx::Execute(SqlConnection *conn)
     }
 
     /// sync with the caller thread
-    m_queue->add(m_callback);
+    m_queue->Add(m_callback, m_highPriority);
 
     return true;
 }

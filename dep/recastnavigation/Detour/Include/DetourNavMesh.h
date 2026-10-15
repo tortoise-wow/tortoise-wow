@@ -21,6 +21,7 @@
 
 #include "DetourAlloc.h"
 #include "DetourStatus.h"
+#include "DetourAccessGate.h"
 
 // Undefine (or define in a build cofnig) the following line to use 64bit polyref.
 // Generally not needed, useful for very large worlds.
@@ -349,7 +350,15 @@ struct dtNavMeshParams
 /// @ingroup detour
 class dtNavMesh
 {
+    mutable dtAccessGate m_accessGate;
+    unsigned long long m_revision = 0;
 public:
+	// Hold a read scope while dereferencing tile/poly pointers returned by this
+	// mesh. Ordinary query entry points acquire it internally. Mesh allocation
+	// lifetime is managed by MMapManager separately from tile lifetime.
+	dtAccessGate const* accessGate() const { return &m_accessGate; }
+	dtAccessGate::Read acquireRead() const { return dtAccessGate::Read(&m_accessGate); }
+	unsigned long long revision() const { return m_revision; } // read scope required
 	dtNavMesh();
 	~dtNavMesh();
 
@@ -436,6 +445,8 @@ public:
 	/// The maximum number of tiles supported by the navigation mesh.
 	/// @return The maximum number of tiles supported by the navigation mesh.
 	int getMaxTiles() const;
+	/// Native object, tile-slot array and lookup table; excludes tile payloads.
+	size_t getOwnedMemoryBytes() const;
 	
 	/// Gets the tile at the specified index.
 	///  @param[in]	i		The tile index. [Limit: 0 >= index < #getMaxTiles()]

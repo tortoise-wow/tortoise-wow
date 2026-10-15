@@ -149,6 +149,7 @@ class SpellAuraHolder
         // FIN NOSTALRIUS
 
         bool IsPermanent() const { return m_permanent; }
+        bool CanDeferIdleUpdate() const;
         void SetPermanent(bool permanent) { m_permanent = permanent; }
         bool IsPassive() const { return m_isPassive; }
         void SetPassive(bool on) { m_isPassive = on; }
@@ -217,6 +218,7 @@ class SpellAuraHolder
         }
 
         time_t GetAuraApplyTime() const { return m_applyTime; }
+        uint32 GetAuraApplyMSTime() const { return m_applyMSTime; }
 
         void SetRemoveMode(AuraRemoveMode mode) { m_removeMode = mode; }
         AuraRemoveMode GetRemoveMode() const { return m_removeMode; }
@@ -258,6 +260,7 @@ class SpellAuraHolder
         ObjectGuid m_realCasterGuid;
         ObjectGuid m_castItemGuid;                          // it is NOT safe to keep a pointer to the item because it may get deleted
         time_t m_applyTime;
+        uint32 m_applyMSTime = 0;
 
         SpellEntry const* m_spellProto;
         AuraScript* m_auraScript;

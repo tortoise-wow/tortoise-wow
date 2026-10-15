@@ -23,6 +23,7 @@
 #include "MapTree.h"
 #include "ModelInstance.h"
 #include "WorldModel.h"
+#include "Memory/MemoryLedger.h"
 #include "VMapDefinitions.h"
 
 using G3D::Vector3;
@@ -88,6 +89,15 @@ VMAPLoadResult VMapManager2::loadMap(const char* pBasePath, unsigned int pMapId,
 
 //=========================================================
 // load one tile (internal use only)
+
+bool VMapManager2::isMapTileLoaded(unsigned int mapId, int x, int y) const
+{
+    if (x < 0 || x >= 64 || y < 0 || y >= 64)
+        return false;
+    std::shared_lock<std::shared_mutex> treeGuard(m_treesLock);
+    auto const tree = iInstanceMapTrees.find(mapId);
+    return tree != iInstanceMapTrees.end() && tree->second->isTileLoaded(x, y);
+}
 
 bool VMapManager2::_loadMap(unsigned int pMapId, std::string const& basePath, uint32 tileX, uint32 tileY)
 {
@@ -326,12 +336,15 @@ std::shared_ptr<WorldModel> VMapManager2::acquireModelInstance(std::string const
             return nullptr;
         }
         //DEBUG_FILTER_LOG(LOG_FILTER_MAP_LOADING, "VMapManager2: loading file '%s%s'.", basepath.c_str(), filename.c_str());
+        size_t const modelBytes = worldmodel->OwnedMemoryBytes();
+        ManTech::MemoryLedger::Add(ManTech::MemoryKind::Collision, modelBytes);
         ret = std::shared_ptr<WorldModel>(
                     worldmodel,
-                    [this, filename](WorldModel* m){
+                    [this, filename, modelBytes](WorldModel* m){
                         std::unique_lock<std::shared_mutex> lock(m_modelsLock);
                         if (!getUseManagedPtrs())
                             iLoadedModelFiles.erase(filename);
+                        ManTech::MemoryLedger::Remove(ManTech::MemoryKind::Collision, modelBytes);
                         delete m;
                     });
         model = iLoadedModelFiles.emplace(filename, ManagedModel{ret, getUseManagedPtrs()}).first;

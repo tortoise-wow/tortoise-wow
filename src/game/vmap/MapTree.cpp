@@ -1,3 +1,4 @@
+#include "Memory/MemoryLedger.h"
 /*
  * This file is part of the CMaNGOS Project. See AUTHORS file for Copyright information
  *
@@ -203,6 +204,7 @@ StaticMapTree::StaticMapTree(uint32 mapID, std::string const& basePath):
 //! Make sure to call unloadMap() to unregister acquired model references before destroying
 StaticMapTree::~StaticMapTree()
 {
+    if (iAccountedMemoryBytes) ManTech::MemoryLedger::Remove(ManTech::MemoryKind::Collision, iAccountedMemoryBytes);
     delete[] iTreeValues;
 }
 
@@ -353,8 +355,19 @@ bool StaticMapTree::CanLoadMap(std::string const& vmapPath, uint32 mapID, uint32
 
 //=========================================================
 
+void StaticMapTree::RefreshMemoryCharge()
+{
+    uint64 const bytes = sizeof(*this) + iTree.OwnedCapacityBytes()
+        + (iTreeValues ? size_t(iNTreeValues) * sizeof(ModelInstance) : 0) + iBasePath.capacity();
+    if (!iAccountedMemoryBytes) ManTech::MemoryLedger::Add(ManTech::MemoryKind::Collision, bytes);
+    else if (bytes > iAccountedMemoryBytes) ManTech::MemoryLedger::Add(ManTech::MemoryKind::Collision, bytes - iAccountedMemoryBytes, 0);
+    else if (bytes < iAccountedMemoryBytes) ManTech::MemoryLedger::Remove(ManTech::MemoryKind::Collision, iAccountedMemoryBytes - bytes, 0);
+    iAccountedMemoryBytes = bytes;
+}
+
 bool StaticMapTree::InitMap(std::string const& fname, VMapManager2* vm)
 {
+    struct Refresh { StaticMapTree& owner; ~Refresh() { owner.RefreshMemoryCharge(); } } refresh{*this};
     //DEBUG_FILTER_LOG(LOG_FILTER_MAP_LOADING, "Initializing StaticMapTree '%s'", fname.c_str());
     bool success = true;
     std::string fullname = iBasePath + fname;
