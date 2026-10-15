@@ -1,0 +1,42 @@
+
+###################################################################################################################
+# ELUNA LUA ENGINE
+#
+# This block is only in builds made with -DBUILD_ELUNA=ON. Eluna.* is read
+# once, at startup.
+#
+# Eluna.Enabled
+#     Runs the Lua engine. 0 builds no Lua state at all. Default: 1.
+#     While it is 1, continents run their motion, object, visibility and
+#     MTCells sub-threads on the map's own thread (one thread per Lua state),
+#     and player chat is handled on the world thread.
+# Eluna.TraceBack
+#     Includes a Lua debug traceback in script errors. Default: false.
+# Eluna.ReloadCommand
+#     Enables the `.reload eluna` command. Default: true.
+# Eluna.UseUnsafeMethods
+#     Exposes methods that can be harmful or expensive when misused.
+# Eluna.UseDeprecatedMethods
+#     Exposes compatibility methods that may be removed by Eluna.
+# Eluna.OnlyOnMaps
+#     Comma-separated map IDs that receive a Lua state; empty means all maps.
+# Eluna.ScriptPath
+#     Lua script directory, absolute or relative to the server working directory.
+# Eluna.RequirePaths / Eluna.RequireCPaths
+#     Additional Lua and native-module search paths using Lua path patterns.
+# Eluna.ReloadSecurityLevel
+#     Minimum account security for `.reload eluna` (0 player .. 4 console).
+# ElunaErrorLogFile
+#     Dedicated Eluna log file. Empty disables the dedicated file.
+###################################################################################################################
+Eluna.Enabled = 1
+Eluna.TraceBack = false
+Eluna.ReloadCommand = true
+Eluna.UseUnsafeMethods = false
+Eluna.UseDeprecatedMethods = false
+Eluna.OnlyOnMaps = ""
+Eluna.ScriptPath = "./lua_scripts"
+Eluna.RequirePaths = ""
+Eluna.RequireCPaths = ""
+Eluna.ReloadSecurityLevel = 3
+ElunaErrorLogFile = "ElunaErrors.log"

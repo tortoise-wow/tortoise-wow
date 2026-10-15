@@ -59,6 +59,9 @@
 #ifdef USING_DISCORD_BOT
 #include "DiscordBot/Bot.hpp"
 #endif
+#ifdef ENABLE_ELUNA
+#include "ElunaConfig.h"
+#endif
 
 // select opcodes appropriate for processing in Map::Update context for current session state
 static bool MapSessionFilterHelper(WorldSession* session, OpcodeHandler const& opHandle)
@@ -260,6 +263,14 @@ struct ChatPacketHeader
 
 uint32 GetChatPacketProcessingType(ChatPacketHeader* header)
 {
+#ifdef ENABLE_ELUNA
+    // Chat reaches Lua (OnChat, and OnCommand for a typed command). Off the
+    // world thread it would run on a map thread or on the async packet thread
+    // next to the maps, so with Eluna enabled all chat goes to the world
+    // thread, as a GM's already does.
+    if (sElunaConfig->IsElunaEnabled())
+        return PACKET_PROCESS_WORLD;
+#endif
     // We are forced to process those in world thread because of the custom addon messages which turtle core handles server side instead of using separate opcodes...
     // Would be very nice if somebody could patch the client to register new lua commands to be used in turtle addons that would send packets with custom opcodes.
     if (header->language == LANG_ADDON)

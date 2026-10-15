@@ -32,6 +32,9 @@
 #include "Log.h"
 #include "ScriptObjects.h"
 #include "Util.h"
+#ifdef ENABLE_ELUNA
+#include "LuaEngine.h"
+#endif
 
 WeatherMgr sWeatherMgr;
 
@@ -258,6 +261,12 @@ void Weather::SetWeather(WeatherType type, float grade, Map const* _map, bool is
     {
         script->OnChange(this, uint32(GetWeatherState()), m_grade);
     });
+#ifdef ENABLE_ELUNA
+    // Weather is updated by its map, so the event goes to that map's state.
+    if (_map)
+        if (Eluna* e = _map->GetEluna())
+            e->OnChange(this, m_zone, GetWeatherState(), m_grade);
+#endif
 }
 
 // Get the sound number associated with the current weather

@@ -240,6 +240,9 @@ class Item : public Object
 {
     public:
         static Item* CreateItem(uint32 item, uint32 count, Player const* player = nullptr);
+#ifdef ENABLE_ELUNA
+        static Item* CreateItem(uint32 item, uint32 count, ObjectGuid ownerGuid);
+#endif
         Item* CloneItem(uint32 count, Player const* player = nullptr) const;
 
         Item();
@@ -282,6 +285,10 @@ class Item : public Object
         }
 
         bool IsBag() const { return GetProto()->InventoryType == INVTYPE_BAG; }
+#ifdef ENABLE_ELUNA
+        bool IsLocked() const { return GetProto()->LockID && !HasFlag(ITEM_FIELD_FLAGS, ITEM_DYNFLAG_UNLOCKED); }
+        bool IsNotEmptyBag() const;
+#endif
         bool IsQuiver() const { return GetProto()->InventoryType == INVTYPE_BAG && GetProto()->Class == ITEM_CLASS_QUIVER; }
         bool IsBroken() const { return GetUInt32Value(ITEM_FIELD_MAXDURABILITY) > 0 && GetUInt32Value(ITEM_FIELD_DURABILITY) == 0; }
         bool CanBeTraded() const;

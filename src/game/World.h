@@ -50,6 +50,9 @@
 #include <thread>
 #include <any>
 
+#ifdef ENABLE_ELUNA
+#include "ElunaMgr.h"
+#endif
 class Object;
 class WorldSession;
 class Player;
@@ -59,6 +62,9 @@ class LoginQueryHolder;
 class BanAccountHandler;
 class World;
 class ChannelBroadcaster;
+#ifdef ENABLE_ELUNA
+class Eluna;
+#endif
 namespace DiscordBot
 {
     class Bot;
@@ -1266,6 +1272,18 @@ class World
         std::atomic_uint64_t m_packetsCount[NUM_MSG_TYPES] = {};
         std::atomic_uint64_t m_packetsSize[NUM_MSG_TYPES] = {};
 
+#ifdef ENABLE_ELUNA
+        // The world Lua state. It is only handed out on the thread that owns it
+        // (the world thread, or the main thread during startup); any other thread
+        // gets nullptr, so a hook reached from a map or async thread is skipped
+        // instead of entering the world lua_State concurrently.
+        Eluna* GetEluna() const;
+        void SetElunaWorldThread();
+        // Game events start and stop on the world thread and on map threads;
+        // Eluna's OnGameEventStart/Stop are queued here, in order, and called
+        // from World::Update.
+        void QueueElunaGameEvent(uint16 eventId, bool start);
+#endif
     protected:
         void _UpdateGameTime();
         // callback for UpdateRealmCharacters
@@ -1406,6 +1424,15 @@ class World
         std::unique_ptr<ChannelBroadcaster> m_ChannelBroadcaster;
 
         std::unique_ptr<ThreadPool> m_updateThreads;
+#ifdef ENABLE_ELUNA
+        ElunaInfo m_elunaInfo;
+        Eluna* m_eluna = nullptr;
+        std::atomic<std::thread::id> m_elunaThread{};
+        mutable std::atomic<bool> m_elunaOffThreadLogged{false};
+        std::mutex m_elunaGameEventLock;
+        std::vector<std::pair<uint16, bool>> m_elunaGameEventQueue;
+        void ProcessElunaGameEventQueue();
+#endif
 };
 
 extern uint32 realmID;

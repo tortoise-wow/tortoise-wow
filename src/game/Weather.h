@@ -65,6 +65,9 @@ class Weather
         void SetWeather(WeatherType type, float grade, Map const* _map, bool isPermanent);
         /// Update the weather in this zone, when the timer is expired the weather will be rolled again
         bool Update(uint32 diff, Map const* _map);
+#ifdef ENABLE_ELUNA
+        uint32 GetZone() const { return m_zone; }
+#endif
         /// Check if a type is valid
         static bool IsValidWeatherType(uint32 type)
         {

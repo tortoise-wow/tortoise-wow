@@ -39,6 +39,9 @@
 #include "GuildMgr.h"
 #include "Chat.h"
 #include "CharacterDatabaseCache.h"
+#ifdef ENABLE_ELUNA
+#include "LuaEngine.h"
+#endif
 
 enum StableResultCode
 {
@@ -456,6 +459,19 @@ void WorldSession::HandleGossipSelectOptionOpcode(WorldPacket & recv_data)
         if (!sScriptMgr.OnGossipSelect(_player, pGo, sender, action, code.empty() ? nullptr : code.c_str()))
             _player->OnGossipSelect(pGo, gossipListId);
     }
+#ifdef ENABLE_ELUNA
+    else if (guid.IsItem())
+    {
+        if (Item* item = GetPlayer()->GetItemByGuid(guid))
+            if (Eluna* e = GetPlayer()->GetEluna())
+                e->HandleGossipSelectOption(GetPlayer(), item, sender, action, code);
+    }
+    else if (guid.IsPlayer() && guid == GetPlayer()->GetObjectGuid())
+    {
+        if (Eluna* e = GetPlayer()->GetEluna())
+            e->HandleGossipSelectOption(GetPlayer(), GetPlayer()->PlayerTalkClass->GetGossipMenu().GetMenuId(), sender, action, code);
+    }
+#endif
 }
 
 void WorldSession::HandleSpiritHealerActivateOpcode(WorldPacket & recv_data)

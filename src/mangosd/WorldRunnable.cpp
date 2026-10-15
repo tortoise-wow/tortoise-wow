@@ -37,6 +37,9 @@
 #include "Database/DatabaseEnv.h"
 #include "PerformanceMonitor.h"
 
+#ifdef ENABLE_ELUNA
+#include "LuaEngine.h"
+#endif
 // Target server framerate is 1000/WORLD_SLEEP_CONST
 #define WORLD_SLEEP_CONST 50
 
@@ -56,6 +59,11 @@ void WorldRunnable::operator()()
     // If we update faster, then slow down!
     uint32 prevTime = WorldTimer::getMSTime();
     uint32 currTime = 0u;
+#ifdef ENABLE_ELUNA
+    sWorld.SetElunaWorldThread();
+    if (Eluna* eluna = sWorld.GetEluna())
+        eluna->OnStartup();
+#endif
 
     // While we have not World::m_stopEvent, update the world
     while (!World::IsStopped())
@@ -111,6 +119,10 @@ void WorldRunnable::operator()()
     }
 
     sLog.outString("Shutting down world...");
+#ifdef ENABLE_ELUNA
+    if (Eluna* eluna = sWorld.GetEluna())
+        eluna->OnShutdown();
+#endif
     sWorld.Shutdown();
 
     // unload battleground templates before different singletons destroyed

@@ -281,6 +281,9 @@ enum EUnitFields
     PLAYER_END
 };
 
+#ifdef ENABLE_ELUNA
+#define PLAYER_FIELD_LIFETIME_HONORBALE_KILLS PLAYER_FIELD_LIFETIME_HONORABLE_KILLS
+#endif
 enum EGameObjectFields
 {
     OBJECT_FIELD_CREATED_BY                    = OBJECT_END + 0x00,

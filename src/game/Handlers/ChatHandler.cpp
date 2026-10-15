@@ -55,6 +55,9 @@
 #include "rapidjson/rapidjson.h"
 #include <regex>
 #include "re2/re2.h"
+#ifdef ENABLE_ELUNA
+#include "LuaEngine.h"
+#endif
 
 bool WorldSession::CheckChatMessageValidity(std::string& msg, uint32 lang, uint32 msgType)
 {
@@ -92,7 +95,20 @@ bool WorldSession::ProcessChatMessageAfterSecurityCheck(std::string& msg, uint32
 
     ChatHandler handler(this);
 
+#ifdef ENABLE_ELUNA
+    if (handler.ParseCommands(msg.c_str()))
+        return false;
+
+    // Chat is handled on the world thread while Eluna is enabled
+    // (GetChatPacketProcessingType), with no map updating.
+    if (Eluna* e = GetPlayer()->GetEluna())
+        if (!e->OnChat(GetPlayer(), msgType, lang, msg))
+            return false;
+
+    return true;
+#else
     return !handler.ParseCommands(msg.c_str());
+#endif
 }
 
 bool WorldSession::IsLanguageAllowedForChatType(uint32 lang, uint32 msgType)

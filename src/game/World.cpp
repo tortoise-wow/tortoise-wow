@@ -99,6 +99,11 @@
 #include "PerformanceMonitor.h"
 
 #include <filesystem>
+#ifdef ENABLE_ELUNA
+#include "LuaEngine.h"
+#include "ElunaConfig.h"
+#include "ElunaLoader.h"
+#endif
 
 #ifdef USING_DISCORD_BOT
 #include "DiscordBot/Bot.hpp"
@@ -929,6 +934,41 @@ void World::LoadConfigSettings(bool reload)
     LoadConfigSettingsFromFile();
 
     LoadConfigSettingsCommonPart(reload);
+#ifdef ENABLE_ELUNA
+    // Eluna.* is read once, at startup: the Lua states are made then, and the
+    // thread limits below must not change under maps that already exist.
+    if (!reload)
+        sElunaConfig->Initialize();
+
+    // One Lua state per map is entered by one thread at a time. A continent's
+    // motion, object, visibility and cell sub-threads run game logic (AI,
+    // spells, scripts) inside a single map in parallel, so with Eluna enabled
+    // all four run on the map's own thread. Continent- and instance-level
+    // parallelism is unchanged.
+    if (sElunaConfig->IsElunaEnabled())
+    {
+        bool limited = false;
+        auto limit = [&](eConfigUInt32Values index, uint32 value)
+        {
+            if (getConfig(index) > value)
+            {
+                setConfig(index, value);
+                limited = true;
+            }
+        };
+        limit(CONFIG_UINT32_CONTINENTS_MOTIONUPDATE_THREADS, 0); // 0 = on the map thread
+        limit(CONFIG_UINT32_MAP_OBJECTSUPDATE_THREADS, 1);       // 1 = the map thread only
+        limit(CONFIG_UINT32_MAP_VISIBILITYUPDATE_THREADS, 1);    // 1 = the map thread only
+        limit(CONFIG_UINT32_MTCELLS_THREADS, 0);                 // 0 = cells updated on the map thread
+
+        static bool logged = false;
+        if (limited && !logged)
+        {
+            logged = true;
+            sLog.outString("Eluna is enabled: continent motion, object, visibility and MTCells sub-threads run on each map's own thread (Continents.MotionUpdate.Threads=0, MapUpdate.ObjectsUpdate.MaxThreads=1, MapUpdate.VisibilityUpdate.MaxThreads=1, MapUpdate.Continents.MTCells.Threads=0).");
+        }
+    }
+#endif
 
     ScriptRegistry<WorldScript>::ForEachEnabledHook(WORLDHOOK_ON_AFTER_CONFIG_LOAD, [&](WorldScript* script)
     {
@@ -2032,6 +2072,13 @@ void LoadPlayerEggLoot();
 
     ///- Init highest guids before any guid using table loading to prevent using not initialized guids in some code.
     sObjectMgr.SetHighestGuids();                           // must be after packing instances
+#ifdef ENABLE_ELUNA
+    if (sElunaConfig->IsElunaEnabled())
+    {
+        ELUNA_LOG_INFO("Loading Lua scripts...");
+        sElunaLoader->LoadScripts();
+    }
+#endif
     sLog.outString("Loading broadcast texts...");
     sObjectMgr.LoadBroadcastTexts();
     sLog.outString("Loading page texts...");
@@ -2210,6 +2257,16 @@ void LoadPlayerEggLoot();
     sObjectMgr.LoadGuildHouses();
     sLog.outString("Loading guild houses...");
 	sGuildMgr.LoadPetitions();
+#ifdef ENABLE_ELUNA
+    if (sElunaConfig->IsElunaEnabled())
+    {
+        ELUNA_LOG_INFO("Starting Eluna world state...");
+        m_elunaThread.store(std::this_thread::get_id(), std::memory_order_relaxed);
+        m_elunaInfo = { ElunaInfoKey::MakeGlobalKey(0) };
+        sElunaMgr->Create(nullptr, m_elunaInfo);
+        m_eluna = sElunaMgr->Get(m_elunaInfo);
+    }
+#endif
     sLog.outString("Loading groups...");
 	sObjectMgr.LoadGroups();
     sLog.outString("Loading reserved player names...");
@@ -2443,6 +2500,10 @@ void LoadPlayerEggLoot();
         script->OnStartup();
     });
 
+#ifdef ENABLE_ELUNA
+    if (Eluna* eluna = GetEluna())
+        eluna->OnConfigLoad(false);
+#endif
     sLog.outString("Current content phase is set to %u.", GetContentPhase() + 1);
     uint32 uStartInterval = WorldTimer::getMSTimeDiff(uStartTime, WorldTimer::getMSTime());
     sLog.outString("World server is up and running! Loading time: %i minutes %i seconds", uStartInterval / 60000, (uStartInterval % 60000) / 1000);
@@ -2630,6 +2691,16 @@ void World::Update(uint32 diff)
     uint32 asyncWaitBegin = WorldTimer::getMSTime();
     if (job.valid())
         job.wait();
+#ifdef ENABLE_ELUNA
+    // After the async tasks and every map update have finished, so the world
+    // state never runs next to them.
+    ProcessElunaGameEventQueue();
+    if (Eluna* eluna = GetEluna())
+    {
+        eluna->UpdateEluna(diff);
+        eluna->OnWorldUpdate(diff);
+    }
+#endif
 
     updateMapSystemTime = WorldTimer::getMSTimeDiffToNow(updateMapSystemTime);
     if (getConfig(CONFIG_UINT32_PERFLOG_SLOW_MAPSYSTEM_UPDATE) && updateMapSystemTime > getConfig(CONFIG_UINT32_PERFLOG_SLOW_MAPSYSTEM_UPDATE))
@@ -4625,6 +4696,56 @@ void World::SetSessionDisconnected(WorldSession* sess)
     m_disconnectedSessions.insert(sess);
 }
 
+#ifdef ENABLE_ELUNA
+Eluna* World::GetEluna() const
+{
+    if (!m_eluna)
+        return nullptr;
+
+    if (std::this_thread::get_id() == m_elunaThread.load(std::memory_order_relaxed))
+        return m_eluna;
+
+    if (!m_elunaOffThreadLogged.exchange(true))
+        sLog.outError("Eluna: a hook asked for the world Lua state off the world thread; it was skipped (logged once).");
+    return nullptr;
+}
+
+void World::QueueElunaGameEvent(uint16 eventId, bool start)
+{
+    if (!sElunaConfig->IsElunaEnabled())
+        return;
+
+    std::lock_guard<std::mutex> guard(m_elunaGameEventLock);
+    m_elunaGameEventQueue.emplace_back(eventId, start);
+}
+
+void World::ProcessElunaGameEventQueue()
+{
+    std::vector<std::pair<uint16, bool>> queue;
+    {
+        std::lock_guard<std::mutex> guard(m_elunaGameEventLock);
+        queue.swap(m_elunaGameEventQueue);
+    }
+
+    Eluna* eluna = GetEluna();
+    if (!eluna)
+        return;
+
+    for (auto const& entry : queue)
+    {
+        if (entry.second)
+            eluna->OnGameEventStart(entry.first);
+        else
+            eluna->OnGameEventStop(entry.first);
+    }
+}
+
+void World::SetElunaWorldThread()
+{
+    m_elunaThread.store(std::this_thread::get_id(), std::memory_order_relaxed);
+}
+
+#endif
 void World::AddAsyncTask(std::function<void()> task)
 {
     std::lock_guard<std::mutex> lock(m_asyncTaskQueueMutex);

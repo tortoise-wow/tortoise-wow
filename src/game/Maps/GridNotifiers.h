@@ -234,6 +234,27 @@ namespace MaNGOS
         void Visit(DynamicObjectMapType &m);
 
         template<class NOT_INTERESTED> void Visit(GridRefManager<NOT_INTERESTED> &) {}
+#ifdef ENABLE_ELUNA
+    };
+
+    // Last object accepted by Check. Checks may narrow their range after each
+    // match, which makes this the nearest-object search used by Eluna.
+    template<class Check>
+        struct WorldObjectLastSearcher
+    {
+        WorldObject*& i_object;
+        Check& i_check;
+
+        WorldObjectLastSearcher(WorldObject*& result, Check& check) : i_object(result), i_check(check) {}
+
+        void Visit(GameObjectMapType& m);
+        void Visit(PlayerMapType& m);
+        void Visit(CreatureMapType& m);
+        void Visit(CorpseMapType& m);
+        void Visit(DynamicObjectMapType& m);
+
+        template<class NOT_INTERESTED> void Visit(GridRefManager<NOT_INTERESTED>&) {}
+#endif
     };
 
     template<class Do>

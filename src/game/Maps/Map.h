@@ -42,6 +42,10 @@
 #include "SQLStorages.h"
 #include "CreatureLinkingMgr.h"
 
+#ifdef ENABLE_ELUNA
+#include "LuaValue.h"
+#include "ElunaMgr.h"
+#endif
 #include <bitset>
 #include <list>
 #include <set>
@@ -52,6 +56,9 @@ using Movement::Vector3;
 
 struct CreatureInfo;
 class Creature;
+#ifdef ENABLE_ELUNA
+class Eluna;
+#endif
 class Unit;
 class WorldPacket;
 class InstanceData;
@@ -617,6 +624,13 @@ class Map : public GridRefManager<NGridType>
         void RemoveBones(Corpse* corpse);
         void ScheduleCorpseRemoval();
 
+#ifdef ENABLE_ELUNA
+        // Cached when the map is made: the ElunaMgr container is not read from
+        // map threads, so one map being made or destroyed never races another
+        // map's lookup.
+        Eluna* GetEluna() const { return m_eluna; }
+        LuaVal lua_data = LuaVal({});
+#endif
         XStatTimer MovementPerfTimer;
         XStatTimer SpellPerfTimer;
         XStatTimer UpdateTimer;
@@ -977,6 +991,11 @@ class Map : public GridRefManager<NGridType>
     public:
         CreatureGroupHolderType CreatureGroupHolder;
         uint32 GetLastPlayerLeftTime() const { return _lastPlayerLeftTime; }
+#ifdef ENABLE_ELUNA
+    private:
+        ElunaInfo m_elunaInfo;
+        Eluna* m_eluna = nullptr;
+#endif
 };
 
 class WorldMap : public Map

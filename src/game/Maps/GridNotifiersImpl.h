@@ -356,6 +356,48 @@ void MaNGOS::WorldObjectListSearcher<Check>::Visit(PlayerMapType& m)
 }
 
 template<class Check>
+#ifdef ENABLE_ELUNA
+void MaNGOS::WorldObjectLastSearcher<Check>::Visit(GameObjectMapType& m)
+{
+    for (auto& entry : m)
+        if (i_check(entry.getSource()))
+            i_object = entry.getSource();
+}
+
+template<class Check>
+void MaNGOS::WorldObjectLastSearcher<Check>::Visit(PlayerMapType& m)
+{
+    for (auto& entry : m)
+        if (i_check(entry.getSource()))
+            i_object = entry.getSource();
+}
+
+template<class Check>
+void MaNGOS::WorldObjectLastSearcher<Check>::Visit(CreatureMapType& m)
+{
+    for (auto& entry : m)
+        if (i_check(entry.getSource()))
+            i_object = entry.getSource();
+}
+
+template<class Check>
+void MaNGOS::WorldObjectLastSearcher<Check>::Visit(CorpseMapType& m)
+{
+    for (auto& entry : m)
+        if (i_check(entry.getSource()))
+            i_object = entry.getSource();
+}
+
+template<class Check>
+void MaNGOS::WorldObjectLastSearcher<Check>::Visit(DynamicObjectMapType& m)
+{
+    for (auto& entry : m)
+        if (i_check(entry.getSource()))
+            i_object = entry.getSource();
+}
+
+template<class Check>
+#endif
 void MaNGOS::WorldObjectListSearcher<Check>::Visit(CreatureMapType& m)
 {
     for(auto & itr : m)

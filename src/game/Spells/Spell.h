@@ -412,6 +412,10 @@ class Spell
         //void HandleAddAura(Unit* Target);
 
         SpellEntry const* m_spellInfo;
+#ifdef ENABLE_ELUNA
+        SpellEntry const* GetSpellProto() const { return m_spellInfo; }
+        SpellEntry const* GetSpellInfo() const { return m_spellInfo; }
+#endif
         bool m_isCustomSpell = false;
 
         bool m_addThreat = true;

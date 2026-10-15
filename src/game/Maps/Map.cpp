@@ -61,8 +61,24 @@
 #include "Logging/DatabaseLogger.hpp"
 #include "PerfStats.h"
 
+#ifdef ENABLE_ELUNA
+#include "LuaEngine.h"
+#include "ElunaConfig.h"
+
+// ElunaMgr keeps its states in an unlocked container; maps can be made and
+// destroyed from more than one thread, so changes to it are serialised here.
+static std::mutex s_elunaMgrLock;
+#endif
 Map::~Map()
 {
+#ifdef ENABLE_ELUNA
+    if (Eluna* eluna = GetEluna())
+    {
+        eluna->OnDestroy(this);
+        if (Instanceable())
+            eluna->FreeInstanceId(GetInstanceId());
+    }
+#endif
     UnloadAll(true);
 
     if (!m_scriptSchedule.empty())
@@ -86,6 +102,16 @@ Map::~Map()
 
     delete m_weatherSystem;
     m_weatherSystem = nullptr;
+#ifdef ENABLE_ELUNA
+    // Last, after the objects and the instance data that may hold event
+    // processors or references into this state are gone.
+    if (m_eluna)
+    {
+        std::lock_guard<std::mutex> guard(s_elunaMgrLock);
+        m_eluna = nullptr;
+        sElunaMgr->Destroy(m_elunaInfo);
+    }
+#endif
 
     --PerfStats::g_totalMaps;
 }
@@ -149,6 +175,18 @@ Map::Map(uint32 id, time_t expiry, uint32 InstanceId)
         m_motionThreads->start();
         m_objectThreads->start<ThreadPool::MySQL<ThreadPool::MultiQueue>>();
     }
+#ifdef ENABLE_ELUNA
+    if (sElunaConfig->IsElunaEnabled() && sElunaConfig->ShouldMapLoadEluna(id))
+    {
+        std::lock_guard<std::mutex> guard(s_elunaMgrLock);
+        m_elunaInfo = { ElunaInfoKey::MakeKey(GetId(), GetInstanceId()) };
+        sElunaMgr->Create(this, m_elunaInfo);
+        m_eluna = sElunaMgr->Get(m_elunaInfo);
+    }
+
+    if (Eluna* eluna = GetEluna())
+        eluna->OnCreate(this);
+#endif
 
     ++PerfStats::g_totalMaps;
 }
@@ -406,6 +444,12 @@ bool Map::Add(Player *player)
     player->SetIsNewObject(true);
     UpdateObjectVisibility(player, cell, p);
     player->SetIsNewObject(false);
+#ifdef ENABLE_ELUNA
+    if (Eluna* eluna = player->GetEluna())
+        eluna->OnMapChanged(player);
+    if (Eluna* eluna = GetEluna())
+        eluna->OnPlayerEnter(this, player);
+#endif
 
     if (i_data)
         i_data->OnPlayerEnter(player);
@@ -955,6 +999,13 @@ void Map::Update(uint32 t_diff)
 
     ScriptsProcess();
 
+#ifdef ENABLE_ELUNA
+    if (Eluna* eluna = GetEluna())
+    {
+        eluna->UpdateEluna(t_diff);
+        eluna->OnMapUpdate(this, t_diff);
+    }
+#endif
     if (i_data)
         i_data->Update(t_diff);
 
@@ -1134,6 +1185,10 @@ void ScriptedEvent::SendEventToAllTargets(uint32 uiData)
 
 void Map::Remove(Player *player, bool remove)
 {
+#ifdef ENABLE_ELUNA
+    if (Eluna* eluna = GetEluna())
+        eluna->OnPlayerLeave(this, player);
+#endif
     ScriptRegistry<AllMapScript>::ForEach([&](AllMapScript* script)
     {
         script->OnPlayerLeaveAll(this, player);
@@ -1688,6 +1743,15 @@ void Map::AddObjectToRemoveList(WorldObject *obj)
 {
     MANGOS_ASSERT(obj->GetMapId() == GetId() && obj->GetInstanceId() == GetInstanceId());
 
+#ifdef ENABLE_ELUNA
+    if (Eluna* eluna = GetEluna())
+    {
+        if (Creature* creature = obj->ToCreature())
+            eluna->OnRemove(creature);
+        else if (GameObject* gameObject = obj->ToGameObject())
+            eluna->OnRemove(gameObject);
+    }
+#endif
     obj->CleanupsBeforeDelete();                            // remove or simplify at least cross referenced links
     std::unique_lock<std::mutex> lock(i_objectsToRemove_lock);
     i_objectsToRemove.insert(obj);
@@ -1901,6 +1965,21 @@ void Map::CreateInstanceData(bool load)
     if (i_data)
         return;
 
+#ifdef ENABLE_ELUNA
+    // A Lua instance script takes the place of a C++ one.
+    if (Eluna* eluna = GetEluna())
+        i_data = eluna->GetInstanceData(this);
+
+    if (!i_mapEntry->scriptId && !i_data)
+        return;
+
+    i_script_id = i_mapEntry->scriptId;
+
+    if (!i_data)
+        i_data = sScriptMgr.CreateInstanceData(this);
+    if (!i_data)
+        return;
+#else
     if (!i_mapEntry->scriptId)
         return;
 
@@ -1909,6 +1988,7 @@ void Map::CreateInstanceData(bool load)
     i_data = sScriptMgr.CreateInstanceData(this);
     if (!i_data)
         return;
+#endif
 
     if (load)
     {

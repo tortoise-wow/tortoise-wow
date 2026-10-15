@@ -135,14 +135,27 @@ class Database
             return guard->Query(sql);
         }
 
+#ifdef ENABLE_ELUNA
+        // Eluna holds query results as std::shared_ptr<QueryNamedResult>.
+        inline std::shared_ptr<QueryNamedResult> QueryNamed(const char *sql)
+        {
+            SqlConnection::Lock guard(getQueryConnection());
+            return std::shared_ptr<QueryNamedResult>(guard->QueryNamed(sql));
+        }
+#else
         inline QueryNamedResult* QueryNamed(const char *sql)
         {
             SqlConnection::Lock guard(getQueryConnection());
             return guard->QueryNamed(sql);
         }
+#endif
 
         QueryResult* PQuery(const char *format,...) ATTR_PRINTF(2,3);
+#ifdef ENABLE_ELUNA
+        std::shared_ptr<QueryNamedResult> PQueryNamed(const char *format,...) ATTR_PRINTF(2,3);
+#else
         QueryNamedResult* PQueryNamed(const char *format,...) ATTR_PRINTF(2,3);
+#endif
 
         inline bool DirectExecute(const char* sql)
         {

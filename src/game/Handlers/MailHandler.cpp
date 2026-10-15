@@ -40,6 +40,9 @@
 #include "Anticheat.h"
 #include "AccountMgr.h"
 #include "Database/DatabaseImpl.h"
+#ifdef ENABLE_ELUNA
+#include "LuaEngine.h"
+#endif
 
 extern bool IsPlayerHardcore(uint32 lowGuid);
 
@@ -435,6 +438,16 @@ void WorldSession::HandleSendMailCallback(WorldSession::AsyncMailSendRequest* re
         return;
     }
     data.JustMailed(rc_account);
+#ifdef ENABLE_ELUNA
+    if (Eluna* e = loadedPlayer->GetEluna())
+    {
+        if (!e->OnSendMail(loadedPlayer, req->receiver))
+        {
+            SendMailResult(0, MAIL_SEND, MAIL_ERR_EQUIP_ERROR, EQUIP_ERR_CANT_DO_RIGHT_NOW);
+            return;
+        }
+    }
+#endif
 
     SendMailResult(0, MAIL_SEND, MAIL_OK);
 

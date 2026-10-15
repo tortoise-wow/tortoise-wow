@@ -98,6 +98,11 @@ void GameEventMgr::StartEvent(uint16 event_id, bool overwrite /*=false*/, bool r
 
     if (GameEventScript* script = ScriptRegistry<GameEventScript>::GetScriptById(event_id))
         script->OnStart(event_id);
+#ifdef ENABLE_ELUNA
+    // StartEvent/StopEvent also run on map threads (map script commands), so
+    // the Lua call is queued and made on the world thread.
+    sWorld.QueueElunaGameEvent(event_id, true);
+#endif
 }
 
 void GameEventMgr::StopEvent(uint16 event_id, bool overwrite)
@@ -117,6 +122,11 @@ void GameEventMgr::StopEvent(uint16 event_id, bool overwrite)
 
     if (GameEventScript* script = ScriptRegistry<GameEventScript>::GetScriptById(event_id))
         script->OnStop(event_id);
+#ifdef ENABLE_ELUNA
+    // StartEvent/StopEvent also run on map threads (map script commands), so
+    // the Lua call is queued and made on the world thread.
+    sWorld.QueueElunaGameEvent(event_id, false);
+#endif
 }
 
 void GameEventMgr::EnableEvent(uint16 event_id, bool enable, bool updateDB)

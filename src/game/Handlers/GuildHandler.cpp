@@ -140,6 +140,19 @@ void WorldSession::HandleGuildInviteOpcode(WorldPacket& recvPacket)
     ScriptRegistry<GuildScript>::ForEach([&](GuildScript* s) { s->OnGuildInvite(player); });
 
     DEBUG_LOG("WORLD: Sent (SMSG_GUILD_INVITE)");
+#ifdef ENABLE_ELUNA
+}
+
+void WorldSession::SendGuildInvite(Player* invitee)
+{
+    if (!invitee)
+        return;
+
+    std::string inviteeName(invitee->GetName());
+    WorldPacket request(CMSG_GUILD_INVITE, inviteeName.size() + 1);
+    request << inviteeName;
+    HandleGuildInviteOpcode(request);
+#endif
 }
 
 void WorldSession::HandleGuildRemoveOpcode(WorldPacket& recvPacket)

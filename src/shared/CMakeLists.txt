@@ -213,6 +213,10 @@ add_library(shared STATIC
   ${shared_SRCS}
 )
 
+if(BUILD_ELUNA)
+  target_compile_definitions(shared PUBLIC ENABLE_ELUNA)
+endif()
+
 if(USE_DISCORD_BOT)
     target_link_libraries(shared PUBLIC
 	dpp

@@ -349,6 +349,9 @@ void Log::Initialize()
 logFiles[LOG_AUTOUPDATER] = openLogFile("DBUpdaterLogFile", nullptr, "a+");
 logFiles[LOG_API] = openLogFile("ApiLogFile", nullptr, "a+");
 logFiles[LOG_RACE_CHANGE] = fopen((m_logsDir + "racechange.log").c_str(), "a+");
+#ifdef ENABLE_ELUNA
+logFiles[LOG_ELUNA] = openLogFile("ElunaErrorLogFile", nullptr, "a+");
+#endif
 
 timestampPrefix[LOG_DBERRFIX] = false;
 

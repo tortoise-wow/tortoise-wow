@@ -29,6 +29,9 @@
 #include "ObjectMgr.h"
 #include "Player.h"
 #include "Group.h"
+#ifdef ENABLE_ELUNA
+#include "ScriptObjects.h"
+#endif
 #include "SocialMgr.h"
 #include "Util.h"
 
@@ -186,6 +189,14 @@ void WorldSession::HandleGroupAcceptOpcode(WorldPacket & /*recv_data*/)
         return;
     }
 
+#ifdef ENABLE_ELUNA
+    if (ScriptRegistry<GroupScript>::ForEachWithReturn([&](GroupScript* script)
+    {
+        return !script->CanMemberAccept(group, GetPlayer());
+    }))
+        return;
+
+#endif
     // remove in from invites in any case
     group->RemoveInvite(GetPlayer());
 
