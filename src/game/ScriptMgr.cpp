@@ -3185,3 +3185,46 @@ bool QuestInstance::GoToStage(uint32 newStage)
     SetQuestStage(newStage);
     return true;
 }
+
+bool Script_IsAIControlled(Player const* player)
+{
+    return player && ScriptRegistry<PlayerScript>::ForEachEnabledHookWithReturn(
+        PLAYERHOOK_IS_AI_CONTROLLED,
+        [&](PlayerScript* script) { return script->IsAIControlled(player); });
+}
+
+bool Script_IsMachineDriven(Player const* player)
+{
+    return player && ScriptRegistry<PlayerScript>::ForEachEnabledHookWithReturn(
+        PLAYERHOOK_IS_MACHINE_DRIVEN,
+        [&](PlayerScript* script) { return script->IsMachineDriven(player); });
+}
+
+bool Script_HasAIFollowers(Player const* player)
+{
+    return player && ScriptRegistry<PlayerScript>::ForEachEnabledHookWithReturn(
+        PLAYERHOOK_HAS_AI_FOLLOWERS,
+        [&](PlayerScript* script) { return script->HasAIFollowers(player); });
+}
+
+uint8 Script_GetAllowedRoles(Player const* player)
+{
+    if (!player)
+        return 0;
+
+    uint8 roles = 0;
+    ScriptRegistry<PlayerScript>::ForEachEnabledHookWithReturn(
+        PLAYERHOOK_GET_ALLOWED_ROLES,
+        [&](PlayerScript* script) { return script->GetAllowedRoles(player, roles); });
+    return roles;
+}
+
+void Script_SetForcedRole(Player* player, uint8 role)
+{
+    if (!player)
+        return;
+
+    ScriptRegistry<PlayerScript>::ForEachEnabledHook(
+        PLAYERHOOK_SET_FORCED_ROLE,
+        [&](PlayerScript* script) { script->SetForcedRole(player, role); });
+}
