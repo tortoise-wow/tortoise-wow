@@ -13687,7 +13687,9 @@ bool ChatHandler::HandleCharacterFillFlysCommand(char* args)
 
 bool ChatHandler::HandleMmapsNearCommand(char* args)
 {
-    if (!MMAP::MMapFactory::createOrGetMMapManager()->GetNavMesh(GetSession()->GetPlayer()->GetMapId()))
+    MMAP::MMapManager* mmap = MMAP::MMapFactory::createOrGetMMapManager();
+    MMAP::NavMeshQueryHandle queryHandle = mmap->AcquireNavMeshQuery(GetSession()->GetPlayer()->GetMapId());
+    if (!queryHandle)
     {
         PSendSysMessage("NavMesh not loaded for current map.");
         return true;
@@ -13706,22 +13708,29 @@ bool ChatHandler::HandleMmapsNearCommand(char* args)
     filter.setExcludeFlags(NAV_STEEP_SLOPES);
     std::vector<dtPolyRef> refs;
     refs.resize(4000);
-    auto query = MMAP::MMapFactory::createOrGetMMapManager()->GetNavMeshQuery(GetSession()->GetPlayer()->GetMapId());
+    dtNavMeshQuery const* query = queryHandle.get();
     int polyCount = 0;
     if (dtStatusFailed(query->queryPolygons(point, extents, &filter, refs.data(), &polyCount, refs.size())))
         SendSysMessage("Error querying polygons.");
 
     refs.resize(polyCount);
 
+    std::vector<G3D::Vector3> visualPoints;
+    visualPoints.reserve(refs.size());
     for (const auto& poly : refs)
     {
         float pointRes[3] = {};
         bool res = false;
         if (dtStatusFailed(query->closestPointOnPoly(poly, point, pointRes, &res)))
             continue;
-        else
-            GetSession()->GetPlayer()->SummonCreature(VISUAL_WAYPOINT, pointRes[2], pointRes[0], pointRes[1], 0, TEMPSUMMON_TIMED_DESPAWN, 30000, false, 0, nullptr, false);
+
+        visualPoints.emplace_back(pointRes[2], pointRes[0], pointRes[1]);
     }
+
+    // Summoning can enter map/grid code; no Detour refs are needed anymore.
+    queryHandle = MMAP::NavMeshQueryHandle();
+    for (G3D::Vector3 const& visualPoint : visualPoints)
+        GetSession()->GetPlayer()->SummonCreature(VISUAL_WAYPOINT, visualPoint.x, visualPoint.y, visualPoint.z, 0, TEMPSUMMON_TIMED_DESPAWN, 30000, false, 0, nullptr, false);
 
     return true;
 }
@@ -13759,7 +13768,7 @@ bool ChatHandler::HandleFactionAtWarCommand(char* args)
 
 bool ChatHandler::HandleMmapsPathCommand(char* args)
 {
-    if (!MMAP::MMapFactory::createOrGetMMapManager()->GetNavMesh(GetSession()->GetPlayer()->GetMapId()))
+    if (!MMAP::MMapFactory::createOrGetMMapManager()->IsNavMeshLoaded(GetSession()->GetPlayer()->GetMapId()))
     {
         PSendSysMessage("NavMesh not loaded for current map.");
         return true;
