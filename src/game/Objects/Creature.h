@@ -496,6 +496,11 @@ struct CreatureCreatePos
 
     Map* GetMap() const { return m_map; }
     void SelectFinalPoint(Creature* cr);
+    // After SelectFinalPoint: a close point the object cannot see, or one on
+    // another floor (under an overhang the ground lookup can land on the roof),
+    // falls back to the object's own position. Used for pets, which their
+    // update unsummons when they start out of their owner's range.
+    void FallBackToCloseObjectIfUnreachable();
     bool Relocate(Creature* cr) const;
 
     // read only after SelectFinalPoint
