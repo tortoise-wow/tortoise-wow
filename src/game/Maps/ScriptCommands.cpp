@@ -39,12 +39,6 @@ bool Map::ScriptCommand_Talk(const ScriptInfo& script, WorldObject* source, Worl
 {
     WorldObject* pSource = source;
 
-    if (!pSource)
-    {
-        sLog.outError("SCRIPT_COMMAND_TALK (script id %u) call for a nullptr or non-worldobject source (TypeId: %u), skipping.", script.id, source ? source->GetTypeId() : 0);
-        return ShouldAbortScript(script);
-    }
-
     Unit* unitTarget = ToUnit(target);
     int32 textId = script.talk.textId[0];
 
@@ -60,6 +54,29 @@ bool Map::ScriptCommand_Talk(const ScriptInfo& script, WorldObject* source, Worl
 
         // Use one random
         textId = script.talk.textId[rand() % i];
+    }
+
+    // datalong3: say it map-wide as a creature entry, whether or not that creature is loaded
+    if (script.talk.simulateEntry)
+    {
+        // DoOrSimulateScriptTextForMap returns nothing: a text it would not find is looked up here, so ABORT_ON_FAILURE sees it
+        if (textId >= 0 ? !sObjectMgr.GetBroadcastTextLocale(textId) : !sObjectMgr.GetMangosStringLocale(textId))
+        {
+            sLog.outError("SCRIPT_COMMAND_TALK (script id %u) simulated as entry %u has no text %i, skipping.", script.id, script.talk.simulateEntry, textId);
+            return ShouldAbortScript(script);
+        }
+
+        Creature* pSpeaker = source ? source->ToCreature() : nullptr;   // the source itself, if it is that entry
+        if (pSpeaker && pSpeaker->GetEntry() != script.talk.simulateEntry)
+            pSpeaker = nullptr;
+        DoOrSimulateScriptTextForMap(textId, script.talk.simulateEntry, this, pSpeaker, unitTarget);
+        return false;
+    }
+
+    if (!pSource)
+    {
+        sLog.outError("SCRIPT_COMMAND_TALK (script id %u) call for a nullptr or non-worldobject source (TypeId: %u), skipping.", script.id, source ? source->GetTypeId() : 0);
+        return ShouldAbortScript(script);
     }
 
     DoScriptText(textId, pSource, unitTarget, script.talk.chatType > 0 ? script.talk.chatType : -1);

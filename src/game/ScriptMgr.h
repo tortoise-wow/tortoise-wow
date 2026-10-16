@@ -79,6 +79,7 @@ enum eScriptCommand
                                                             // target = Unit/None
                                                             // datalong = chat_type (see enum ChatType)
                                                             // dataint = broadcast_text id. dataint2-4 optional for random selected text.
+                                                            // datalong3 = creature entry: say it map-wide as that entry, loaded or not (chat type from the text)
     SCRIPT_COMMAND_EMOTE                    = 1,            // source = Unit
                                                             // datalong1-4 = emote_id
                                                             // dataint = (bool) is_targeted
@@ -562,7 +563,8 @@ struct ScriptInfo
         {
             uint32 chatType;                                // datalong
             uint32 unused1;                                 // datalong2
-            uint32 unused2;                                 // datalong3
+            uint32 simulateEntry;                           // datalong3: say it map-wide as this creature entry, loaded or not;
+                                                            // the chat type is then the text's own, datalong is not read
             uint32 unused3;                                 // datalong4
             uint32 unused4;                                 // data_flags
             int32  textId[MAX_TEXT_ID];                     // dataint to dataint4
