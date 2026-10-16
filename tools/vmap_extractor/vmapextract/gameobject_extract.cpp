@@ -20,7 +20,7 @@ bool ExtractSingleModel(std::string& origPath, std::string& fixedName, StringSet
     // >= 3.1.0 ADT MMDX section store filename.m2 filenames for corresponded .m2 file
     // nothing do
 
-    fixedName = GetPlainName(origPath.c_str());
+    fixedName = AddCollisionSuffix(GetPlainName(origPath.c_str()), origPath);
 
     std::string output(szWorkDirWmo);                       // Stores output filename (possible changed)
     output += "/";
@@ -72,9 +72,11 @@ void ExtractGameobjectModels()
         //strToLower(ch_ext);
 
         bool result = false;
+        std::string listName = name;                        // name written to temp_gameobject_models
         if (!strcmp(ch_ext, ".wmo"))
         {
             result = ExtractSingleWmo(path);
+            listName = AddCollisionSuffix(name, path);
         }
         else if (!strcmp(ch_ext, ".mdl"))
         {
@@ -85,15 +87,16 @@ void ExtractGameobjectModels()
         {
             std::string fixedName;
             result = ExtractSingleModel(path, fixedName, failedPaths);
+            listName = fixedName;
         }
 
         if (result)
         {
             uint32 displayId = it->getUInt(0);
-            uint32 path_length = strlen(name);
+            uint32 path_length = listName.size();
             fwrite(&displayId, sizeof(uint32), 1, model_list);
             fwrite(&path_length, sizeof(uint32), 1, model_list);
-            fwrite(name, sizeof(char), path_length, model_list);
+            fwrite(listName.c_str(), sizeof(char), path_length, model_list);
         }
     }
 
