@@ -17,6 +17,11 @@ instance_black_morass::instance_black_morass(Map* pMap) : ScriptedInstance(pMap)
 
 void instance_black_morass::Initialize()
 {
+    // A new instance runs Initialize twice (this constructor, then Map::CreateInstanceData),
+    // a loaded one only once (here): summon the Entity once either way.
+    if (!unknownEntity.IsEmpty())
+        return;
+
     if (Creature* entityCreature{ instance->SummonCreature(66003, -1591.57f, 7106.07f, 23.73f, 0, TEMPSUMMON_CORPSE_DESPAWN) })
     {
         unknownEntity = entityCreature->GetObjectGuid();
