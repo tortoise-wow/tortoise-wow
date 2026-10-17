@@ -37,6 +37,7 @@ struct npc_pusillinAI : public ScriptedAI
 
     void Reset() override
     {
+        uiGlobalCD = 0;
     }
 
     void Aggro(Unit* pWho) override
