@@ -151,7 +151,7 @@ public:
     {
         if (m_uiCallForHelp_Timer < uiDiff)
         {
-            const auto uiRnd{ urand(0, nsArdaeus::MAX_SPAWN_POINTS) }; // Pick a random NPC
+            const auto uiRnd{ urand(0, nsArdaeus::MAX_SPAWN_POINTS - 1) }; // Pick a random NPC (urand includes its upper bound)
             ObjectGuid uiStatueNpcGUID{};
 
             // Summon an invisible NPC in front of the random chosen statue which does a visual effect to the summoned creature
