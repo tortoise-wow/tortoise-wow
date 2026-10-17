@@ -8878,7 +8878,16 @@ uint32 Unit::GetCreatePowers(Powers power) const
 
 void Unit::AddToWorld()
 {
+    bool const wasInWorld = IsInWorld();
+
     Object::AddToWorld();
+
+    // An AI made before the unit entered the map (a summon) hears it here, ahead of the instant AI notify below:
+    // that one can start an aggro on sight, and a SPAWNED sleep must be in place before the AGGRO rule wakes it.
+    if (!wasInWorld)
+        if (CreatureAI* ai = AI())
+            ai->OnAddToWorld();
+
     ScheduleAINotify(0);
 
     m_combatTimer = UNIT_COMBAT_CHECK_TIMER_MAX - (WorldTimer::getMSTime() % UNIT_COMBAT_CHECK_TIMER_MAX);

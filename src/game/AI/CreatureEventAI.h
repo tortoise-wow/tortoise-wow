@@ -302,6 +302,7 @@ class CreatureEventAI : public CreatureAI
         void GetAIInformation(ChatHandler& reader) override;
 
         void JustRespawned() override;
+        void OnAddToWorld() override;
         void Reset();
         void JustReachedHome() override;
         void EnterCombat(Unit *enemy) override;
@@ -333,6 +334,7 @@ class CreatureEventAI : public CreatureAI
         uint32 m_EventUpdateTime;                           //Time between event updates
         uint32 m_EventDiff;                                 //Time between the last event call
         bool   m_bEmptyList;
+        bool   m_bSpawnedPending = false;                   // a summon's SPAWNED rules wait for OnAddToWorld
 
         //Variables used by Events themselves
         typedef std::vector<CreatureEventAIHolder> CreatureEventAIList;

@@ -96,14 +96,33 @@ CreatureEventAI::CreatureEventAI(Creature *c) : CreatureAI(c)
     m_bCanSummonGuards = c->CanSummonGuards();
 
     //Handle Spawned Events
+    // A summon gets its AI before Map::Add (TemporarySummon::Summon), so its SPAWNED steps would land on a
+    // creature not yet in the world and be lost: they wait for OnAddToWorld.
+    // A static spawn gets its AI in Creature::AddToWorld, already in the world.
     c->SetAI(this);
-    if (!m_bEmptyList)
+    if (!m_bEmptyList && !c->IsInWorld())
+        m_bSpawnedPending = true;
+    else if (!m_bEmptyList)
     {
         for (auto& i : m_CreatureEventAIList)
             if (i.Event.event_type == EVENT_T_SPAWNED)
                 ProcessEvent(i);
     }
     Reset();
+}
+
+// A summon's SPAWNED rules, held back from the constructor: they run as it enters the map, before
+// Unit::AddToWorld's instant AI notify (ScheduleAINotify(0)) can start an aggro on sight, so a SPAWNED
+// sleep or aura is in place before an AGGRO rule wakes the summon.
+void CreatureEventAI::OnAddToWorld()
+{
+    if (!m_bSpawnedPending)
+        return;
+
+    m_bSpawnedPending = false;
+    for (auto& i : m_CreatureEventAIList)
+        if (i.Event.event_type == EVENT_T_SPAWNED)
+            ProcessEvent(i);
 }
 
 bool CreatureEventAI::ProcessEvent(CreatureEventAIHolder& pHolder, WorldObject* pActionInvoker)
@@ -501,6 +520,7 @@ void CreatureEventAI::JustRespawned()
     CreatureAI::JustRespawned();
 
     m_bCanSummonGuards = m_creature->CanSummonGuards();
+    m_bSpawnedPending = false;
 
     if (m_bEmptyList)
         return;

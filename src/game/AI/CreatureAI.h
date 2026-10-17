@@ -155,6 +155,9 @@ class CreatureAI
 
         virtual ~CreatureAI();
         virtual void OnRemoveFromWorld() {}
+        // An AI made before its creature entered the map (a summon: TemporarySummon::Summon) hears it enter here,
+        // from Unit::AddToWorld before its instant AI notify (ScheduleAINotify(0)) can start an aggro on sight.
+        virtual void OnAddToWorld() {}
 
         virtual uint32 GetData(uint32 /*type*/) { return 0; }
 
