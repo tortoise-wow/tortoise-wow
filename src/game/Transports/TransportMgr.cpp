@@ -121,7 +121,14 @@ void TransportMgr::GeneratePath(GameObjectInfo const* goInfo, TransportTemplate*
     std::vector<KeyFrame>& keyFrames = transport->keyFrames;
     Movement::PointsArray splinePath, allPoints;
     bool mapChange = false;
-    for (size_t i = 0; i < path.size(); ++i)
+
+    // The client reads a path only from consecutive `TaxiPathNode` records, so
+    // nodes stored elsewhere are not part of it.
+    size_t nodeCount = 1;
+    while (nodeCount < path.size() && &path[nodeCount] == &path[nodeCount - 1] + 1)
+        ++nodeCount;
+
+    for (size_t i = 0; i < nodeCount; ++i)
         allPoints.push_back(G3D::Vector3(path[i].x, path[i].y, path[i].z));
 
     // Add extra points to allow derivative calculations for all path nodes
@@ -134,12 +141,12 @@ void TransportMgr::GeneratePath(GameObjectInfo const* goInfo, TransportTemplate*
     orientationSpline.init_spline_custom(initer);
     orientationSpline.initLengths();
 
-    for (size_t i = 1; i < path.size() - 1; ++i)
+    for (size_t i = 1; i < nodeCount - 1; ++i)
     {
         if (!mapChange)
         {
             TaxiPathNodeEntry const& node_i = path[i];
-            if (i != path.size() - 1 && (node_i.actionFlag & 1 || node_i.mapid != path[i + 1].mapid))
+            if (i != nodeCount - 1 && (node_i.actionFlag & 1 || node_i.mapid != path[i + 1].mapid))
             {
                 keyFrames.back().Teleport = true;
                 mapChange = true;
@@ -182,16 +189,20 @@ void TransportMgr::GeneratePath(GameObjectInfo const* goInfo, TransportTemplate*
     transport->accelTime = speed / accel;
     transport->accelDist = accel_dist;
 
-    int32 firstStop = -1;
-    int32 lastStop = -1;
+    // Distances and times are measured from one stop or teleport to the next.
+    // The transport speeds up and slows down only at stops.
+    auto isSegmentEnd = [](KeyFrame const& k) { return k.IsStopFrame() || k.IsTeleportFrame(); };
+
+    int32 firstEnd = -1;
+    int32 lastEnd = -1;
 
     // first cell is arrived at by teleportation :S
     keyFrames[0].DistFromPrev = 0;
     keyFrames[0].Index = 1;
-    if (keyFrames[0].IsStopFrame())
+    if (isSegmentEnd(keyFrames[0]))
     {
-        firstStop = 0;
-        lastStop = 0;
+        firstEnd = 0;
+        lastEnd = 0;
     }
 
     // find the rest of the distances between key points
@@ -225,48 +236,69 @@ void TransportMgr::GeneratePath(GameObjectInfo const* goInfo, TransportTemplate*
             start = i;
         }
 
-        if (keyFrames[i].IsStopFrame())
+        if (isSegmentEnd(keyFrames[i]))
         {
-            // remember first stop frame
-            if (firstStop == -1)
-                firstStop = i;
-            lastStop = i;
+            // Remember the first segment end.
+            if (firstEnd == -1)
+                firstEnd = i;
+            lastEnd = i;
         }
     }
 
     keyFrames.back().NextDistFromPrev = keyFrames.front().DistFromPrev;
 
-    if (firstStop == -1 || lastStop == -1)
-        firstStop = lastStop = 0;
-
-    // at stopping keyframes, we define distSinceStop == 0,
-    // and distUntilStop is to the next stopping keyframe.
+    // At a segment end, `DistSinceStop` is 0, and `DistUntilStop` is the
+    // distance to the next segment end.
     // this is required to properly handle cases of two stopping frames in a row (yes they do exist)
     float tmpDist = 0.0f;
+    bool fromStop = false;
     for (size_t i = 0; i < keyFrames.size(); ++i)
     {
-        int32 j = (i + lastStop) % keyFrames.size();
-        if (keyFrames[j].IsStopFrame() || j == lastStop)
+        int32 j = (i + lastEnd) % keyFrames.size();
+        if (isSegmentEnd(keyFrames[j]))
+        {
             tmpDist = 0.0f;
+            // Past a teleport, the transport is already moving at full speed.
+            fromStop = keyFrames[j].IsStopFrame() && !keyFrames[j].IsTeleportFrame();
+        }
         else
             tmpDist += keyFrames[j].DistFromPrev;
         keyFrames[j].DistSinceStop = tmpDist;
+        keyFrames[j].FromStop = fromStop;
     }
 
     tmpDist = 0.0f;
+    bool toStop = keyFrames[firstEnd].IsStopFrame();
     for (int32 i = int32(keyFrames.size()) - 1; i >= 0; i--)
     {
-        int32 j = (i + firstStop) % keyFrames.size();
+        int32 j = (i + firstEnd) % keyFrames.size();
         tmpDist += keyFrames[(j + 1) % keyFrames.size()].DistFromPrev;
         keyFrames[j].DistUntilStop = tmpDist;
-        if (keyFrames[j].IsStopFrame() || j == firstStop)
+        keyFrames[j].ToStop = toStop;
+        if (isSegmentEnd(keyFrames[j]))
+        {
             tmpDist = 0.0f;
+            toStop = keyFrames[j].IsStopFrame();
+        }
     }
+
+    // Returns the time the transport needs to cover a distance that starts or
+    // ends at a standstill.
+    auto rampTime = [&](float dist) -> float
+    {
+        if (dist < accel_dist)
+            return sqrt(2 * dist / accel);
+        return (dist - accel_dist) / speed + (speed / accel);
+    };
 
     for (auto& keyFrame : keyFrames)
     {
         float total_dist = keyFrame.DistSinceStop + keyFrame.DistUntilStop;
-        if (total_dist < 2 * accel_dist) // won't reach full speed
+        if (!keyFrame.FromStop) // The segment starts past a teleport.
+            keyFrame.TimeTo = keyFrame.ToStop ? rampTime(keyFrame.DistUntilStop) : keyFrame.DistUntilStop / speed;
+        else if (!keyFrame.ToStop) // The segment ends at a teleport.
+            keyFrame.TimeTo = rampTime(total_dist) - rampTime(keyFrame.DistSinceStop);
+        else if (total_dist < 2 * accel_dist) // won't reach full speed
         {
             if (keyFrame.DistSinceStop < keyFrame.DistUntilStop) // is still accelerating
             {
@@ -295,8 +327,8 @@ void TransportMgr::GeneratePath(GameObjectInfo const* goInfo, TransportTemplate*
     float segmentTime = 0.0f;
     for (size_t i = 0; i < keyFrames.size(); ++i)
     {
-        int32 j = (i + lastStop) % keyFrames.size();
-        if (keyFrames[j].IsStopFrame() || j == lastStop)
+        int32 j = (i + lastEnd) % keyFrames.size();
+        if (isSegmentEnd(keyFrames[j]))
             segmentTime = keyFrames[j].TimeTo;
         keyFrames[j].TimeFrom = segmentTime - keyFrames[j].TimeTo;
     }
@@ -313,11 +345,12 @@ void TransportMgr::GeneratePath(GameObjectInfo const* goInfo, TransportTemplate*
     for (size_t i = 1; i < keyFrames.size(); ++i)
     {
         curPathTime += keyFrames[i - 1].TimeTo;
-        if (keyFrames[i].IsStopFrame())
+        if (isSegmentEnd(keyFrames[i]))
         {
             keyFrames[i].ArriveTime = uint32(curPathTime * IN_MILLISECONDS);
             keyFrames[i - 1].NextArriveTime = keyFrames[i].ArriveTime;
-            curPathTime += float(keyFrames[i].Node->delay);
+            if (keyFrames[i].IsStopFrame())
+                curPathTime += float(keyFrames[i].Node->delay);
             keyFrames[i].DepartureTime = uint32(curPathTime * IN_MILLISECONDS);
         }
         else
@@ -331,8 +364,10 @@ void TransportMgr::GeneratePath(GameObjectInfo const* goInfo, TransportTemplate*
 
     keyFrames.back().NextArriveTime = keyFrames.back().DepartureTime;
     // the client destroys a transport by itself after a while, refresh is needed mid course
-    // Feathermoon 303 & Teldrassil 293 ferries
-    if (pathId == 303 || pathId == 293)
+    // Paths `117` and `122` are the Rut'theran Village to Auberdine and
+    // Feathermoon Stronghold to Forgotten Coast ships, and `295` is the
+    // Orgrimmar to Thunder Bluff zeppelin.
+    if (pathId == 117 || pathId == 122 || pathId == 295)
         keyFrames[12].Update = true;
     // hack for custom boats:
     if ((pathId == 1500))

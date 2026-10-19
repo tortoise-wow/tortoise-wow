@@ -40,7 +40,7 @@ struct KeyFrame
 {
     explicit KeyFrame(TaxiPathNodeEntry const& _node) : Index(0), Node(&_node), InitialOrientation(0.0f),
         DistSinceStop(-1.0f), DistUntilStop(-1.0f), DistFromPrev(-1.0f), TimeFrom(0.0f), TimeTo(0.0f),
-        Teleport(false), Update(false), ArriveTime(0), DepartureTime(0), Spline(nullptr), NextDistFromPrev(0.0f), NextArriveTime(0)
+        Teleport(false), Update(false), FromStop(false), ToStop(false), ArriveTime(0), DepartureTime(0), Spline(nullptr), NextDistFromPrev(0.0f), NextArriveTime(0)
     {
     }
 
@@ -54,6 +54,11 @@ struct KeyFrame
     float TimeTo;
     bool Teleport;
     bool Update;
+    // `FromStop` is set when the segment of this frame starts at a stop, where
+    // the transport speeds up, and `ToStop` when it ends at a stop, where it
+    // slows down.
+    bool FromStop;
+    bool ToStop;
     uint32 ArriveTime;
     uint32 DepartureTime;
     TransportSpline* Spline;

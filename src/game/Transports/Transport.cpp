@@ -310,7 +310,10 @@ float Transport::CalculateSegmentPos(float now)
     float accelTime = _transportInfo->accelTime;
     float accelDist = _transportInfo->accelDist;
     // calculate from nearest stop, less confusing calculation...
-    if (timeSinceStop < timeUntilStop)
+    // A teleport is not a stop, so the transport neither slows down before it
+    // nor speeds up after it. The position is calculated from the stop at the
+    // other end of the segment, or at full speed when both ends are teleports.
+    if (frame.FromStop && (timeSinceStop < timeUntilStop || !frame.ToStop))
     {
         if (timeSinceStop < accelTime)
             dist = 0.5f * accel * timeSinceStop * timeSinceStop;
@@ -318,7 +321,7 @@ float Transport::CalculateSegmentPos(float now)
             dist = accelDist + (timeSinceStop - accelTime) * speed;
         segmentPos = dist - frame.DistSinceStop;
     }
-    else
+    else if (frame.ToStop)
     {
         if (timeUntilStop < _transportInfo->accelTime)
             dist = 0.5f * accel * timeUntilStop * timeUntilStop;
@@ -326,6 +329,8 @@ float Transport::CalculateSegmentPos(float now)
             dist = accelDist + (timeUntilStop - accelTime) * speed;
         segmentPos = frame.DistUntilStop - dist;
     }
+    else
+        segmentPos = timeSinceStop * speed - frame.DistSinceStop;
 
     return segmentPos / frame.NextDistFromPrev;
 }
@@ -417,6 +422,14 @@ bool Transport::TeleportTransport(uint32 newMapid, float x, float y, float z, fl
         sMapMgr.GetOrCreateContinentInstances(newMapid, this, m_maps);
         for (auto const& pMap : m_maps)
             pMap->Add<Transport>(this);
+    }
+    else
+    {
+        // The client stops showing a transport after a while out of view, and
+        // shows it again only after an out-of-range update and a create update
+        // for it, so send both on a teleport within the map too.
+        SendOutOfRangeUpdateToMap();
+        SendCreateUpdateToMap();
     }
 
     // set the instance at these coordinates as the main one
