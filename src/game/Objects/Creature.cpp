@@ -192,6 +192,24 @@ void CreatureCreatePos::SelectFinalPoint(Creature* cr)
     }
 }
 
+void CreatureCreatePos::FallBackToCloseObjectIfUnreachable()
+{
+    // An exact position (m_dist == 0) or a plain map position needs no check.
+    if (!m_closeObject || m_dist == 0.0f)
+        return;
+
+    // A close point is a couple of yards away, so more than this in height is
+    // another floor, not a slope.
+    float const maxHeightDiff = 5.0f;
+    if (std::fabs(m_pos.z - m_closeObject->GetPositionZ()) <= maxHeightDiff &&
+        m_closeObject->IsWithinLOS(m_pos.x, m_pos.y, m_pos.z))
+        return;
+
+    m_pos.x = m_closeObject->GetPositionX();
+    m_pos.y = m_closeObject->GetPositionY();
+    m_pos.z = m_closeObject->GetPositionZ();
+}
+
 bool CreatureCreatePos::Relocate(Creature* cr) const
 {
     cr->Relocate(m_pos.x, m_pos.y, m_pos.z, m_pos.o);

@@ -319,7 +319,9 @@ bool Pet::LoadPetFromDB(Player* owner, uint32 petentry, uint32 petnumber, bool c
     // PET_SAVE_NOT_IN_SLOT(100) = not stable slot (summoning))
     if (m_pTmpCache->slot != 0)
     {
-        CharacterDatabase.BeginTransaction();
+        // Serialised on the owner, like every pet write: this also updates
+        // the owner's other pet rows.
+        CharacterDatabase.BeginTransaction(ownerid);
 
         static SqlStatementID id_1;
         static SqlStatementID id_2;
@@ -526,8 +528,12 @@ void Pet::SavePetToDB(PetSaveMode mode)
             (mode >= PET_SAVE_FIRST_STABLE_SLOT && mode <= PET_SAVE_LAST_STABLE_SLOT))
             RemoveAllAuras();
 
-        //save pet's data as one single transaction
-        CharacterDatabase.BeginTransaction();
+        // Save pet's data as one single transaction, serialised on the owner
+        // (as Player::SaveToDB is): two saves of one pet in a row (a save,
+        // then an unsummon on teleport) otherwise run on different async DB
+        // workers at once, and the second INSERT fails with a duplicate key on
+        // character_pet.
+        CharacterDatabase.BeginTransaction(ownerLow);
         _SaveSpells();
         _SaveSpellCooldowns();
         _SaveAuras();
@@ -654,7 +660,11 @@ void Pet::SavePetToDB(PetSaveMode mode)
 void Pet::DeleteFromDB(uint32 guidlow, bool separate_transaction)
 {
     if (separate_transaction)
-        CharacterDatabase.BeginTransaction();
+    {
+        // Serialised on the owner, like the pet's saves (0 if not cached).
+        CharacterPetCache const* cached = sCharacterDatabaseCache.GetCharacterPetById(guidlow);
+        CharacterDatabase.BeginTransaction(cached ? cached->owner : 0);
+    }
 
     static SqlStatementID delPet ;
     static SqlStatementID delAuras ;
@@ -2381,6 +2391,9 @@ bool Pet::Create(uint32 guidlow, CreatureCreatePos& cPos, CreatureInfo const* ci
         return false;
 
     cPos.SelectFinalPoint(this);
+    // A pet placed beside its owner but on the roof above it, or behind a
+    // wall, would be unsummoned on its first update for being out of range.
+    cPos.FallBackToCloseObjectIfUnreachable();
 
     if (!cPos.Relocate(this))
         return false;
