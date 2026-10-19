@@ -185,6 +185,16 @@ void ScriptMgr::LoadScripts(ScriptMapMap& scripts, const char* tablename)
                     continue;
                 }
 
+                if (tmp.talk.simulateEntry && !sObjectMgr.GetCreatureTemplate(tmp.talk.simulateEntry))
+                {
+                    sLog.outErrorDb("Table `%s` has unknown simulateEntry (datalong3 = %u) in SCRIPT_COMMAND_TALK for script id %u", tablename, tmp.talk.simulateEntry, tmp.id);
+                    continue;
+                }
+
+                // a simulated line takes its chat type from its text, as DoOrSimulateScriptTextForMap does: datalong is not read
+                if (tmp.talk.simulateEntry && tmp.talk.chatType)
+                    sLog.outErrorDb("Table `%s` has a CHAT_TYPE_ (datalong = %u) with simulateEntry (datalong3 = %u) in SCRIPT_COMMAND_TALK for script id %u: ignored, the text's own type is used", tablename, tmp.talk.chatType, tmp.talk.simulateEntry, tmp.id);
+
                 if (tmp.talk.textId[0] == 0)
                 {
                     sLog.outErrorDb("Table `%s` has invalid talk text id (dataint = %i) in SCRIPT_COMMAND_TALK for script id %u", tablename, tmp.talk.textId[0], tmp.id);
