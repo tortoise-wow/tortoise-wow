@@ -1251,7 +1251,7 @@ void BattleGround::UpdatePlayerScore(Player *Source, uint32 type, uint32 value)
     }
 }
 
-bool BattleGround::AddObject(uint32 type, uint32 entry, float x, float y, float z, float o, float rotation0, float rotation1, float rotation2, float rotation3)
+bool BattleGround::AddObject(uint32 type, uint32 entry, float x, float y, float z, float o, float rotation0, float rotation1, float rotation2, float rotation3, float scale)
 {
     Map* map = GetBgMap();
     if (!map)
@@ -1267,6 +1267,15 @@ bool BattleGround::AddObject(uint32 type, uint32 entry, float x, float y, float 
         sLog.outError("Cannot create gameobject template %u! BattleGround not created!", entry);
         delete go;
         return false;
+    }
+
+    // Map::Add publishes initial visibility. Instance-specific scale and its
+    // collision model must agree before the initial create packet is sent.
+    // Zero keeps the template scale for all existing battleground callers.
+    if (scale > 0.0f)
+    {
+        go->SetObjectScale(scale);
+        go->UpdateModel();
     }
 
     // add to world, so it can be later looked up from HashMapHolder
@@ -1904,6 +1913,8 @@ std::string BattleGround::TypeToString(BattleGroundTypeId type)
         return "Blood Ring";
     case BATTLEGROUND_SV:
         return "Sunnyglade Valley";
+    case BATTLEGROUND_TG:
+        return "Thorn Gorge";
     default:
         return "???";
     }

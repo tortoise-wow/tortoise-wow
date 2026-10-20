@@ -150,8 +150,9 @@ enum BattleGroundQueueTypeId
     BATTLEGROUND_QUEUE_AB       = 3,
     ARENA_QUEUE_BR              = 4,
     BATTLEGROUND_QUEUE_SV       = 5,
+    BATTLEGROUND_QUEUE_TG       = 6,
 };
-#define MAX_BATTLEGROUND_QUEUE_TYPES 6
+#define MAX_BATTLEGROUND_QUEUE_TYPES 7
 
 enum BattleGroundBracketId                                  // bracketId for level ranges
 {
@@ -428,6 +429,7 @@ class BattleGround
         static void BlockMovement(Player* plr, bool apply = true);
 
         virtual Team GetWinningTeam() const = 0;
+        virtual ObjectGuid GetFlagCarrierGuid(uint32 = 0) const { return ObjectGuid(); }
 
         void SendMessageToAll(int32 entry, ChatMsg type, Player const* source = nullptr);
         void SendYellToAll(int32 entry, uint32 language, ObjectGuid guid);
@@ -511,7 +513,7 @@ class BattleGround
         GuidVector m_BgObjects;
         GuidVector m_BgCreatures;
         void SpawnObject(ObjectGuid guid, uint32 respawntime);
-        bool AddObject(uint32 type, uint32 entry, float x, float y, float z, float o, float rotation0, float rotation1, float rotation2, float rotation3);
+        bool AddObject(uint32 type, uint32 entry, float x, float y, float z, float o, float rotation0, float rotation1, float rotation2, float rotation3, float scale = 0.0f);
         void SpawnCreature(ObjectGuid guid, BattleGroundCreatureSpawnMode mode);
         virtual Creature* AddCreature(uint32 entry, uint32 type, float x, float y, float z, float o, TeamId teamId = TEAM_NEUTRAL, uint32 respawntime = 0, Transport* transport = nullptr);
         Creature* AddCreature(uint32 entry, uint32 type, Position const& pos, TeamId teamId = TEAM_NEUTRAL, uint32 respawntime = 0, Transport* transport = nullptr);
