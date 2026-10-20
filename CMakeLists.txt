@@ -49,6 +49,13 @@ option(USE_ADDRESS_SANITIZER "Enable clang address sanitizer - debug feature tha
 option(ENABLE_PROFILING "(Windows only) Enable Optick integration, which allows to profile CPU and Memory. Also disabling some async code" OFF)
 option(ENABLE_LSAN "Enables Leak Sanitizer" OFF)
 option(ENABLE_SOAP "Build the SOAP remote-command interface into mangosd (gsoap runtime built from dep/src/gsoap)" OFF)
+option(ENABLE_LTO "Enable link-time optimization for release builds" ON)
+option(PROFILE_GENERATE "Build an instrumented release binary for profile-guided optimization" OFF)
+option(PROFILE_USE "Optimize a release binary using collected profile data" OFF)
+if(PROFILE_GENERATE AND PROFILE_USE)
+  message(FATAL_ERROR "PROFILE_GENERATE and PROFILE_USE cannot both be enabled")
+endif()
+
 # Allow enabling official Turtle addon support
 option(ALLOW_TURTLE_ADDONS "Allow Turtle addons" ON)
 
@@ -367,7 +374,7 @@ endif()
 if(PROFILE_GENERATE)
   message(STATUS "PGO profile           : Generate")
 elseif(PROFILE_USE)
-  message(STATUS "PGO profile           : ${GCC_PROFILE_USE}")
+  message(STATUS "PGO profile           : Use")
 else()
   message(STATUS "PGO profile           : Disabled")
 endif()
@@ -503,6 +510,36 @@ if(MSVC)
   #endif()
   
   set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /bigobj")
+
+  # Release builds carry debug information too. The server installs a crash
+  # handler that writes a minidump, and without a .pdb every frame in it is a
+  # bare address - the one file meant to explain a crash explains nothing.
+  # /OPT:REF and /OPT:ICF are here because /DEBUG turns them off by default;
+  # with them the generated binary is the same as before, there is simply a
+  # .pdb beside it.
+  set(CMAKE_C_FLAGS_RELEASE "${CMAKE_C_FLAGS_RELEASE} /Zi")
+  set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} /Zi")
+
+  if(ENABLE_LTO OR PROFILE_GENERATE OR PROFILE_USE)
+    set(CMAKE_C_FLAGS_RELEASE "${CMAKE_C_FLAGS_RELEASE} /GL")
+    set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} /GL")
+  endif()
+
+  foreach(_linker EXE SHARED MODULE)
+    set(CMAKE_${_linker}_LINKER_FLAGS_RELEASE
+        "${CMAKE_${_linker}_LINKER_FLAGS_RELEASE} /DEBUG /OPT:REF /OPT:ICF")
+    if(PROFILE_GENERATE)
+      set(CMAKE_${_linker}_LINKER_FLAGS_RELEASE
+          "${CMAKE_${_linker}_LINKER_FLAGS_RELEASE} /LTCG:PGINSTRUMENT /GENPROFILE")
+    elseif(PROFILE_USE)
+      set(CMAKE_${_linker}_LINKER_FLAGS_RELEASE
+          "${CMAKE_${_linker}_LINKER_FLAGS_RELEASE} /LTCG:PGOPTIMIZE /USEPROFILE")
+    elseif(ENABLE_LTO)
+      set(CMAKE_${_linker}_LINKER_FLAGS_RELEASE
+          "${CMAKE_${_linker}_LINKER_FLAGS_RELEASE} /LTCG")
+    endif()
+  endforeach()
+
 endif()
 
 set(CMAKE_SKIP_BUILD_RPATH FALSE)

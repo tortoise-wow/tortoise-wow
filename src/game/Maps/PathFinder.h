@@ -20,6 +20,7 @@
 #define MANGOS_PATH_FINDER_H
 
 #include "Path.h"
+#include "Memory/MemoryLedger.h"
 #include "MoveMapSharedDefines.h"
 #include "../recastnavigation/Detour/Include/DetourNavMesh.h"
 #include "../recastnavigation/Detour/Include/DetourNavMeshQuery.h"
@@ -54,13 +55,29 @@ enum PathType
     PATHFIND_FLYPATH        = 0x0040,
     PATHFIND_UNDERWATER     = 0x0080,
     PATHFIND_CASTER         = 0x0100,
+    // AzerothCore flags a path whose START point was off the navmesh. This
+    // finder does not distinguish that case - an unreachable start comes back
+    // as PATHFIND_NOPATH. Zero so a ported `if (type & PATHFIND_FARFROMPOLY_*)`
+    // compiles and is never true; the NOPATH test beside it still catches it.
+    PATHFIND_FARFROMPOLY_START = 0x0000,
+    PATHFIND_FARFROMPOLY_END   = 0x0000,
+    PATHFIND_FARFROMPOLY       = 0x0000,
 };
 
 class PathInfo
 {
     public:
         PathInfo(Unit const* owner);
+        // Coordinate queries use the same native navmesh and smoothing as a
+        // moving unit, without inventing a Player or permitting direct shortcuts.
+        PathInfo(uint32 mapId, uint32 instanceId);
+        // bot calls PathFinder(player, true) for transport pathing.
+        PathInfo(Unit const* owner, bool /*offsets*/) : PathInfo(owner) {}
         ~PathInfo();
+        PathInfo(PathInfo const&) = delete;
+        PathInfo& operator=(PathInfo const&) = delete;
+        // Retain scratch capacity, not previous routes/navmesh references.
+        void ResetForNewRequest();
 
         // return value : true if new path was calculated
         bool calculate(float destX, float destY, float destZ, bool forceDest = false, bool offsets = false);
@@ -68,6 +85,14 @@ class PathInfo
 
         void setUseStrightPath(bool useStraightPath) { m_useStraightPath = useStraightPath; };
         void setPathLengthLimit(float distance);
+        // Native navmesh inspection and costs for callers which opt into them.
+        void setArea(uint32 area);
+        void setAreaCost(uint32 area, float cost);
+        uint32 getArea(float x, float y, float z) const;
+        uint32 getArea(uint32 mapId, float x, float y, float z) const;
+        unsigned short getFlags(uint32 mapId, float x, float y, float z) const;
+        void setArea(uint32 mapId, float x, float y, float z, uint32 area, float radius);
+        bool ComputePathToRandomPoint(Vector3 const& center, float radius);
 
         inline void getStartPosition(float &x, float &y, float &z) { x = m_startPosition.x; y = m_startPosition.y; z = m_startPosition.z; }
         inline void getEndPosition(float &x, float &y, float &z) { x = m_endPosition.x; y = m_endPosition.y; z = m_endPosition.z; }
@@ -86,12 +111,19 @@ class PathInfo
         void CutPathWithDynamicLoS();
         float Length() const;
         void ExcludeSteepSlopes() { m_filter.setExcludeFlags(NAV_STEEP_SLOPES); }
+        bool ExcludesSteepSlopes() const { return (m_filter.getExcludeFlags() & NAV_STEEP_SLOPES) != 0; }
         static dtPolyRef FindWalkPoly(dtNavMeshQuery const* query, float const* pointYZX, dtQueryFilter const& filter, float* closestPointYZX, float zSearchDist = 10.0f);
         void SetTransport(Transport* t) { m_transport = t; }
         Transport* GetTransport() const { return m_transport; }
         void FillTargetAllowedFlags(Unit* target);
     private:
 
+        uint64 m_accountedPathBytes = 0;
+        void RefreshMemoryCharge();
+        struct MemoryRefresh {
+            PathInfo& owner;
+            ~MemoryRefresh() { owner.RefreshMemoryCharge(); }
+        };
         dtPolyRef       m_pathPolyRefs[MAX_PATH_LENGTH];   // array of detour polygon references
         uint32          m_polyLength;                      // number of polygons in the path
 
@@ -107,6 +139,7 @@ class PathInfo
         Vector3        m_actualEndPosition;  // {x, y, z} of the closest possible point to given destination
         Transport*     m_transport;
         const Unit* const       m_sourceUnit;       // the unit that is moving
+        uint32 m_coordinateMapId = UINT32_MAX; // explicit ownerless query context
         const dtNavMesh*        m_navMesh;          // the nav mesh
         const dtNavMeshQuery*   m_navMeshQuery;     // the nav mesh query used to find the path
         uint32          m_targetAllowedFlags;

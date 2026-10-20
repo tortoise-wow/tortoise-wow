@@ -20,6 +20,10 @@
  */
 
 #include "Object.h"
+#include "Memory/MemoryLedger.h"
+#include "DetailedWorkDiagnostics.h"
+#include <shared_mutex>
+
 #include "SharedDefines.h"
 #include "WorldPacket.h"
 #include "Opcodes.h"
@@ -214,6 +218,7 @@ Object::~Object()
     if (m_uint32Values)
     {
         //DEBUG_LOG("Object desctr 1 check (%p)",(void*)this);
+        ManTech::MemoryLedger::Remove(ManTech::MemoryKind::UpdateFields, 2 * m_valuesCount * sizeof(uint32));
         delete [] m_uint32Values;
         delete [] m_uint32Values_mirror;
         //DEBUG_LOG("Object desctr 2 check (%p)",(void*)this);
@@ -227,6 +232,7 @@ void Object::_InitValues()
 
     m_uint32Values_mirror = new uint32[ m_valuesCount ];
     memset(m_uint32Values_mirror, 0, m_valuesCount * sizeof(uint32));
+    ManTech::MemoryLedger::Add(ManTech::MemoryKind::UpdateFields, 2 * m_valuesCount * sizeof(uint32));
 
     m_objectUpdated = false;
 }
@@ -1961,6 +1967,21 @@ void WorldObject::SendObjectMessageToSet(WorldPacket *data, bool self, WorldObje
 
 void WorldObject::SendMovementMessageToSet(WorldPacket data, bool self, WorldObject const* except)
 {
+    DetailedWork::Scope deliveryWork(DetailedWork::MovementDelivery, GetGUIDLow());
+    if (IsCreature())
+    {
+        if (!IsInWorld())
+            return;
+        // CMaNGOS sends NPC movement to its existing observers instead of
+        // searching camera cells again for each spline packet. Bot sessions
+        // still receive their normal SendPacket hooks. Transport gameobjects
+        // and the native player broadcaster retain their own delivery paths.
+        for (ObjectGuid guid : m_movementViewers.Snapshot())
+            if (Player* viewer = GetMap()->GetPlayer(guid))
+                if (viewer != except && viewer->IsInWorld() && viewer->IsInVisibleList(this))
+                    viewer->GetSession()->SendPacket(&data);
+        return;
+    }
     if (!IsPlayer() || !sWorld.GetBroadcaster()->IsEnabled())
         SendObjectMessageToSet(&data, true, except);
     else
@@ -2031,6 +2052,8 @@ bool WorldObject::isWithinVisibilityDistanceOf(Unit const* viewer, WorldObject c
 void WorldObject::SetMap(Map * map)
 {
     MANGOS_ASSERT(map);
+    if (m_currMap != map)
+        m_movementViewers.Clear();
     m_currMap = map;
     //lets save current map's Id/instanceId
     m_mapId = map->GetId();
@@ -2594,7 +2617,11 @@ struct WorldObjectChangeAccumulator
         // send self fields changes in another way, otherwise
         // with new camera system when player's camera too far from player, camera wouldn't receive packets and changes from player
         if (i_object.isType(TYPEMASK_PLAYER))
-            i_object.BuildUpdateDataForPlayer((Player*)&i_object, i_updateDatas);
+        {
+            Player* player = static_cast<Player*>(&i_object);
+            if (player->GetSession() && player->GetSession()->GetSocket())
+                i_object.BuildUpdateDataForPlayer(player, i_updateDatas);
+        }
     }
 
     void Visit(CameraMapType &m)
@@ -2602,7 +2629,12 @@ struct WorldObjectChangeAccumulator
         for (const auto& iter : m)
         {
             Player* owner = iter.getSource()->GetOwner();
-            if (owner != &i_object && owner->IsInVisibleList_Unsafe(&i_object))
+            // A socketless playerbot consumes game state directly from the
+            // server and has no handler for SMSG_(COMPRESSED_)UPDATE_OBJECT.
+            // Do not spend CPU serialising and compressing client-only field
+            // updates that WorldSession would discard immediately.
+            if (owner != &i_object && owner->GetSession() && owner->GetSession()->GetSocket() &&
+                owner->IsInVisibleList_Unsafe(&i_object))
                 i_object.BuildUpdateDataForPlayer(owner, i_updateDatas);
         }
     }
@@ -2704,7 +2736,15 @@ void WorldObject::DestroyForNearbyPlayers()
             continue;
 
         DestroyForPlayer(plr);
-        plr->m_visibleGUIDs.erase(GetGUID());
+        // The unguarded writer that corrupted the buckets. DestroyForPlayer
+        // does network work, so it stays OUTSIDE the lock - only the erase
+        // needs it.
+        {
+            std::unique_lock<std::shared_mutex> lock(plr->m_visibleGUIDs_lock);
+            plr->m_visibleGUIDs.erase(GetGUID());
+            RemoveMovementViewer(plr->GetObjectGuid());
+        }
+
 
         if (ToPlayer() && ToPlayer()->m_broadcaster)
             ToPlayer()->m_broadcaster->RemoveListener(plr);

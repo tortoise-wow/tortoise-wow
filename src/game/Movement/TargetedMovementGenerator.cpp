@@ -31,6 +31,8 @@
 #include "TemporarySummon.h"
 #include "GameObjectAI.h"
 #include "Geometry.h"
+#include "DetailedWorkDiagnostics.h"
+#include "ExecutionWatch.h"
 
 //-----------------------------------------------//
 template<class T, typename D>
@@ -250,7 +252,13 @@ void TargetedMovementGeneratorMedium<T, D>::UpdateAsync(T &owner, uint32 /*diff*
         return;
 
     // Lock async updates for safety, see Unit::asyncMovesplineLock doc
+    DetailedWork::Scope lockWork(DetailedWork::TargetLock, owner.GetGUIDLow());
+    ExecutionWatch::Scope lockWatch(ExecutionWatch::TargetMotionLock, owner.GetMapId(), owner.GetInstanceId(), owner.GetGUIDLow());
     std::unique_lock<std::mutex> guard(owner.asyncMovesplineLock);
+    lockWork.Finish();
+    lockWatch.Finish();
+    DetailedWork::Scope targetWork(DetailedWork::TargetLocation, owner.GetGUIDLow());
+    ExecutionWatch::Scope targetWatch(ExecutionWatch::TargetDestination, owner.GetMapId(), owner.GetInstanceId(), owner.GetGUIDLow());
     _setTargetLocation(owner);
 }
 

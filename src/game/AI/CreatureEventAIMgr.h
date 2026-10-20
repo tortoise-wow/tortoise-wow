@@ -24,6 +24,15 @@
 
 #include "Common.h"
 #include "CreatureEventAI.h"
+#include "ScriptMgr.h"
+
+// Published only after loading completes. Existing creatures retain their
+// event AND action-script generation across native script/event reloads.
+struct CreatureEventAIGeneration
+{
+    ScriptMapMap scripts;
+    CreatureEventAI_Event_Map events;
+};
 
 class CreatureEventAIMgr
 {
@@ -32,12 +41,12 @@ class CreatureEventAIMgr
         ~CreatureEventAIMgr(){};
 
         void LoadCreatureEventAI_Events();
-        void ClearEventData() { m_CreatureEventAI_Event_Map.clear(); }
+        void ClearEventData() { std::atomic_store(&m_generation, std::make_shared<CreatureEventAIGeneration const>()); }
 
-        CreatureEventAI_Event_Map  const& GetCreatureEventAIMap()       const { return m_CreatureEventAI_Event_Map; }
+        std::shared_ptr<CreatureEventAIGeneration const> AcquireGeneration() const { return std::atomic_load(&m_generation); }
 
     private:
-        CreatureEventAI_Event_Map  m_CreatureEventAI_Event_Map;
+        std::shared_ptr<CreatureEventAIGeneration const> m_generation = std::make_shared<CreatureEventAIGeneration const>();
 };
 
 extern CreatureEventAIMgr sEventAIMgr;

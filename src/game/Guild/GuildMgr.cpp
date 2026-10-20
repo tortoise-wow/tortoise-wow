@@ -516,3 +516,13 @@ void PetitionSignature::DeleteFromDB()
     CharacterDatabase.PExecute("DELETE FROM petition_sign WHERE ownerguid = '%u'", m_playerGuid.GetCounter());
     CharacterDatabase.CommitTransaction();
 }
+
+std::vector<std::pair<uint32, ObjectGuid>> GuildMgr::GetLeadershipSnapshot() const
+{
+    std::shared_lock<std::shared_mutex> lock(m_guildMutex);
+    std::vector<std::pair<uint32, ObjectGuid>> leaders;
+    leaders.reserve(m_GuildMap.size());
+    for (auto const& entry : m_GuildMap)
+        if (entry.second) leaders.emplace_back(entry.first, entry.second->GetLeaderGuid());
+    return leaders;
+}

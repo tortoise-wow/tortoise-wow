@@ -38,6 +38,8 @@ class SQLStorageBase
 
         uint32 GetMaxEntry() const { return m_maxEntry; };
         uint32 GetRecordCount() const { return m_recordCount; };
+        // cmangos uses GetNumRows.
+        uint32 GetNumRows() const { return m_recordCount; };
 
         template<typename T>
         class SQLSIterator

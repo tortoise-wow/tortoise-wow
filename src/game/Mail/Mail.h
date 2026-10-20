@@ -241,6 +241,7 @@ class MailDraft
          *
          * @param money The amount of money included in this MailDraft.
          */
+        MailDraft& SetReturnSourceMailId(uint32 id) { m_returnSourceMailId = id; return *this; }
         MailDraft& SetMoney(uint32 money) { m_money = money; return *this; }
         /**
          * Modifies the cost of delivery of the MailDraft.
@@ -272,6 +273,7 @@ class MailDraft
         MailItemMap m_items;                                ///< Keep the items in a map to avoid duplicate guids (which can happen), store only low part of guid
 
         /// The amount of money in this MailDraft.
+        uint32 m_returnSourceMailId = 0;
         uint32 m_money;
         /// The cod amount of this MailDraft.
         uint32 m_COD;

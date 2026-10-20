@@ -67,9 +67,10 @@ void CreatureEventAI::GetAIInformation(ChatHandler& reader)
 
 CreatureEventAI::CreatureEventAI(Creature *c) : CreatureAI(c)
 {
-    // Need make copy for filter unneeded steps and safe in case table reload
-    CreatureEventAI_Event_Map::const_iterator creatureEventsItr = sEventAIMgr.GetCreatureEventAIMap().find(m_creature->GetEntry());
-    if (creatureEventsItr != sEventAIMgr.GetCreatureEventAIMap().end())
+    m_eventGeneration = sEventAIMgr.AcquireGeneration();
+    auto const& events = m_eventGeneration->events;
+    auto creatureEventsItr = events.find(m_creature->GetEntry());
+    if (creatureEventsItr != events.end())
     {
         CreatureEventAI_Event_Vec const& creatureEvent = creatureEventsItr->second;
         m_CreatureEventAIList.reserve(creatureEvent.size());
@@ -85,7 +86,7 @@ CreatureEventAI::CreatureEventAI(Creature *c) : CreatureAI(c)
             if (i.event_type == EVENT_T_OOC_LOS)
                 c->EnableMoveInLosEvent();
 
-            m_CreatureEventAIList.push_back(CreatureEventAIHolder(i));
+            m_CreatureEventAIList.emplace_back(i);
         }
     }
 

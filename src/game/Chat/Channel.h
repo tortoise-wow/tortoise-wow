@@ -181,6 +181,8 @@ class Channel
         void SetPassword(std::string const& npassword) { m_password = npassword; }
         void SetAnnounce(bool nannounce) { m_announce = nannounce; }
         uint32 GetNumPlayers() const { return m_players.size(); }
+        // Read on the existing channel owner, like GetNumPlayers().
+        bool HasMember(ObjectGuid guid) const { return IsOn(guid); }
         uint8 GetFlags() const { return m_flags; }
         bool HasFlag(uint8 flag) { return m_flags & flag; }
         void SetSecurityLevel(uint8 sec) { m_securityLevel = sec; }

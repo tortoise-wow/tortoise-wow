@@ -157,6 +157,16 @@ GridUnload = 0
 
 CleanupTerrain = 1
 
+#    MMapTileUnload
+#        Reclaim unused navigation tile payloads at runtime. Tile mutation
+#        waits for active navigation queries, and terrain cleanup waits for
+#        asynchronous terrain readers. Mesh/query owners remain cached until
+#        shutdown. Disabling this retains tile payloads and uses more memory.
+#        This configuration enables unloading; an omitted key defaults to 0.
+
+MMapTileUnload = 1
+
+
 # GridCleanUpDelay. Grid clean up delay.
 
 GridCleanUpDelay = 300000
@@ -250,6 +260,63 @@ CleanCharacterDB = 1
 
 Continents.Instanciate = 0
 Continents.InactivePlayers.SkipUpdates = 5
+
+# Continents.HibernatedPlayers.SkipUpdates
+# Number of full player updates skipped for machine-driven characters on a
+# continent/zone with no real player. Combat, taxi, battleground, teleporting,
+# and real-player-controlled bots always bypass this limit.
+
+Continents.HibernatedPlayers.SkipUpdates = 19
+
+# Continents.MachineDriven.AdaptiveStride
+#     Dynamically multiplies the update stride of autonomous background
+#     characters when the average world tick exceeds TargetDiff. Human players
+#     and latency-sensitive bots (near/controlled by a player, combat, groups,
+#     instances, battlegrounds, taxi/transport and teleport) remain full-rate.
+#     Default: 1 (enabled)
+
+Continents.MachineDriven.AdaptiveStride = 1
+
+# Continents.MachineDriven.TargetDiff
+#     Target average world tick in milliseconds used by AdaptiveStride.
+#     Default: 100
+
+Continents.MachineDriven.TargetDiff = 100
+
+# Continents.MachineDriven.MaxStrideMultiplier
+#     Maximum background stride multiplier under sustained load.
+#     Default: 4
+
+Continents.MachineDriven.MaxStrideMultiplier = 4
+
+# Continents.MachineDriven.CriticalRefreshInterval
+#     Milliseconds between expensive module-level proximity/group checks for
+#     autonomous characters. Immediate combat, taxi, transport, teleport and
+#     battleground state is still evaluated every map pass. Set to 0 to check
+#     every pass.
+#     Default: 250
+
+Continents.MachineDriven.CriticalRefreshInterval = 250
+
+# Continents.MachineDriven.MaxCatchUpDiff
+#     Maximum deferred map-time delivered to an autonomous character in one
+#     update. Wall-clock player timers still receive their true elapsed time;
+#     this only prevents background AI/movement from replaying a multi-second
+#     backlog in one map tick. Set to 0 for no limit.
+#     Default: 500
+
+Continents.MachineDriven.MaxCatchUpDiff = 500
+
+# Continents.MachineDriven.AutonomousActiveStride
+#     Number of continent player-update passes across which autonomous active
+#     characters are distributed. Active means combat, taxi, transport,
+#     teleport or queued battleground state without a nearby real player.
+#     Characters near or grouped with a real player always remain full-rate.
+#     A value of 2 matches the default 500ms playerbot reaction cadence under
+#     load while preventing thousands of combat bots from bursting together.
+#     Default: 2
+
+Continents.MachineDriven.AutonomousActiveStride = 2
 MapUpdate.ReduceGridActivationDist.Tick = 190
 MapUpdate.IncreaseGridActivationDist.Tick = 130
 MapUpdate.MinGridActivationDistance = 57
@@ -262,11 +329,44 @@ MapUpdate.MinVisibilityDistance = 55
 
 MapUpdate.Empty.UpdateTime = 60000
 
+# Shared map-owner pool. Replaces per-continent-part workers and separate
+# instance dispatch. Transfers/cleanup join at the manager, not inside jobs.
+# 0 runs the same phases synchronously; changes require a restart.
+MapUpdate.WorkerThreads = 4
+MapUpdate.IdleBotMaxUpdatesPerTick = 128
+# Opt-in CMaNGOS full/minimal AI cadence. Independent full turns continue in
+# empty maps; combat and player interactions retain foreground dispatch.
+# Restart required. ManTech's minimal rescheduling preserves longer action waits.
+MapUpdate.BackgroundAI.CmangosScheduling = 0
+MapUpdate.IdleBotJitterMs = 4000
+MapUpdate.IdleBotMaxTimerAdvanceMs = 250
+AdaptiveLoad.BotBudgetMs = 20
+AdaptiveLoad.BackgroundBotMinUpdates = 16
+# Promote old due work without an unlimited catch-up burst. Not a latency SLA.
+AdaptiveLoad.BackgroundBotMaxDeferralMs = 15000
+AdaptiveLoad.BotRecoveryTicks = 20
+# Optional process-memory admission guard, MB. 0 disables each threshold.
+# Soft halves background login batches; hard pauses new background logins.
+# Recovery must be below hard; invalid/zero recovery uses soft or 90% of hard.
+# Existing bots, player-directed companions and the population target are unchanged.
+AdaptiveLoad.MemorySoftMB = 0
+AdaptiveLoad.MemoryHardMB = 0
+AdaptiveLoad.MemoryRecoverMB = 0
+# All DB result callbacks share this world-tick budget (queries stay async).
+Database.CallbackBudgetMs = 5
+World.AsyncWorkBudgetMs = 5
+# Nonfatal, independent breadcrumb on a stalled world. 0 disables.
+Diagnostics.StallSeconds = 10
+# Prevent accidental console selection from suspending console output.
+Console.DisableQuickEdit = 1
+
+# Legacy setting retained for config compatibility; use WorkerThreads above.
 # MapUpdate.Instanced.UpdateThreads. Per-map threading.
 
 MapUpdate.Instanced.UpdateThreads = 4
 
-# Per-map subthreads. (Not for instanced maps)
+# Legacy packet-builder settings retained for compatibility. The new shared
+# builder uses MapUpdate.ObjectThreads / MapUpdate.VisibilityChunkSize instead.
 
 MapUpdate.ObjectsUpdate.MaxThreads = 2
 MapUpdate.ObjectsUpdate.Timeout = 80
@@ -279,7 +379,8 @@ MapUpdate.UpdatePacketsDiff = 40
 MapUpdate.UpdatePlayersDiff = 30
 MapUpdate.UpdateCellsDiff = 40
 
-# MapUpdate.Continents.MTCells.Threads. Number of different cells to update at the sametime.
+# Legacy concurrent gameplay-cell settings are unused. CellThreads only
+# parallelizes discovery; gameplay execution is ordered on the map owner.
 
 MapUpdate.Continents.MTCells.Threads = 1
 
@@ -288,14 +389,16 @@ MapUpdate.Continents.MTCells.Threads = 1
 
 MapUpdate.Continents.MTCells.SafeDistance = 600
 
-# Continents.MotionUpdate.Threads. Parallelized execution of cells from same map.
+# Motion and visibility mutations run on the map owner. Nonzero legacy values
+# are clamped off to prevent cross-object races and duplicate worker systems.
 
-Continents.MotionUpdate.Threads = 1
+Continents.MotionUpdate.Threads = 0
 
 # AsyncTasks.Threads | AsyncQueriesTickTimeout. Number of threads for async tasks. (/who, list AH items ...)
 
 AsyncTasks.Threads = 2
-AsyncQueriesTickTimeout = 15000
+# Legacy value. Database.CallbackBudgetMs now controls owner-thread completions.
+AsyncQueriesTickTimeout = 5
 
 # Movement.RelocationVmapsCheckDelay
 # Movement.MaxPointsPerPacket
@@ -423,6 +526,11 @@ LogTimestamp = 1
 # LogFileLevel. Server file level of logging. 0 = Minimum; 1 = Error; 2 = Detail; 3 = Full/Debug
 
 LogFileLevel = 1
+
+# Rotate append-mode logs at startup when they reach this size. Numbered files
+# .1 through LogRotateKeep are retained. Set either value to 0 to disable.
+LogRotateSizeMB = 100
+LogRotateKeep = 5
 
 # HonorLogFile. HonorLogFile name.
 
@@ -587,6 +695,34 @@ PerformanceLog.SlowAsynQueries = 200
 PerformanceLog.SlowPackets = 100
 PerformanceLog.SlowMapPackets = 100
 PerformanceLog.SlowPacketBroadcast = 0
+
+# Aggregated real-player/bot update cost and deferral counts. Set to 0 to disable.
+PerformanceLog.PlayerUpdateSummaryInterval = 30000
+
+# Temporary TD01-TD06 instrumentation; see doc/TURTLE_DIAGNOSTICS.md.
+Diagnostics.Architecture.Enabled = 0
+Diagnostics.Architecture.IntervalMs = 30000
+
+# ManTech Arch2/3 read-only cell discovery. Gameplay remains map-owner ordered.
+# CellThreads is a shared pool, NOT extra workers per map. Restart to change.
+MapUpdate.CellThreads = 2
+# Shared ManTech idle-AI lane; one serial batch per map, joined before gameplay
+# resumes on that map. 0 executes inline. Restart required; not threads per bot.
+MapUpdate.IdleBotThreads = 2
+MapUpdate.CellChunkSize = 64
+MapUpdate.CellMinParallelCells = 128
+MapUpdate.CellMaxChunksPerMap = 8
+MapUpdate.CellMaxWaitMs = 75
+MapUpdate.CellFallbackSeconds = 30
+MapUpdate.BackgroundObjects.MaxSkip = 20
+# ManTech CMaNGOS bot-grid separation and protected idle-creature deadlines.
+# Restart required. Set 0 for the diagnostic baseline's scheduling behavior.
+MapUpdate.BackgroundWorld.CmangosScheduling = 1
+MapUpdate.ObjectThreads = 2
+MapUpdate.VisibilityChunkSize = 64
+Diagnostics.RepeatedScriptWarningIntervalMs = 30000
+# Shared ACE listener connection-burst buffer. No effect on socketless bots.
+Network.ListenBacklog = 1024
 
 # RaLogFile. Log file of RA commands.
 

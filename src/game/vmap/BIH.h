@@ -83,6 +83,7 @@ class BIH
 
     public:
         BIH() {init_empty();}
+        size_t OwnedCapacityBytes() const { return (tree.capacity() + objects.capacity()) * sizeof(uint32); }
         template< class BoundsFunc, class PrimArray >
         void build(const PrimArray& primitives, BoundsFunc& getBounds, uint32 leafSize = 3, bool printStats = false)
         {

@@ -4,7 +4,7 @@
 #include "World.h"
 #include "Player.h"
 
-MovementBroadcaster::MovementBroadcaster(std::size_t threads, std::chrono::milliseconds frequency) : m_num_threads(threads), m_sleep_timer(frequency)
+MovementBroadcaster::MovementBroadcaster(std::size_t threads, std::chrono::milliseconds frequency) : m_num_threads(threads), m_sleep_ms(frequency.count())
 {
     if (threads)
         sLog.outInfo("[NETWORK] Movement broadcaster configured to run every %ums with %u threads", frequency.count(), threads);
@@ -24,8 +24,9 @@ void MovementBroadcaster::StartThreads()
     // Create new mutex vector - can't resize a vector of locks (non-copyable)
     std::vector<std::shared_mutex> locks(m_num_threads);
     m_thread_locks = std::move(locks);
+    m_thread_players.clear(); // configuration changes re-bucket every player once
     m_thread_players.resize(m_num_threads);
-    m_thread_update_stats.resize(m_num_threads);
+    { std::lock_guard<std::mutex> lock(m_stats_lock); m_thread_update_stats.assign(m_num_threads, ThreadUpdateStats{}); }
 
     m_stop = false;
 
@@ -76,7 +77,7 @@ void MovementBroadcaster::Work(std::size_t thread_id)
 {
     while (!m_stop)
     {
-        ThreadUpdateStats& stats = m_thread_update_stats[thread_id];
+        ThreadUpdateStats stats;
         uint32 num_packets = 0;
         uint32 begin_time = WorldTimer::getMSTime();
         BroadcastPackets(thread_id, num_packets);
@@ -90,11 +91,12 @@ void MovementBroadcaster::Work(std::size_t thread_id)
 
         if (sWorld.getConfig(CONFIG_UINT32_PBCAST_DIFF_LOWER_VISIBILITY_DISTANCE) &&
             stats.update_time > sWorld.getConfig(CONFIG_UINT32_PBCAST_DIFF_LOWER_VISIBILITY_DISTANCE))
-            IdentifySlowMap(thread_id);
+            stats.slow_instance = int32(IdentifySlowMap(thread_id));
         else
             stats.slow_instance = -1;
 
-        std::this_thread::sleep_for(m_sleep_timer);
+        { std::lock_guard<std::mutex> lock(m_stats_lock); m_thread_update_stats[thread_id] = stats; }
+        std::this_thread::sleep_for(GetSleepTimer());
     }
 }
 
@@ -105,7 +107,7 @@ uint32 MovementBroadcaster::IdentifySlowMap(std::size_t thread_id)
     std::shared_lock<std::shared_mutex> guard(m_thread_locks[thread_id]);
 
     for (auto& player : m_thread_players[thread_id])
-        map_packets[player->instanceId] += player->lastUpdatePackets;
+        map_packets[player->instanceId.load()] += player->lastUpdatePackets;
 
     uint32 max_number_packets = 0;
     uint32 max_instance_id = 0;
@@ -141,7 +143,7 @@ void MovementBroadcaster::Stop()
 
 void MovementBroadcaster::UpdateConfiguration(std::size_t new_threads_count, std::chrono::milliseconds new_frequency)
 {
-    m_sleep_timer = new_frequency;
+    m_sleep_ms.store(new_frequency.count());
 
     if (m_num_threads == new_threads_count)
         return;
@@ -181,6 +183,7 @@ MovementBroadcaster::~MovementBroadcaster()
 
 bool MovementBroadcaster::IsMapSlow(uint32 instanceId)
 {
+    std::lock_guard<std::mutex> lock(m_stats_lock);
     for (auto& stat : m_thread_update_stats)
         if (stat.slow_instance == instanceId)
         {
