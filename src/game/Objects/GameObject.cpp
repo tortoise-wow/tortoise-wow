@@ -20,6 +20,7 @@
  */
 
 #include "GameObject.h"
+#include "BarbershopMgr.h"
 #include "QuestDef.h"
 #include "ObjectMgr.h"
 #include "PoolManager.h"
@@ -1567,6 +1568,9 @@ void GameObject::Use(Unit* user)
             GetClosestChairSlotPosition(user->GetPositionX(), user->GetPositionY(), slotX, slotY);
             user->NearTeleportTo(slotX, slotY, GetPositionZ(), GetOrientation(), TELE_TO_NOT_LEAVE_COMBAT | TELE_TO_NOT_UNSUMMON_PET);
             user->SetStandState(UNIT_STAND_STATE_SIT_LOW_CHAIR + info->chair.height);
+
+            if (BarbershopMgr::IsBarberChair(GetEntry()))
+                sBarbershopMgr.Open(player, this);
             return;
         }
         case GAMEOBJECT_TYPE_SPELL_FOCUS:                   // 8

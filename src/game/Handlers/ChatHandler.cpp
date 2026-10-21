@@ -45,6 +45,7 @@
 #include "AccountMgr.h"
 #include "Config/Config.h"
 #include "CustomMerchantMgr.h"
+#include "BarbershopMgr.h"
 #include "Database/DatabaseImpl.h"
 #include "HonorMgr.h"
 #include "Shop/ShopMgr.h"
@@ -1094,6 +1095,9 @@ bool WorldSession::HandleTurtleAddonMessages(uint32 lang, uint32 type, std::stri
         return true;
 
     if (sCustomMerchantMgr.HandleAddonMessage(this, _player, type, msg))
+        return true;
+
+    if (sBarbershopMgr.HandleAddonMessage(_player, type, msg))
         return true;
 
     if (type == CHAT_MSG_GUILD && msg == "TW_HONOR\tC2S_HONOR_REQUEST")
