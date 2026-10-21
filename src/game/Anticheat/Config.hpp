@@ -106,6 +106,7 @@ class AnticheatConfig : public Config
         float getConfig(AnticheatConfigFloatValues index)   const { return m_configFloatValues[index];  }
 
         bool EnableAnticheat()                      const { return getConfig(CONFIG_BOOL_AC_ENABLED);                               }
+        bool EnableWarden()                         const { return getConfig(CONFIG_BOOL_AC_WARDEN_ENABLED);                        }
         bool EnableExtrapolation()                  const { return getConfig(CONFIG_BOOL_AC_MOVEMENT_USE_EXTRAPOLATION);            }
 
         bool IsEnabled(CheatType cheatType) const
