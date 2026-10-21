@@ -676,12 +676,15 @@ void TerrainInfo::LoadAll()
 
 TerrainInfo::~TerrainInfo()
 {
+    // Drain navmesh readers before destroying terrain/VMap data they may query
+    // while building a path. Full mmap unload also prevents new query handles.
+    MMAP::MMapFactory::createOrGetMMapManager()->unloadMap(m_mapId);
+
     for (int k = 0; k < MAX_NUMBER_OF_GRIDS; ++k)
         for (const auto& itr : m_GridMaps)
             delete itr[k];
 
     VMAP::VMapFactory::createOrGetVMapManager()->unloadMap(m_mapId);
-    MMAP::MMapFactory::createOrGetMMapManager()->unloadMap(m_mapId);
 }
 
 GridMap* TerrainInfo::Load(const uint32 x, const uint32 y)
@@ -733,6 +736,12 @@ void TerrainInfo::CleanUpGrids(const uint32 diff)
             // delete those GridMap objects which have refcount = 0
             if (pMap && iRef == 0)
             {
+                // A path query can use both the navmesh and the corresponding
+                // GridMap/VMap while its Detour refs are live. Remove the mmap
+                // tile first: its writer gate waits for those readers before we
+                // detach any backing terrain data.
+                MMAP::MMapFactory::createOrGetMMapManager()->unloadMap(m_mapId, x, y);
+
                 m_GridMaps[x][y] = nullptr;
                 // delete grid data if reference count == 0
                 pMap->unloadData();
@@ -740,9 +749,6 @@ void TerrainInfo::CleanUpGrids(const uint32 diff)
 
                 // unload VMAPS...
                 VMAP::VMapFactory::createOrGetVMapManager()->unloadMap(m_mapId, x, y);
-
-                // unload mmap...
-                MMAP::MMapFactory::createOrGetMMapManager()->unloadMap(m_mapId, x, y);
             }
         }
     }
