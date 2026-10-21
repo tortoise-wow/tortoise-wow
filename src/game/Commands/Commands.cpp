@@ -17330,11 +17330,36 @@ bool ChatHandler::HandlePDumpListCommand(char* args)
     return true;
 }
 
+// Reject file names that could escape the pdump directory (path traversal).
+static bool IsPlainPDumpFileName(char const* file)
+{
+    if (!file || !*file)
+        return false;
+
+    if (strchr(file, '/') || strchr(file, '\\') || strchr(file, ':'))
+        return false;
+
+    if (strstr(file, ".."))
+        return false;
+
+    if (strcmp(file, ".") == 0)
+        return false;
+
+    return true;
+}
+
 bool ChatHandler::HandlePDumpLoadCommand(char *args)
 {
     char* file = ExtractQuotedOrLiteralArg(&args);
     if (!file)
         return false;
+
+    if (!IsPlainPDumpFileName(file))
+    {
+        SendSysMessage("Dump file name must be a plain file name inside the pdump directory (no path, no '..').");
+        SetSentErrorMessage(true);
+        return false;
+    }
 
     std::string account_name;
     uint32 account_id = ExtractAccountId(&args, &account_name);
@@ -17421,6 +17446,13 @@ bool ChatHandler::HandlePDumpWriteCommand(char *args)
     char* file = ExtractQuotedOrLiteralArg(&args);
     if (!file)
         return false;
+
+    if (!IsPlainPDumpFileName(file))
+    {
+        SendSysMessage("Dump file name must be a plain file name inside the pdump directory (no path, no '..').");
+        SetSentErrorMessage(true);
+        return false;
+    }
 
     char* p2 = ExtractLiteralArg(&args);
 
