@@ -34,6 +34,9 @@ class Petition;
 
 #define GUILD_RANKS_MIN_COUNT   5
 #define GUILD_RANKS_MAX_COUNT   10
+#ifdef ENABLE_ELUNA
+#define GUILD_RANK_NONE         0xFF
+#endif
 
 enum
 {
@@ -235,6 +238,9 @@ class Guild
         std::string const& GetName() const { return m_Name; }
         std::string const& GetMOTD() const { return m_motd; }
         std::string const& GetInfo() const { return m_info; }
+#ifdef ENABLE_ELUNA
+        std::string const& GetGINFO() const { return m_info; }
+#endif
 
         void Rename(std::string& newName);
 

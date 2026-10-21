@@ -29,3 +29,6 @@ if(USE_DISCORD_BOT)
 endif()
 
 add_subdirectory(libdeflate)
+if(BUILD_ELUNA)
+  add_subdirectory(lualib)
+endif()

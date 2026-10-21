@@ -1570,6 +1570,9 @@ class Player final: public Unit
         void UpdateForQuestWorldObjects();
         bool CanShareQuest(uint32 quest_id) const;
         QuestStatusMap& getQuestStatusMap() { return mQuestStatus; };
+#ifdef ENABLE_ELUNA
+        QuestStatusMap& GetQuestStatusMap() { return mQuestStatus; }
+#endif
 
         void SendQuestCompleteEvent(uint32 quest_id) const;
         void SendQuestReward(Quest const* pQuest, uint32 XP, Object* questGiver) const;
@@ -1770,11 +1773,21 @@ class Player final: public Unit
         uint32 m_extraBonusTalentCount;
 
         void UpdateFreeTalentPoints(bool resetIfNeed = true);
+#ifndef ENABLE_ELUNA
         uint32 GetResetTalentsCost() const;
+#endif
         void UpdateResetTalentsMultiplier() const;
         uint32 CalculateTalentsPoints() const;
         void SendTalentWipeConfirm(ObjectGuid guid) const;
     public:
+#ifdef ENABLE_ELUNA
+        uint32 GetResetTalentsCost() const;
+        // Used by Eluna's VMaNGOS Player methods.
+        float GetHealthBonusFromStamina() const { return GetHealthBonusFromStamina(GetStat(STAT_STAMINA)); }
+        float GetManaBonusFromIntellect() const { return GetManaBonusFromIntellect(GetStat(STAT_INTELLECT)); }
+        Item* GetItemByEntry(uint32 entry) const;
+        void Whisper(std::string const& text, uint32 language, ObjectGuid receiver);
+#endif
         uint32 GetFreeTalentPoints() const { return GetUInt32Value(PLAYER_CHARACTER_POINTS1); }
         void SetFreeTalentPoints(uint32 points) { SetUInt32Value(PLAYER_CHARACTER_POINTS1, points); }
         void SetBonusTalentCount(uint32 count) { m_extraBonusTalentCount = count; UpdateFreeTalentPoints(); }

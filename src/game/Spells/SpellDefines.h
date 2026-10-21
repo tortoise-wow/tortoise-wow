@@ -665,7 +665,12 @@ enum SpellSchools
 /**
  * A bitmask of the available SpellSchools. Used for convenience
  */
+#ifdef ENABLE_ELUNA
+// Eluna forward-declares it as `enum SpellSchoolMask : uint32` (ElunaSpellWrapper.h).
+enum SpellSchoolMask : uint32
+#else
 enum SpellSchoolMask
+#endif
 {
     SPELL_SCHOOL_MASK_NONE    = 0x00,                       // not exist
     SPELL_SCHOOL_MASK_NORMAL  = (1 << SPELL_SCHOOL_NORMAL), // PHYSICAL (Armor)

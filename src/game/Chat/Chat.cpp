@@ -1691,6 +1691,10 @@ void ChatHandler::ExecuteCommand(const char* text)
         }
         case CHAT_COMMAND_UNKNOWN_SUBCOMMAND:
         {
+#ifdef ENABLE_ELUNA
+            if (!sWorld.OnElunaCommand(m_session ? m_session->GetPlayer() : nullptr, fullcmd.c_str()))
+                return;
+#endif
             SendSysMessage(LANG_NO_SUBCMD);
             ShowHelpForCommand(command->ChildCommands, text);
             SetSentErrorMessage(true);
@@ -1698,6 +1702,10 @@ void ChatHandler::ExecuteCommand(const char* text)
         }
         case CHAT_COMMAND_UNKNOWN:
         {
+#ifdef ENABLE_ELUNA
+            if (!sWorld.OnElunaCommand(m_session ? m_session->GetPlayer() : nullptr, fullcmd.c_str()))
+                return;
+#endif
             SendSysMessage(LANG_NO_CMD);
             SetSentErrorMessage(true);
             break;

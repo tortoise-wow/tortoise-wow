@@ -57,6 +57,10 @@
 #include "packet_builder.h"
 #include "MovementBroadcaster.h"
 #include "PlayerBroadcaster.h"
+#ifdef ENABLE_ELUNA
+#include "LuaEngine.h"
+#include "ElunaEventMgr.h"
+#endif
 
 ////////////////////////////////////////////////////////////
 // Methods of class MovementInfo
@@ -2036,6 +2040,11 @@ void WorldObject::SetMap(Map * map)
     m_mapId = map->GetId();
     m_InstanceId = map->GetInstanceId();
 
+#ifdef ENABLE_ELUNA
+    // Timed events of the previous map's state stay with that state.
+    if (m_elunaMapEvents.active && !m_elunaMapEvents.IsOwnedBy(map->GetElunaLifetime()))
+        ReleaseElunaMapEvents();
+#endif
 
     // Order is important, must be done after m_currMap is set
     SetZoneScript();
@@ -2049,6 +2058,11 @@ Map* WorldObject::GetMap() const
 
 void WorldObject::ResetMap()
 {
+#ifdef ENABLE_ELUNA
+    // Called by the map the object leaves, while that map (and its Lua state)
+    // still exists and on the thread that owns it.
+    ReleaseElunaMapEvents();
+#endif
     m_currMap = nullptr;
     m_zoneScript = nullptr;
 }
@@ -2232,6 +2246,11 @@ Creature* WorldObject::SummonCreature(uint32 id, float x, float y, float z, floa
 
     if (GetTypeId() == TYPEID_UNIT && ((Creature*)this)->AI())
         ((Creature*)this)->AI()->JustSummoned(pCreature);
+#ifdef ENABLE_ELUNA
+    if (Unit* summoner = ToUnit())
+        if (Eluna* e = GetEluna())
+            e->OnSummoned(pCreature, summoner);
+#endif
 
     // Creature Linking, Initial load is handled like respawn
     if (pCreature->IsLinkingEventTrigger())
@@ -5264,6 +5283,88 @@ bool WorldObject::CheckAndIncreaseCastCounter()
     return true;
 }
 
+#ifdef ENABLE_ELUNA
+WorldObject::~WorldObject()
+{
+    ReleaseElunaMapEvents();
+
+    if (m_elunaWorldEvents.active)
+    {
+        sWorld.ReleaseElunaWorldEvents(m_elunaWorldEvents.mgr, m_elunaWorldEvents.owner, m_elunaWorldEvents.processorId);
+        m_elunaWorldEvents = ElunaObjectEvents();
+    }
+}
+
+void WorldObject::ReleaseElunaMapEvents()
+{
+    if (!m_elunaMapEvents.active)
+        return;
+
+    // A state that is gone took its EventMgr and processors with it.
+    if (!m_elunaMapEvents.owner.expired())
+        m_elunaMapEvents.mgr->FlagObjectProcessorForDeletion(m_elunaMapEvents.processorId);
+
+    m_elunaMapEvents = ElunaObjectEvents();
+}
+
+Eluna* WorldObject::GetEluna() const
+{
+    return IsInWorld() ? GetMap()->GetEluna() : nullptr;
+}
+
+ElunaEventProcessor* WorldObject::GetElunaEvents(int32 mapId)
+{
+    bool const worldState = mapId == -1;
+    Eluna* eluna = nullptr;
+    std::shared_ptr<void> lifetime;
+
+    if (worldState)
+    {
+        eluna = sWorld.GetEluna();
+        lifetime = sWorld.GetElunaLifetime();
+        // A destroyed object with this guid may still have a queued release:
+        // apply it first, so the new object gets a processor of its own.
+        if (eluna)
+            sWorld.ProcessElunaWorldEventsReleases();
+    }
+    else
+    {
+        if (!IsInWorld())
+            return nullptr;
+
+        // A ship or zeppelin moves between the maps of a continent each update.
+        if (GetTypeId() == TYPEID_GAMEOBJECT && static_cast<GameObject*>(this)->ToTransport())
+            return nullptr;
+
+        Map* map = GetMap();
+        // Only the state of the object's own map: a state of another map
+        // would put its Lua function into this map's EventMgr.
+        if (int32(map->GetId()) != mapId)
+            return nullptr;
+
+        eluna = map->GetEluna();
+        lifetime = map->GetElunaLifetime();
+    }
+
+    if (!eluna || !eluna->eventMgr || !lifetime)
+        return nullptr;
+
+    ElunaObjectEvents& events = worldState ? m_elunaWorldEvents : m_elunaMapEvents;
+    if (!worldState && events.active && !events.IsOwnedBy(lifetime))
+        ReleaseElunaMapEvents();
+
+    EventMgr* eventMgr = eluna->eventMgr.get();
+    if (!events.active)
+    {
+        events.processorId = eventMgr->CreateObjectProcessor(this);
+        events.mgr = eventMgr;
+        events.owner = lifetime;
+        events.active = true;
+    }
+
+    return eventMgr->GetObjectProcessor(events.processorId);
+}
+#endif
 void WorldObject::MoveChannelledSpellWithCastTime(Spell* pSpell)
 {
     MANGOS_ASSERT(pSpell);

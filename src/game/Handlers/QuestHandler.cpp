@@ -32,6 +32,9 @@
 #include "ObjectAccessor.h"
 #include "ScriptMgr.h"
 #include "Group.h"
+#ifdef ENABLE_ELUNA
+#include "LuaEngine.h"
+#endif
 
 void WorldSession::HandleQuestgiverStatusQueryOpcode(WorldPacket & recv_data)
 {
@@ -513,6 +516,10 @@ void WorldSession::HandleQuestLogRemoveQuest(WorldPacket& recv_data)
     {
         if (uint32 quest = _player->GetQuestSlotQuestId(slot))
         {
+#ifdef ENABLE_ELUNA
+            if (Eluna* e = _player->GetEluna())
+                e->OnQuestAbandon(_player, quest);
+#endif
             sScriptMgr.OnQuestCanceled(_player, quest);
             if (!_player->TakeOrReplaceQuestStartItems(quest, true, true))
             // can't un-equip some items, reject quest cancel

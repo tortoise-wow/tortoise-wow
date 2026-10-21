@@ -1,0 +1,90 @@
+tortoise-wow: ElunaTemplate<T>::tname is stored once (std::call_once) and the base-64 decoding table is built once, thread-safely: every Lua state wrote them, and map states are made and reloaded on different map threads (data race, ThreadSanitizer).
+
+Base: ElunaLuaEngine/Eluna 1b06f28ff3a00054d915d824c725fb4283fee74d (branch
+cmangos-spell-update), the dep/Eluna pin, with patches 0001-0004 applied. Eluna is
+GPL-3.0 (https://github.com/ElunaLuaEngine/Eluna, LICENSE); this change is under
+the same licence. Applied by cmake/ElunaSources.cmake to a copy in the build tree.
+Candidate to upstream to Eluna (multistate on any core).
+diff --git a/ElunaTemplate.h b/ElunaTemplate.h
+index ea1be94..97da0fb 100644
+--- a/ElunaTemplate.h
++++ b/ElunaTemplate.h
+@@ -10,12 +10,17 @@
+ // tortoise-wow dep/eluna-patches/0002 is applied (checked by the core).
+ #define ELUNA_TW_PATCH_0002 1
+ 
++// tortoise-wow dep/eluna-patches/0005 is applied (checked by the core).
++#define ELUNA_TW_PATCH_0005 1
++
+ extern "C"
+ {
+ #include "lua.h"
+ #include "lualib.h"
+ #include "lauxlib.h"
+ };
++#include <cstring>
++#include <mutex>
+ #include "LuaEngine.h"
+ #include "ElunaUtility.h"
+ #include "ElunaCompat.h"
+@@ -261,7 +266,15 @@ public:
+         // pop nil
+         lua_pop(L, 1);
+ 
+-        tname = name;
++        // tname is one static per type, shared by every Lua state of the
++        // process, and states are made and reloaded on different map threads
++        // (each map state reloads on its own thread after .reload eluna). It
++        // was stored again by every Register: a data race with the other
++        // states' Register and with their Push/Check reading it. The name is
++        // the same for every state, so it is stored once.
++        static std::once_flag tnameOnce;
++        std::call_once(tnameOnce, [name]() { tname = name; });
++        ASSERT(std::strcmp(tname, name) == 0);
+ 
+         // create metatable for userdata of this type
+         luaL_newmetatable(L, tname);
+diff --git a/ElunaUtility.cpp b/ElunaUtility.cpp
+index 9e8589f..084ccaf 100644
+--- a/ElunaUtility.cpp
++++ b/ElunaUtility.cpp
+@@ -129,13 +129,25 @@ static char encoding_table[] = {'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H',
+                                 'o', 'p', 'q', 'r', 's', 't', 'u', 'v',
+                                 'w', 'x', 'y', 'z', '0', '1', '2', '3',
+                                 '4', '5', '6', '7', '8', '9', '+', '/'};
+-static char decoding_table[256];
+ static int mod_table[] = {0, 2, 1};
+ 
+-static void build_decoding_table()
++// Built once, thread-safely (a function-local static): DecodeData runs when an
++// instance's Lua data is loaded, on that instance's map thread, and the lazy
++// build it did before was a data race between two instances loading at once.
++struct DecodingTable
+ {
+-    for (int i = 0; i < 64; i++)
+-        decoding_table[(unsigned char)encoding_table[i]] = i;
++    char table[256] = {};
++    DecodingTable()
++    {
++        for (int i = 0; i < 64; i++)
++            table[(unsigned char)encoding_table[i]] = i;
++    }
++};
++
++static char const* decoding_table_get()
++{
++    static DecodingTable const decoding;
++    return decoding.table;
+ }
+ 
+ void ElunaUtil::EncodeData(const unsigned char* data, size_t input_length, std::string& output)
+@@ -166,8 +178,7 @@ void ElunaUtil::EncodeData(const unsigned char* data, size_t input_length, std::
+ 
+ unsigned char* ElunaUtil::DecodeData(const char *data, size_t *output_length)
+ {
+-    if (decoding_table[(unsigned char)'B'] == 0)
+-        build_decoding_table();
++    char const* decoding_table = decoding_table_get();
+ 
+     size_t input_length = strlen(data);
+ 

@@ -11757,6 +11757,65 @@ void Unit::RemoveSpellCooldown(uint32 spell_id, bool update)
     }
 }
 
+#ifdef ENABLE_ELUNA
+void Unit::RemoveSpellCooldown(SpellEntry const* spellInfo, bool update)
+{
+    if (spellInfo)
+        RemoveSpellCooldown(spellInfo->Id, update);
+}
+
+void Unit::RemoveSpellCategoryCooldown(uint32 category, bool update)
+{
+    for (auto itr = m_spellCooldowns.begin(); itr != m_spellCooldowns.end();)
+    {
+        if (itr->second.cat != category)
+        {
+            ++itr;
+            continue;
+        }
+
+        uint32 spellId = itr->first;
+        itr = m_spellCooldowns.erase(itr);
+        if (update)
+            if (Player* player = GetAffectingPlayer())
+                player->SendClearCooldown(spellId, this);
+    }
+}
+
+bool Unit::IsSpellReady(SpellEntry const* spellInfo) const
+{
+    return spellInfo && !HasSpellCooldown(spellInfo->Id);
+}
+
+bool Unit::IsTotalImmune() const
+{
+    uint32 immuneMask = 0;
+    for (Aura const* aura : GetAurasByType(SPELL_AURA_SCHOOL_IMMUNITY))
+        immuneMask |= aura->GetModifier()->m_miscvalue;
+
+    return immuneMask == SPELL_SCHOOL_MASK_ALL;
+}
+
+struct IsAttackingPlayerHelper
+{
+    bool operator()(Unit const* unit) const { return unit->isAttackingPlayer(); }
+};
+
+bool Unit::isAttackingPlayer() const
+{
+    if (GetTargetGuid().IsPlayer())
+        return true;
+
+    return CheckAllControlledUnits(IsAttackingPlayerHelper(), CONTROLLED_PET | CONTROLLED_TOTEMS | CONTROLLED_GUARDIANS | CONTROLLED_CHARM);
+}
+
+bool Unit::IsTargetableBy(WorldObject const* caster, bool forAoE, bool checkAlive, bool helpful) const
+{
+    Unit const* casterUnit = caster ? caster->ToUnit() : nullptr;
+    bool const attackerIsPlayer = casterUnit && casterUnit->IsCharmerOrOwnerPlayerOrPlayerItself();
+    return IsTargetable(!helpful, attackerIsPlayer, forAoE, checkAlive);
+}
+#endif
 bool Unit::HasSpellCategoryCooldown(uint32 cat) const
 {
     if (!cat)

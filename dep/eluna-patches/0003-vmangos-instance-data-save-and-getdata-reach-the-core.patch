@@ -1,0 +1,50 @@
+tortoise-wow: ElunaInstanceAI's Save, GetData and GetData64 override VMaNGOS' non-const InstanceData methods (Lua instance data was saved as "").
+
+Base: ElunaLuaEngine/Eluna 1b06f28ff3a00054d915d824c725fb4283fee74d (branch
+cmangos-spell-update), the dep/Eluna pin. Eluna is GPL-3.0
+(https://github.com/ElunaLuaEngine/Eluna, LICENSE); this change is under the
+same licence. Applied by cmake/ElunaSources.cmake to a copy in the build tree.
+Candidate to upstream to Eluna.
+diff --git a/ElunaInstanceAI.h b/ElunaInstanceAI.h
+index 54a780b..22160d5 100644
+--- a/ElunaInstanceAI.h
++++ b/ElunaInstanceAI.h
+@@ -7,6 +7,9 @@
+ #ifndef _ELUNA_INSTANCE_DATA_H
+ #define _ELUNA_INSTANCE_DATA_H
+ 
++// tortoise-wow dep/eluna-patches/0003 is applied (checked by the core).
++#define ELUNA_TW_PATCH_0003 1
++
+ #include "LuaEngine.h"
+ #if defined ELUNA_TRINITY || defined ELUNA_AZEROTHCORE
+ #include "InstanceScript.h"
+@@ -91,6 +94,10 @@ public:
+     const char* Save() const;
+ #elif defined ELUNA_VMANGOS
+     const char* Save() const;
++    // VMaNGOS declares InstanceData::Save() non-const, so the const Save above
++    // does not override it: the core's SaveToDB got the base class's "" and
++    // wrote the Lua data as empty. This override hands the core the Lua data.
++    const char* Save() override { return static_cast<ElunaInstanceAI const*>(this)->Save(); }
+ #else
+     const char* Save() const override;
+ #endif
+@@ -114,6 +121,9 @@ public:
+     uint32 GetData(uint32 key) const override;
+ #else
+     uint32 GetData(uint32 key) const;
++    // Non-const in VMaNGOS' InstanceData: route the core's (and C++ scripts')
++    // calls to the Lua data, as Save above.
++    uint32 GetData(uint32 key) override { return static_cast<ElunaInstanceAI const*>(this)->GetData(key); }
+ #endif
+     void SetData(uint32 key, uint32 value) override;
+ 
+@@ -121,6 +131,7 @@ public:
+     uint64 GetData64(uint32 key) const override;
+ #else
+     uint64 GetData64(uint32 key) const;
++    uint64 GetData64(uint32 key) override { return static_cast<ElunaInstanceAI const*>(this)->GetData64(key); }
+ #endif
+     void SetData64(uint32 key, uint64 value) override;
+ 

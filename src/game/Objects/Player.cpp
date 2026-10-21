@@ -87,6 +87,9 @@
 #include "events/event_wareffort.h"
 #include "Logging/DatabaseLogger.hpp"
 #include "PerfStats.h"
+#ifdef ENABLE_ELUNA
+#include "LuaEngine.h"
+#endif
 #include "PlayerDump.h"
 #include "Shop/ShopMgr.h"
 
@@ -1256,6 +1259,11 @@ uint32 Player::EnvironmentalDamage(EnvironmentalDamageType type, uint32 damage)
     SendEnvironmentalDamageLog(type, damage, absorb, resist);
 
     damage = DealDamage(this, damage, nullptr, SELF_DAMAGE, SPELL_SCHOOL_MASK_NORMAL, nullptr, false);
+#ifdef ENABLE_ELUNA
+    if (!IsAlive())
+        if (Eluna* e = GetEluna())
+            e->OnPlayerKilledByEnvironment(this, type);
+#endif
 
     // DealDamage not apply item durability loss at self damage
     // Confirmed on classic that dying from lava, fatigue and
@@ -5856,6 +5864,10 @@ void Player::ResurrectPlayer(float restore_percent, bool applySickness, bool for
     // update visibility of player for nearby cameras
     UpdateObjectVisibility();
 
+#ifdef ENABLE_ELUNA
+    if (Eluna* e = GetEluna())
+        e->OnResurrect(this);
+#endif
     if (!applySickness)
         return;
 
@@ -6930,6 +6942,10 @@ bool Player::UpdateSkillPro(uint16 SkillId, int32 Chance, uint32 step)
         SetUInt32Value(valueIndex, MAKE_SKILL_VALUE(new_value, MaxValue));
         if (itr->second.uState != SKILL_NEW)
             itr->second.uState = SKILL_CHANGED;
+#ifdef ENABLE_ELUNA
+        if (Eluna* e = GetEluna())
+            e->OnSkillChange(this, SkillId, new_value);
+#endif
         DEBUG_LOG("Player::UpdateSkillPro Chance=%3.1f%% taken", Chance / 10.0);
         return true;
     }
@@ -7951,6 +7967,11 @@ void Player::RewardReputation(Unit *pVictim, float rate)
     // World of Warcraft Client Patch 1.10.0 (2006-03-28)
     // - Pets no longer modify your reputation if you kill them.
     if (pVictim->IsPet())
+#ifdef ENABLE_ELUNA
+        return;
+
+    if (static_cast<Creature*>(pVictim)->IsReputationGainDisabled())
+#endif
         return;
 
     ReputationOnKillEntry const* Rep = sObjectMgr.GetReputationOnKillEntry(((Creature*)pVictim)->GetEntry());
@@ -10528,6 +10549,41 @@ uint32 Player::GetItemCount(uint32 item, bool inBankAlso, Item* skipItem) const
     return count;
 }
 
+#ifdef ENABLE_ELUNA
+Item* Player::GetItemByEntry(uint32 entry) const
+{
+    for (int i = EQUIPMENT_SLOT_START; i < INVENTORY_SLOT_ITEM_END; ++i)
+        if (Item* pItem = GetItemByPos(INVENTORY_SLOT_BAG_0, i))
+            if (pItem->GetEntry() == entry)
+                return pItem;
+
+    for (int i = KEYRING_SLOT_START; i < KEYRING_SLOT_END; ++i)
+        if (Item* pItem = GetItemByPos(INVENTORY_SLOT_BAG_0, i))
+            if (pItem->GetEntry() == entry)
+                return pItem;
+
+    for (int i = INVENTORY_SLOT_BAG_START; i < INVENTORY_SLOT_BAG_END; ++i)
+        if (Bag* pBag = (Bag*)GetItemByPos(INVENTORY_SLOT_BAG_0, i))
+            for (uint32 j = 0; j < pBag->GetBagSize(); ++j)
+                if (Item* pItem = pBag->GetItemByPos(j))
+                    if (pItem->GetEntry() == entry)
+                        return pItem;
+
+    return nullptr;
+}
+
+void Player::Whisper(std::string const& text, uint32 language, ObjectGuid receiver)
+{
+    Player* target = ObjectAccessor::FindPlayer(receiver);
+    if (!target)
+        return;
+
+    WorldPacket data;
+    ChatHandler::BuildChatPacket(data, CHAT_MSG_WHISPER, text, Language(language), GetChatTag(), GetObjectGuid(), GetName());
+    target->GetSession()->SendPacket(&data);
+}
+
+#endif
 Item* Player::GetItemByGuid(ObjectGuid guid) const
 {
     for (int i = EQUIPMENT_SLOT_START; i < INVENTORY_SLOT_ITEM_END; ++i)
@@ -12199,6 +12255,11 @@ Item* Player::StoreNewItem(ItemPosCountVec const& dest, uint32 item, bool update
         if (randomPropertyId)
             pItem->SetItemRandomProperties(randomPropertyId);
         pItem = StoreItem(dest, pItem, update);
+#ifdef ENABLE_ELUNA
+        if (pItem)
+            if (Eluna* e = GetEluna())
+                e->OnAdd(this, pItem);
+#endif
     }
     return pItem;
 }
@@ -15823,6 +15884,10 @@ void Player::SetQuestStatus(uint32 quest_id, QuestStatus status)
 
         UpdateForQuestWorldObjects();
     }
+#ifdef ENABLE_ELUNA
+    if (Eluna* e = GetEluna())
+        e->OnQuestStatusChanged(this, quest_id, status);
+#endif
 }
 
 void Player::AdjustQuestReqItemCount(Quest const* pQuest, QuestStatusData& questStatusData)

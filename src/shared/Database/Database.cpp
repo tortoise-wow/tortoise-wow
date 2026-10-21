@@ -371,7 +371,11 @@ QueryResult* Database::PQuery(const char *format,...)
     return Query(szQuery);
 }
 
+#ifdef ENABLE_ELUNA
+std::shared_ptr<QueryNamedResult> Database::PQueryNamed(const char *format,...)
+#else
 QueryNamedResult* Database::PQueryNamed(const char *format,...)
+#endif
 {
     if(!format) return nullptr;
 

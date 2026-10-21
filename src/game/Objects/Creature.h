@@ -215,7 +215,11 @@ struct CreatureInfo
     uint32  unit_class = 0;                                 // enum Classes. Note only 4 classes are known for creatures.
     uint32  unit_flags = 0;                                 // enum UnitFlags mask values
     uint32  dynamic_flags = 0;
+#ifdef ENABLE_ELUNA
+    union { uint32  beast_family = 0; uint32 pet_family; }; // enum CreatureFamily values (optional); pet_family is Eluna's name
+#else
     uint32  beast_family = 0;                               // enum CreatureFamily values (optional)
+#endif
     uint32  trainer_type = 0;
     uint32  trainer_spell = 0;
     uint32  trainer_class = 0;
@@ -600,6 +604,9 @@ class Creature : public Unit
         bool IsCorpse() const { return GetDeathState() ==  CORPSE; }
         bool IsDespawned() const { return GetDeathState() ==  DEAD; }
         void SetCorpseDelay(uint32 delay) { m_corpseDelay = delay; }
+#ifdef ENABLE_ELUNA
+        uint32 GetCorpseDelay() const { return m_corpseDelay; }
+#endif
         bool IsRacialLeader() const { return GetCreatureInfo()->racial_leader; }
         bool IsCivilian() const { return GetCreatureInfo()->civilian; }
         bool IsTrigger() const { return HasExtraFlag(CREATURE_FLAG_EXTRA_INVISIBLE); }
@@ -679,6 +686,9 @@ class Creature : public Unit
         bool HasSpell(uint32 spellID) const override;
 
         bool UpdateEntry(uint32 entry, const CreatureData* data = nullptr, GameEventCreatureData const* eventData = nullptr, bool preserveHPAndPower = true);
+#ifdef ENABLE_ELUNA
+        bool UpdateEntry(uint32 entry, GameEventCreatureData const* eventData) { return UpdateEntry(entry, nullptr, eventData); }
+#endif
 
         void ApplyGameEventSpells(GameEventCreatureData const* eventData, bool activated);
         bool UpdateStats(Stats stat) override;
@@ -969,6 +979,12 @@ class Creature : public Unit
         void RegenerateMana();
 
         void SetVirtualItem(VirtualItemSlot slot, uint32 item_id);
+#ifdef ENABLE_ELUNA
+        void SetVirtualItem(WeaponAttackType slot, uint32 item_id) { SetVirtualItem(static_cast<VirtualItemSlot>(slot), item_id); }
+
+        void SetDisableReputationGain(bool disable) { m_disableReputationGain = disable; }
+        bool IsReputationGainDisabled() const { return m_disableReputationGain; }
+#endif
 
         void ResetDamageTakenOrigin()
         {
@@ -1099,6 +1115,9 @@ class Creature : public Unit
         uint32 m_mountId;                                   // display Id to mount
 
         bool m_isDeadByDefault;
+#ifdef ENABLE_ELUNA
+        bool m_disableReputationGain = false;
+#endif
         bool m_AI_locked;
         uint16 m_creatureStateFlags;
         uint32 m_temporaryFactionFlags;                     // used for real faction changes (not auras etc)

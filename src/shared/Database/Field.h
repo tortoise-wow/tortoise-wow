@@ -51,8 +51,17 @@ class Field
             return mValue ? mValue : "";                    // std::string s = 0 have undefine result in C++
         }
         float GetFloat() const { return mValue ? static_cast<float>(atof(mValue)) : 0.0f; }
+#ifdef ENABLE_ELUNA
+        double GetDouble() const { return mValue ? static_cast<double>(atof(mValue)) : 0.0; }
+#endif
         bool GetBool() const { return mValue ? atoi(mValue) > 0 : false; }
+#ifdef ENABLE_ELUNA
+        int8 GetInt8() const { return mValue ? static_cast<int8>(atol(mValue)) : int8(0); }
+#endif
         int32 GetInt32() const { return mValue ? static_cast<int32>(atol(mValue)) : int32(0); }
+#ifdef ENABLE_ELUNA
+        int64 GetInt64() const { return mValue ? static_cast<int64>(strtoll(mValue, nullptr, 10)) : int64(0); }
+#endif
         uint8 GetUInt8() const { return mValue ? static_cast<uint8>(atol(mValue)) : uint8(0); }
         uint16 GetUInt16() const { return mValue ? static_cast<uint16>(atol(mValue)) : uint16(0); }
         int16 GetInt16() const { return mValue ? static_cast<int16>(atol(mValue)) : int16(0); }

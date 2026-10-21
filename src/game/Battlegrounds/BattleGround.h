@@ -42,7 +42,9 @@ class Player;
 class WorldPacket;
 class BattleGroundMap;
 class ChatHandler;
+#ifndef ENABLE_ELUNA
 class SpellInfo;
+#endif
 
 struct WorldSafeLocsEntry;
 

@@ -1,0 +1,75 @@
+tortoise-wow: EventMgr::CreateObjectProcessor replaces a processor that is flagged for deletion instead of destroying the new one while it is still listed (use after free).
+
+Base: ElunaLuaEngine/Eluna 1b06f28ff3a00054d915d824c725fb4283fee74d (branch
+cmangos-spell-update), the dep/Eluna pin. Eluna is GPL-3.0
+(https://github.com/ElunaLuaEngine/Eluna, LICENSE); this change is under the
+same licence. Applied by cmake/ElunaSources.cmake to a copy in the build tree.
+Candidate to upstream to Eluna.
+diff --git a/ElunaEventMgr.cpp b/ElunaEventMgr.cpp
+index 2dd0c5f..9fe50d4 100644
+--- a/ElunaEventMgr.cpp
++++ b/ElunaEventMgr.cpp
+@@ -186,6 +186,7 @@ EventMgr::~EventMgr()
+ {
+     globalProcessors.clear();
+     objectProcessors.clear();
++    replacedObjectProcessors.clear();
+     processors.clear();
+     objectProcessorsPendingDelete.clear();
+ }
+@@ -230,6 +231,24 @@ uint64 EventMgr::CreateObjectProcessor(WorldObject* obj)
+ #else
+     uint64 id = obj->GetObjectGuid().GetRawValue();
+ #endif
++    auto existing = objectProcessors.find(id);
++    if (existing != objectProcessors.end())
++    {
++        // Still live: the object already has its processor here.
++        if (!existing->second->pendingDeletion)
++            return id;
++
++        // Flagged for deletion but not cleaned up yet. emplace below would
++        // keep the old entry and destroy the new processor while `processors`
++        // still held its pointer (use after free in UpdateProcessors).
++        ElunaEventProcessor* old = existing->second.get();
++        old->SetStates(LUAEVENT_STATE_ERASE);
++        processors.erase(old);
++        objectProcessorsPendingDelete.erase(id);
++        replacedObjectProcessors.push_back(std::move(existing->second));
++        objectProcessors.erase(existing);
++    }
++
+     auto proc = std::make_unique<ElunaEventProcessor>(this, obj);
+     ElunaEventProcessor* raw = proc.get();
+ 
+@@ -276,4 +295,5 @@ void EventMgr::CleanupObjectProcessors()
+     }
+ 
+     objectProcessorsPendingDelete.clear();
++    replacedObjectProcessors.clear();
+ }
+diff --git a/ElunaEventMgr.h b/ElunaEventMgr.h
+index e28cd40..c0b3821 100644
+--- a/ElunaEventMgr.h
++++ b/ElunaEventMgr.h
+@@ -7,6 +7,9 @@
+ #ifndef _ELUNA_EVENT_MGR_H
+ #define _ELUNA_EVENT_MGR_H
+ 
++// tortoise-wow dep/eluna-patches/0001 is applied (checked by the core).
++#define ELUNA_TW_PATCH_0001 1
++
+ #include "ElunaUtility.h"
+ #include "Common.h"
+ #if defined ELUNA_TRINITY
+@@ -160,6 +163,10 @@ private:
+     GlobalProcessorsMap globalProcessors;
+     ObjectProcessorMap objectProcessors;
+     std::unordered_set<uint64> objectProcessorsPendingDelete;
++    // Flagged processors replaced by a new one for the same id (an object that
++    // left and came back before the next cleanup); destroyed at the cleanup,
++    // as one of them may be the processor whose Update is on the stack.
++    std::vector<std::unique_ptr<ElunaEventProcessor>> replacedObjectProcessors;
+ 
+     Eluna* E;
+ 

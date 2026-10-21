@@ -61,8 +61,17 @@
 #include "Logging/DatabaseLogger.hpp"
 #include "PerfStats.h"
 
+#ifdef ENABLE_ELUNA
+#include "LuaEngine.h"
+#include "ElunaConfig.h"
+
+#endif
 Map::~Map()
 {
+#ifdef ENABLE_ELUNA
+    if (Eluna* eluna = GetEluna())
+        eluna->OnDestroy(this);
+#endif
     UnloadAll(true);
 
     if (!m_scriptSchedule.empty())
@@ -86,6 +95,23 @@ Map::~Map()
 
     delete m_weatherSystem;
     m_weatherSystem = nullptr;
+#ifdef ENABLE_ELUNA
+    // Last, after the objects and the instance data that may hold event
+    // processors or references into this state are gone. The instance's Lua
+    // data and instance hooks are freed only now: unloading the objects above
+    // still calls the instance script, which would otherwise find its data
+    // missing and load it again (running OnLoad) during the unload.
+    if (m_eluna)
+    {
+        if (Instanceable())
+            m_eluna->FreeInstanceId(GetInstanceId());
+
+        std::lock_guard<std::recursive_mutex> guard(ElunaStateLock());
+        m_elunaLifetime.reset();
+        m_eluna = nullptr;
+        sElunaMgr->Destroy(m_elunaInfo);
+    }
+#endif
 
     --PerfStats::g_totalMaps;
 }
@@ -149,6 +175,22 @@ Map::Map(uint32 id, time_t expiry, uint32 InstanceId)
         m_motionThreads->start();
         m_objectThreads->start<ThreadPool::MySQL<ThreadPool::MultiQueue>>();
     }
+#ifdef ENABLE_ELUNA
+    if (sElunaConfig->IsElunaEnabled() && sElunaConfig->ShouldMapLoadEluna(id))
+    {
+        // Also excludes a script reload (World::ProcessElunaReload): a new
+        // state reads Eluna's script cache while it is made.
+        std::lock_guard<std::recursive_mutex> guard(ElunaStateLock());
+        m_elunaInfo = { ElunaInfoKey::MakeKey(GetId(), GetInstanceId()) };
+        sElunaMgr->Create(this, m_elunaInfo);
+        m_eluna = sElunaMgr->Get(m_elunaInfo);
+        if (m_eluna)
+            m_elunaLifetime = std::make_shared<char>(0);
+    }
+
+    if (Eluna* eluna = GetEluna())
+        eluna->OnCreate(this);
+#endif
 
     ++PerfStats::g_totalMaps;
 }
@@ -406,6 +448,12 @@ bool Map::Add(Player *player)
     player->SetIsNewObject(true);
     UpdateObjectVisibility(player, cell, p);
     player->SetIsNewObject(false);
+#ifdef ENABLE_ELUNA
+    if (Eluna* eluna = player->GetEluna())
+        eluna->OnMapChanged(player);
+    if (Eluna* eluna = GetEluna())
+        eluna->OnPlayerEnter(this, player);
+#endif
 
     if (i_data)
         i_data->OnPlayerEnter(player);
@@ -955,6 +1003,13 @@ void Map::Update(uint32 t_diff)
 
     ScriptsProcess();
 
+#ifdef ENABLE_ELUNA
+    if (Eluna* eluna = GetEluna())
+    {
+        eluna->UpdateEluna(t_diff);
+        eluna->OnMapUpdate(this, t_diff);
+    }
+#endif
     if (i_data)
         i_data->Update(t_diff);
 
@@ -1134,6 +1189,10 @@ void ScriptedEvent::SendEventToAllTargets(uint32 uiData)
 
 void Map::Remove(Player *player, bool remove)
 {
+#ifdef ENABLE_ELUNA
+    if (Eluna* eluna = GetEluna())
+        eluna->OnPlayerLeave(this, player);
+#endif
     ScriptRegistry<AllMapScript>::ForEach([&](AllMapScript* script)
     {
         script->OnPlayerLeaveAll(this, player);
@@ -1688,6 +1747,15 @@ void Map::AddObjectToRemoveList(WorldObject *obj)
 {
     MANGOS_ASSERT(obj->GetMapId() == GetId() && obj->GetInstanceId() == GetInstanceId());
 
+#ifdef ENABLE_ELUNA
+    if (Eluna* eluna = GetEluna())
+    {
+        if (Creature* creature = obj->ToCreature())
+            eluna->OnRemove(creature);
+        else if (GameObject* gameObject = obj->ToGameObject())
+            eluna->OnRemove(gameObject);
+    }
+#endif
     obj->CleanupsBeforeDelete();                            // remove or simplify at least cross referenced links
     std::unique_lock<std::mutex> lock(i_objectsToRemove_lock);
     i_objectsToRemove.insert(obj);
@@ -1901,6 +1969,31 @@ void Map::CreateInstanceData(bool load)
     if (i_data)
         return;
 
+#ifdef ENABLE_ELUNA
+    // The map's C++ instance script comes first, as C++ creature scripts come
+    // before Lua creature AI: its boss scripts cast GetInstanceData() to their
+    // own instance class, which a Lua instance script in its place is not.
+    // A Lua instance script (RegisterMapEvent / RegisterInstanceEvent) runs on
+    // maps that have no C++ one.
+    i_script_id = i_mapEntry->scriptId;
+    if (i_script_id)
+        i_data = sScriptMgr.CreateInstanceData(this);
+
+    if (Eluna* eluna = GetEluna())
+    {
+        if (!i_data)
+            i_data = eluna->GetInstanceData(this);
+        else if (InstanceData* luaData = eluna->GetInstanceData(this))
+        {
+            delete luaData;
+            sLog.outError("Eluna: map %u has a C++ instance script (%s); its Lua map/instance events are not used.",
+                GetId(), sScriptMgr.GetScriptName(i_script_id));
+        }
+    }
+
+    if (!i_data)
+        return;
+#else
     if (!i_mapEntry->scriptId)
         return;
 
@@ -1909,6 +2002,7 @@ void Map::CreateInstanceData(bool load)
     i_data = sScriptMgr.CreateInstanceData(this);
     if (!i_data)
         return;
+#endif
 
     if (load)
     {

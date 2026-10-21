@@ -37,6 +37,12 @@
 #include <set>
 #include <string>
 #include <array>
+#ifdef ENABLE_ELUNA
+#include <memory>
+
+#include "LuaValue.h"
+#include "ElunaEventMgr.h"
+#endif
 
 #include "MoveSpline.h"
 
@@ -159,6 +165,11 @@ class ZoneScript;
 class Transport;
 class SpellEntry;
 class Spell;
+#ifdef ENABLE_ELUNA
+class Eluna;
+class ElunaEventProcessor;
+class EventMgr;
+#endif
 
 typedef std::unordered_map<Player *, UpdateData> UpdateDataMapType;
 struct FactionTemplateEntry;
@@ -411,6 +422,9 @@ class Object
 
         uint8 GetTypeId() const { return m_objectTypeId; }
         bool isType(TypeMask mask) const { return (mask & m_objectType); }
+#ifdef ENABLE_ELUNA
+        bool IsType(TypeMask mask) const { return isType(mask); }
+#endif
 
         virtual void BuildCreateUpdateBlockForPlayer(UpdateData *data, Player *target) const;
         void SendCreateUpdateToPlayer(Player* player);
@@ -805,7 +819,11 @@ class WorldObject : public Object
                 WorldObject * const m_obj;
         };
 
+#ifdef ENABLE_ELUNA
+        virtual ~WorldObject();
+#else
         virtual ~WorldObject () {}
+#endif
 
         virtual void Update(uint32 /*update_diff*/, uint32 /*time_diff*/);
 
@@ -1086,6 +1104,9 @@ class WorldObject : public Object
         void GetAlivePlayerListInRange(WorldObject const* pSource, std::list<Player*>& lList, float fMaxSearchRange) const;
 
         bool isActiveObject() const { return m_isActiveObject || m_viewPoint.hasViewers(); }
+#ifdef ENABLE_ELUNA
+        bool IsActiveObject() const { return isActiveObject(); }
+#endif
         void SetActiveObjectState(bool on);
 
         ViewPoint& GetViewPoint() { return m_viewPoint; }
@@ -1119,6 +1140,41 @@ class WorldObject : public Object
         uint32 GetCreatureSummonLimit() const;
         void SetCreatureSummonLimit(uint32 limit);
 
+#ifdef ENABLE_ELUNA
+        Eluna* GetEluna() const;
+        // The processor of this object's Lua timed events (obj:RegisterEvent)
+        // in the calling state: mapId -1 is the world state, otherwise the
+        // state of the object's current map, and only if that is map mapId.
+        // nullptr if there is none (the object is on no map, or on another map
+        // than the caller's, or is a ship/zeppelin).
+        ElunaEventProcessor* GetElunaEvents(int32 mapId);
+        LuaVal lua_data = LuaVal({});
+    private:
+        // One processor per Lua state, kept in that state's EventMgr. The
+        // object never holds a pointer that can outlive the state: `owner` is
+        // the state's lifetime token (Map/World::GetElunaLifetime) and the
+        // EventMgr is only touched while it is alive. The map processor is
+        // flagged for deletion when the object leaves its map (ResetMap, or
+        // SetMap to another map's state), on the thread that owns that map;
+        // the world processor when the object is destroyed, on the world
+        // thread (queued there from a map thread).
+        struct ElunaObjectEvents
+        {
+            EventMgr* mgr = nullptr;
+            std::weak_ptr<void> owner;
+            uint64 processorId = 0;
+            bool active = false;
+
+            bool IsOwnedBy(std::shared_ptr<void> const& lifetime) const
+            {
+                return active && !owner.owner_before(lifetime) && !lifetime.owner_before(owner);
+            }
+        };
+        ElunaObjectEvents m_elunaMapEvents;
+        ElunaObjectEvents m_elunaWorldEvents;
+        void ReleaseElunaMapEvents();
+    public:
+#endif
 virtual uint32 GetLevel() const = 0;
         uint32 GetLevelForTarget(WorldObject const* target = nullptr) const;
         uint16 GetSkillMaxForLevel(WorldObject const* target = nullptr) const { return GetLevelForTarget(target) * 5; };
@@ -1135,6 +1191,16 @@ virtual uint32 GetLevel() const = 0;
         SpellCastResult CastSpell(GameObject* pTarget, uint32 spellId, bool triggered, Item* castItem = nullptr, Aura* triggeredByAura = nullptr, ObjectGuid originalCaster = ObjectGuid(), SpellEntry const* triggeredBy = nullptr, SpellEntry const* triggeredByParent = nullptr);
         SpellCastResult CastSpell(GameObject* pTarget, SpellEntry const* spellInfo, bool triggered, Item* castItem = nullptr, Aura* triggeredByAura = nullptr, ObjectGuid originalCaster = ObjectGuid(), SpellEntry const* triggeredBy = nullptr, SpellEntry const* triggeredByParent = nullptr);
         void CastCustomSpell(Unit* pTarget, uint32 spellId, int32 const* bp0, int32 const* bp1, int32 const* bp2, bool triggered, Item* castItem = nullptr, Aura* triggeredByAura = nullptr, bool addThreat = true, ObjectGuid originalCaster = ObjectGuid(), SpellEntry const* triggeredBy = nullptr);
+#ifdef ENABLE_ELUNA
+        void CastCustomSpell(Unit* pTarget, uint32 spellId, int32 const* bp0, int32 const* bp1, int32 const* bp2, bool triggered, Item* castItem, Aura* triggeredByAura, ObjectGuid originalCaster)
+        {
+            CastCustomSpell(pTarget, spellId, bp0, bp1, bp2, triggered, castItem, triggeredByAura, true, originalCaster);
+        }
+        void CastCustomSpell(Unit* pTarget, uint32 spellId, int32 bp0, int32 bp1, int32 bp2, bool triggered, Item* castItem, Aura* triggeredByAura, ObjectGuid originalCaster)
+        {
+            CastCustomSpell(pTarget, spellId, &bp0, &bp1, &bp2, triggered, castItem, triggeredByAura, true, originalCaster);
+        }
+#endif
         void CastCustomSpell(Unit* pTarget, SpellEntry const* spellInfo, int32 const* bp0, int32 const* bp1, int32 const* bp2, bool triggered, Item* castItem = nullptr, Aura* triggeredByAura = nullptr, bool addThreat = true, ObjectGuid originalCaster = ObjectGuid(), SpellEntry const* triggeredBy = nullptr);
         void CastCustomSpell(Unit* target, SpellEntry const* customInfo, bool triggered = false);
         SpellCastResult CastSpell(float x, float y, float z, uint32 spellId, bool triggered, Item *castItem = nullptr, Aura* triggeredByAura = nullptr, ObjectGuid originalCaster = ObjectGuid(), SpellEntry const* triggeredBy = nullptr);

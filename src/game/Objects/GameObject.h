@@ -815,6 +815,10 @@ class GameObject : public WorldObject
 
         Loot loot;
 
+#ifdef ENABLE_ELUNA
+        Player* GetLootRecipient() const;
+        Group* GetGroupLootRecipient() const;
+#endif
         bool HasQuest(uint32 quest_id) const override;
         bool HasInvolvedQuest(uint32 quest_id) const override;
         bool ActivateToQuest(Player *pTarget) const;

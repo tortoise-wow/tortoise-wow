@@ -183,6 +183,11 @@ class MapManager : public MaNGOS::Singleton<MapManager, MaNGOS::ClassLevelLockab
         template<typename Do>
         void DoForAllMapsWithMapId(uint32 mapId, Do& _do);
 
+#ifdef ENABLE_ELUNA
+        void DoForAllMaps(std::function<void(Map*)> const& worker);
+        // Runs worker holding the lock CreateMap holds while it makes a map.
+        void DoWithMapsLocked(std::function<void()> const& worker);
+#endif
         void ScheduleInstanceSwitch(Player* player, uint16 newInstance);
         void SwitchPlayersInstances();
 

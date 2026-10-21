@@ -759,6 +759,9 @@ class WorldSession
         void HandleGuildQueryOpcode(WorldPacket& recvPacket);
         void HandleGuildCreateOpcode(WorldPacket& recvPacket);
         void HandleGuildInviteOpcode(WorldPacket& recvPacket);
+#ifdef ENABLE_ELUNA
+        void SendGuildInvite(Player* invitee);
+#endif
         void HandleGuildRemoveOpcode(WorldPacket& recvPacket);
         void HandleGuildAcceptOpcode(WorldPacket& recvPacket);
         void HandleGuildDeclineOpcode(WorldPacket& recvPacket);

@@ -166,6 +166,12 @@ bool Group::Create(ObjectGuid guid, const char * name)
 
     _updateLeaderFlag();
 
+#ifdef ENABLE_ELUNA
+    ScriptRegistry<GroupScript>::ForEach([&](GroupScript* script)
+    {
+        script->OnCreate(this, m_leaderGuid, static_cast<uint8>(m_groupType));
+    });
+#endif
     return true;
 }
 
@@ -257,6 +263,12 @@ bool Group::AddInvite(Player *player)
     m_invitees.insert(player);
 
     player->SetGroupInvite(this);
+#ifdef ENABLE_ELUNA
+    ScriptRegistry<GroupScript>::ForEach([&](GroupScript* script)
+    {
+        script->OnInviteMember(this, player->GetObjectGuid());
+    });
+#endif
 
     return true;
 }

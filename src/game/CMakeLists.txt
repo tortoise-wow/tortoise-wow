@@ -510,6 +510,50 @@ if(USE_ANTICHEAT)
     )
 endif()
 
+if(BUILD_ELUNA)
+  list(APPEND game_SRCS
+    ElunaScriptBridge.cpp
+    Eluna/CustomMethods.h
+  )
+
+  file(GLOB ELUNA_SRCS CONFIGURE_DEPENDS
+    ${ELUNA_SOURCE_DIR}/*.cpp
+    ${ELUNA_SOURCE_DIR}/*.h
+    ${ELUNA_SOURCE_DIR}/hooks/*.cpp
+    ${ELUNA_SOURCE_DIR}/hooks/*.h
+    ${ELUNA_SOURCE_DIR}/methods/*.cpp
+    ${ELUNA_SOURCE_DIR}/methods/VMangos/*.h
+  )
+
+  if(MSVC)
+    # Eluna's parameter-pack name `Is` conflicts with its LuaRet<T>::Is
+    # predicate in current MSVC. Build a generated, semantically identical
+    # copy of the two files.
+    set(ELUNA_MSVC_SOURCE_DIR ${CMAKE_CURRENT_BINARY_DIR}/eluna-msvc)
+    file(MAKE_DIRECTORY ${ELUNA_MSVC_SOURCE_DIR})
+    configure_file(
+      ${ELUNA_SOURCE_DIR}/hooks/SpellHooks.cpp
+      ${ELUNA_MSVC_SOURCE_DIR}/SpellHooks.cpp
+      COPYONLY
+    )
+    file(READ ${ELUNA_SOURCE_DIR}/hooks/HookHelpers.h ELUNA_HOOK_HELPERS)
+    string(FIND "${ELUNA_HOOK_HELPERS}" "size_t... Is" ELUNA_MSVC_RENAME_POSITION)
+    if(NOT ELUNA_MSVC_RENAME_POSITION EQUAL -1)
+      string(REPLACE "size_t... Is" "size_t... ReturnIndices" ELUNA_HOOK_HELPERS "${ELUNA_HOOK_HELPERS}")
+      string(REPLACE "index_sequence<Is...>" "index_sequence<ReturnIndices...>" ELUNA_HOOK_HELPERS "${ELUNA_HOOK_HELPERS}")
+      string(REPLACE "tuple_element_t<Is," "tuple_element_t<ReturnIndices," ELUNA_HOOK_HELPERS "${ELUNA_HOOK_HELPERS}")
+      string(REPLACE "static_cast<int>(Is)" "static_cast<int>(ReturnIndices)" ELUNA_HOOK_HELPERS "${ELUNA_HOOK_HELPERS}")
+      string(REPLACE "std::get<Is>" "std::get<ReturnIndices>" ELUNA_HOOK_HELPERS "${ELUNA_HOOK_HELPERS}")
+      string(REPLACE "indices[Is]" "indices[ReturnIndices]" ELUNA_HOOK_HELPERS "${ELUNA_HOOK_HELPERS}")
+    endif()
+    file(WRITE ${ELUNA_MSVC_SOURCE_DIR}/HookHelpers.h "${ELUNA_HOOK_HELPERS}")
+    list(REMOVE_ITEM ELUNA_SRCS ${ELUNA_SOURCE_DIR}/hooks/SpellHooks.cpp)
+    list(APPEND ELUNA_SRCS ${ELUNA_MSVC_SOURCE_DIR}/SpellHooks.cpp)
+  endif()
+
+  list(APPEND game_SRCS ${ELUNA_SRCS})
+endif()
+
 
 include_directories(
   ${CMAKE_CURRENT_SOURCE_DIR}
@@ -600,6 +644,10 @@ source_group("DiscordBot"
   REGULAR_EXPRESSION DiscordBot
 )
 
+if(BUILD_ELUNA)
+  source_group("Eluna" FILES ${ELUNA_SRCS})
+endif()
+
 source_group("HttpApi"
   REGULAR_EXPRESSION HttpApi
 )
@@ -616,6 +664,27 @@ target_link_libraries(game
   shared
   Detour
 )
+
+if(BUILD_ELUNA)
+  target_link_libraries(game lualib)
+  target_compile_definitions(game PUBLIC
+    ENABLE_ELUNA
+    ELUNA_EXPANSION=0
+    ELUNA_VMANGOS
+    ELUNA_USE_CUSTOM_METHODS
+  )
+  target_include_directories(game PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/Eluna
+    ${ELUNA_SOURCE_DIR}
+    ${ELUNA_SOURCE_DIR}/hooks
+    ${ELUNA_SOURCE_DIR}/methods/VMangos
+  )
+
+  install(
+    DIRECTORY ${CMAKE_SOURCE_DIR}/dep/Eluna/extensions
+    DESTINATION ${BIN_DIR}/lua_scripts
+  )
+endif()
 
 if(WIN32)
 	if (ENABLE_PROFILING)

@@ -37,6 +37,9 @@
 #include "Formulas.h"
 #include "GridNotifiersImpl.h"
 #include "Chat.h"
+#ifdef ENABLE_ELUNA
+#include "ScriptObjects.h"
+#endif
 
 namespace MaNGOS
 {
@@ -412,6 +415,12 @@ void BattleGround::Update(uint32 diff)
                 SendMessageToAll(m_StartMessageIds[BG_STARTING_EVENT_FOURTH], CHAT_MSG_BG_SYSTEM_NEUTRAL);
             SetStatus(STATUS_IN_PROGRESS);
             SetStartDelayTime(m_StartDelayTimes[BG_STARTING_EVENT_FOURTH]);
+#ifdef ENABLE_ELUNA
+            ScriptRegistry<AllBattlegroundScript>::ForEach([&](AllBattlegroundScript* script)
+            {
+                script->OnBattlegroundStart(this);
+            });
+#endif
 
             PlaySoundToAll(SOUND_BG_START);
 
@@ -694,6 +703,12 @@ void BattleGround::UpdateWorldStateForPlayer(uint32 Field, uint32 Value, Player 
 
 void BattleGround::EndBattleGround(Team winner)
 {
+#ifdef ENABLE_ELUNA
+    ScriptRegistry<AllBattlegroundScript>::ForEach([&](AllBattlegroundScript* script)
+    {
+        script->OnBattlegroundEnd(this, uint32(winner));
+    });
+#endif
     uint32 bgTypeID = BATTLEGROUND_TYPE_NONE;
 
     if (m_MaxPlayers == 40)

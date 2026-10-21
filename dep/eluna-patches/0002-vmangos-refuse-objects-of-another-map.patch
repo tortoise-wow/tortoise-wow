@@ -1,0 +1,158 @@
+tortoise-wow: a map's Lua state refuses objects of another map (VMaNGOS has no trackable pointers, so no BoundMap check).
+
+Base: ElunaLuaEngine/Eluna 1b06f28ff3a00054d915d824c725fb4283fee74d (branch
+cmangos-spell-update), the dep/Eluna pin. Eluna is GPL-3.0
+(https://github.com/ElunaLuaEngine/Eluna, LICENSE); this change is under the
+same licence. Applied by cmake/ElunaSources.cmake to a copy in the build tree.
+VMaNGOS-specific (other cores have trackable pointers); upstream would need it as a VMaNGOS option.
+diff --git a/ElunaTemplate.cpp b/ElunaTemplate.cpp
+index ff50591..a440645 100644
+--- a/ElunaTemplate.cpp
++++ b/ElunaTemplate.cpp
+@@ -61,3 +61,29 @@ ElunaConstrainedObjectRef<Vehicle> GetWeakPtrFor(Vehicle const* obj)
+ }
+ #endif
+ #endif
++
++#if defined ELUNA_VMANGOS && !defined TRACKABLE_PTR_NAMESPACE
++Map const* ElunaGetObjectMap(WorldObject const* obj) { return obj->FindMap(); }
++Map const* ElunaGetObjectMap(Unit const* obj) { return obj->FindMap(); }
++Map const* ElunaGetObjectMap(Player const* obj) { return obj->FindMap(); }
++Map const* ElunaGetObjectMap(Creature const* obj) { return obj->FindMap(); }
++Map const* ElunaGetObjectMap(GameObject const* obj) { return obj->FindMap(); }
++Map const* ElunaGetObjectMap(Corpse const* obj) { return obj->FindMap(); }
++Map const* ElunaGetObjectMap(Map const* obj) { return obj; }
++
++Map const* ElunaGetObjectMap(Item const* obj)
++{
++    // An item is on its owner's map; one without an online owner is on none.
++    Player const* owner = obj->GetOwner();
++    return owner ? owner->FindMap() : nullptr;
++}
++
++Map const* ElunaGetObjectMap(Object const* obj)
++{
++    if (obj->isType(TYPEMASK_WORLDOBJECT))
++        return static_cast<WorldObject const*>(obj)->FindMap();
++    if (obj->GetTypeId() == TYPEID_ITEM)
++        return ElunaGetObjectMap(static_cast<Item const*>(obj));
++    return nullptr;
++}
++#endif
+diff --git a/ElunaTemplate.h b/ElunaTemplate.h
+index 6b4f036..ea1be94 100644
+--- a/ElunaTemplate.h
++++ b/ElunaTemplate.h
+@@ -7,6 +7,9 @@
+ #ifndef _ELUNA_TEMPLATE_H
+ #define _ELUNA_TEMPLATE_H
+ 
++// tortoise-wow dep/eluna-patches/0002 is applied (checked by the core).
++#define ELUNA_TW_PATCH_0002 1
++
+ extern "C"
+ {
+ #include "lua.h"
+@@ -44,6 +47,9 @@ public:
+     virtual void* GetObjIfValid() const = 0;
+     // Returns pointer to the wrapped object's type name
+     const char* GetTypeName() const { return type_name; }
++    // True when the object belongs to another map than the state's bound map
++    // (GetObjIfValid then returns nullptr)
++    virtual bool IsOnOtherMap() const { return false; }
+ #if !defined TRACKABLE_PTR_NAMESPACE
+     // Invalidates the pointer if it should be invalidated
+     virtual void Invalidate() = 0;
+@@ -87,6 +93,39 @@ ElunaConstrainedObjectRef<T> GetWeakPtrFor(T const* obj)
+ 
+ #endif
+ 
++#if defined ELUNA_VMANGOS && !defined TRACKABLE_PTR_NAMESPACE
++/*
++ * The map an object belongs to when it is pushed, or nullptr for an object
++ * that is not bound to a map.
++ *
++ * Each map is updated by its own thread and a map's Lua state runs on that
++ * thread, so a map state must not use objects of another map (for example a
++ * player found with GetPlayerByGUID while their map is updating on another
++ * thread). Without trackable pointers this core has no BoundMap check of its
++ * own, so the map is taken here and checked in GetObjIfValid. The world state
++ * (no bound map) runs on the world thread while no map updates and may use
++ * objects of any map.
++ *
++ * One overload per registered map-bound type, defined in ElunaTemplate.cpp:
++ * an exact match does not depend on the type being complete where a push is
++ * compiled. Any other type (Group, Guild, Quest, ...) is not map-bound.
++ */
++Map const* ElunaGetObjectMap(Object const* obj);
++Map const* ElunaGetObjectMap(WorldObject const* obj);
++Map const* ElunaGetObjectMap(Unit const* obj);
++Map const* ElunaGetObjectMap(Player const* obj);
++Map const* ElunaGetObjectMap(Creature const* obj);
++Map const* ElunaGetObjectMap(GameObject const* obj);
++Map const* ElunaGetObjectMap(Corpse const* obj);
++Map const* ElunaGetObjectMap(Item const* obj);
++Map const* ElunaGetObjectMap(Map const* obj);
++template <typename T>
++Map const* ElunaGetObjectMap(T const* /*obj*/)
++{
++    return nullptr;
++}
++#endif
++
+ template <typename T>
+ class ElunaObjectImpl : public ElunaObject
+ {
+@@ -106,17 +145,29 @@ public:
+     }
+ #else
+     ElunaObjectImpl(Eluna* E, T* obj, char const* tname) : ElunaObject(E, tname), _obj(obj), callstackid(E->GetCallstackId())
++#if defined ELUNA_VMANGOS
++        , objMap(ElunaGetObjectMap(static_cast<T const*>(obj)))
++#endif
+     {
+     }
+ 
+     void* GetObjIfValid() const override
+     {
+-        if (callstackid == E->GetCallstackId())
++        if (callstackid == E->GetCallstackId() && !IsOnOtherMap())
+             return _obj;
+ 
+         return nullptr;
+     }
+ 
++    bool IsOnOtherMap() const override
++    {
++#if defined ELUNA_VMANGOS
++        return objMap && E->GetBoundMap() && objMap != E->GetBoundMap();
++#else
++        return false;
++#endif
++    }
++
+     void Invalidate() override { callstackid = 1; }
+ #endif
+ 
+@@ -126,6 +177,9 @@ private:
+ #else
+     void* _obj;
+     uint64 callstackid;
++#if defined ELUNA_VMANGOS
++    Map const* objMap;
++#endif
+ #endif
+ };
+ 
+@@ -423,7 +477,10 @@ public:
+         if (!obj)
+         {
+             char buff[256];
+-            snprintf(buff, 256, "%s expected, got pointer to nonexisting (invalidated) object (%s). Check your code.", tname, luaL_typename(L, narg));
++            if (elunaObj->IsOnOtherMap())
++                snprintf(buff, 256, "%s expected, got an object on another map (%s): refused, a map's Lua state only uses objects on its own map.", tname, luaL_typename(L, narg));
++            else
++                snprintf(buff, 256, "%s expected, got pointer to nonexisting (invalidated) object (%s). Check your code.", tname, luaL_typename(L, narg));
+             if (error)
+             {
+                 luaL_argerror(L, narg, buff);

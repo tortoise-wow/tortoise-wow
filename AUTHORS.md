@@ -51,6 +51,14 @@ Additional integration call sites for this system exist in broader runtime files
 - `src/game/Threat/ThreatManager.cpp`
 - `src/game/StatSystem.cpp`
 
+## Eluna Lua Engine (optional, `BUILD_ELUNA`)
+
+The optional Eluna integration is built on the port by **Nighthawk42** and **Nightdawg** in
+[TuringKi/turtle-wow-custom][6] (commits `aa0b2be`, `e649428`, `bdbe530`): the build plumbing, the
+`ElunaScriptBridge.cpp` hook bridge, the core hook sites and the `SpellInfo` compatibility layer in
+`src/game/Eluna/CustomMethods.h`. The engine itself is [Eluna][7] (GPL-3.0), pinned as the
+`dep/Eluna` submodule (with the core's fixes in `dep/eluna-patches`); Lua is MIT-licensed.
+
 ## Notes
 
 Third-party dependencies may carry their own authorship, copyright, and license notices in their respective directories.
@@ -61,3 +69,5 @@ Third-party dependencies may carry their own authorship, copyright, and license 
 [3]: https://github.com/vmangos/core
 [4]: https://github.com/elysium-project
 [5]: https://github.com/azerothcore/azerothcore-wotlk
+[6]: https://github.com/TuringKi/turtle-wow-custom
+[7]: https://github.com/ElunaLuaEngine/Eluna

@@ -1,0 +1,35 @@
+tortoise-wow: ElunaCreatureAI::SpellHit(WorldObject*, ...) overrides VMaNGOS' CreatureAI::SpellHit (CREATURE_EVENT_ON_HIT_BY_SPELL never fired).
+
+Base: ElunaLuaEngine/Eluna 1b06f28ff3a00054d915d824c725fb4283fee74d (branch
+cmangos-spell-update), the dep/Eluna pin. Eluna is GPL-3.0
+(https://github.com/ElunaLuaEngine/Eluna, LICENSE); this change is under the
+same licence. Applied by cmake/ElunaSources.cmake to a copy in the build tree.
+Candidate to upstream to Eluna.
+diff --git a/ElunaCreatureAI.h b/ElunaCreatureAI.h
+index 5b9898b..7ca4356 100644
+--- a/ElunaCreatureAI.h
++++ b/ElunaCreatureAI.h
+@@ -7,6 +7,9 @@
+ #ifndef _ELUNA_CREATURE_AI_H
+ #define _ELUNA_CREATURE_AI_H
+ 
++// tortoise-wow dep/eluna-patches/0004 is applied (checked by the core).
++#define ELUNA_TW_PATCH_0004 1
++
+ #include "LuaEngine.h"
+ #if defined ELUNA_CMANGOS
+ #include "AI/BaseAI/CreatureAI.h"
+@@ -218,10 +221,10 @@ struct ElunaCreatureAI : NativeScriptedAI
+     }
+ 
+     // Called when hit by a spell
+-#if defined ELUNA_TRINITY
++#if defined ELUNA_TRINITY || defined ELUNA_VMANGOS
++    // VMaNGOS: CreatureAI::SpellHit(WorldObject*, SpellEntry const*); a Unit*
++    // caster did not override it and the hook never fired.
+     void SpellHit(WorldObject* caster, SpellInfo const* spell) override
+-#elif defined ELUNA_VMANGOS
+-    void SpellHit(Unit* caster, SpellInfo const* spell)
+ #else
+     void SpellHit(Unit* caster, SpellInfo const* spell) override
+ #endif
