@@ -37,11 +37,33 @@
 
 GameEventMgr sGameEventMgr;
 
+// A yearly event keeps its calendar date: count each 29 February after the start and up to now
+static uint32 GetLeapDays(GameEventData const& event, time_t currenttime)
+{
+    if (event.occurence != default_year_length || event.length >= default_year_length || currenttime <= event.start)
+        return 0;
+
+    tm tm_start = *gmtime(&event.start);
+    tm tm_current = *gmtime(&currenttime);
+    uint32 leapDays = 0;
+    for (int i = tm_start.tm_year; i <= tm_current.tm_year; i++)
+    {
+        if (!isLeapYear(i + 1900))
+            continue;
+        if (i == tm_start.tm_year && tm_start.tm_mon > 1)       // started after February
+            continue;
+        if (i == tm_current.tm_year && tm_current.tm_mon < 2)   // 29 February not reached yet
+            continue;
+        leapDays++;
+    }
+    return leapDays;
+}
+
 bool GameEventMgr::CheckOneGameEvent(uint16 entry, time_t currenttime) const
 {
     // Get the event information
     return mGameEvent[entry].start <= currenttime && currenttime < mGameEvent[entry].end &&
-            (currenttime - mGameEvent[entry].start - (mGameEvent[entry].leapDays * DAY)) % (mGameEvent[entry].occurence * MINUTE) < mGameEvent[entry].length * MINUTE;
+            (currenttime - mGameEvent[entry].start - (GetLeapDays(mGameEvent[entry], currenttime) * DAY)) % (mGameEvent[entry].occurence * MINUTE) < mGameEvent[entry].length * MINUTE;
 }
 
 uint32 GameEventMgr::NextCheck(uint16 entry) const
@@ -57,12 +79,13 @@ uint32 GameEventMgr::NextCheck(uint16 entry) const
         return uint32(mGameEvent[entry].start - currenttime);
 
     uint32 delay;
+    time_t leapSeconds = GetLeapDays(mGameEvent[entry], currenttime) * DAY;
     // in event, we return the end of it
-    if ((((currenttime - mGameEvent[entry].start - (mGameEvent[entry].leapDays * DAY)) % (mGameEvent[entry].occurence * 60)) < (mGameEvent[entry].length * 60)))
+    if ((((currenttime - mGameEvent[entry].start - leapSeconds) % (mGameEvent[entry].occurence * 60)) < (mGameEvent[entry].length * 60)))
         // we return the delay before it ends
-        delay = (mGameEvent[entry].length * MINUTE) - ((currenttime - mGameEvent[entry].start - (mGameEvent[entry].leapDays * DAY)) % (mGameEvent[entry].occurence * MINUTE));
+        delay = (mGameEvent[entry].length * MINUTE) - ((currenttime - mGameEvent[entry].start - leapSeconds) % (mGameEvent[entry].occurence * MINUTE));
     else                                                    // not in window, we return the delay before next start
-        delay = (mGameEvent[entry].occurence * MINUTE) - ((currenttime - mGameEvent[entry].start - (mGameEvent[entry].leapDays * DAY)) % (mGameEvent[entry].occurence * MINUTE));
+        delay = (mGameEvent[entry].occurence * MINUTE) - ((currenttime - mGameEvent[entry].start - leapSeconds) % (mGameEvent[entry].occurence * MINUTE));
     // In case the end is before next check
     if (mGameEvent[entry].end  < time_t(currenttime + delay))
         return uint32(mGameEvent[entry].end - currenttime);
@@ -230,19 +253,6 @@ void GameEventMgr::LoadFromDB()
 
             if (pGameEvent.requiredPhase > sWorld.GetContentPhase())
                 pGameEvent.disabled = true;
-
-            // Leap days are needed to adjust yearly events
-            if (pGameEvent.occurence == default_year_length && pGameEvent.length < default_year_length)
-            {
-                time_t current = time(0);
-                tm tm_start = *gmtime(&pGameEvent.start);
-                tm tm_current = *gmtime(&current);
-
-                if (tm_current.tm_year > tm_start.tm_year)
-                    for (int i = tm_start.tm_year; i < tm_current.tm_year; i++)
-                        if (isLeapYear(i + 1900))
-                            pGameEvent.leapDays++;
-            }
         }
         while (result->NextRow());
         delete result;
