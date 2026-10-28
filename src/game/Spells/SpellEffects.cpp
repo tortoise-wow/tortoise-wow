@@ -52,6 +52,7 @@
 #include "CreatureAI.h"
 #include "BattleGroundMgr.h"
 #include "BattleGround.h"
+#include "BattleGroundTG.h"
 #include "BattleGroundWS.h"
 #include "Language.h"
 #include "SocialMgr.h"
@@ -354,6 +355,17 @@ void Spell::EffectDummy(SpellEffectIndex eff_idx)
         {
             switch (m_spellInfo->Id)
             {
+                case 59011: // Thorn Gorge flag: validate again when the cast completes.
+                {
+                    if (eff_idx == EFFECT_INDEX_0 && unitTarget && unitTarget->IsPlayer())
+                    {
+                        Player* player = static_cast<Player*>(unitTarget);
+                        if (BattleGround* bg = player->GetBattleGround())
+                            if (bg->GetTypeID() == BATTLEGROUND_TG)
+                                static_cast<BattleGroundTG*>(bg)->CompleteFlagPickup(player, player->GetMap()->GetGameObject(m_originalCasterGUID));
+                    }
+                    return;
+                }
                 case 18955: // Ranshalla's Torch Trap
                 case 18993: // Ranshalla's Altar Trap
                 {
