@@ -49,6 +49,7 @@ class Master
         static void _OnSignal(int s);
 
         void clearOnlineAccounts();
+        void markRealmOffline();
 };
 
 extern Master sMaster;
