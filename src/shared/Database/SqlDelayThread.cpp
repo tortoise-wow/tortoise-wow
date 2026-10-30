@@ -71,11 +71,16 @@ void SqlDelayThread::run()
         if((loopCounter++) >= pingEveryLoop)
         {
             loopCounter = 0;
-            m_dbEngine->Ping();
-            if (QueryResult* res = m_dbConnection->Query("SELECT 1"))
-                delete res;
+            if (!m_dbEngine->IsOrderedPersistence())
+                m_dbEngine->Ping();
+            if (m_running && !m_dbEngine->HasOrderedPersistenceFault())
+                if (QueryResult* res = m_dbConnection->Query("SELECT 1"))
+                    delete res;
         }
     }
+
+    // Stop closes ordered admission before requesting this final healthy drain.
+    ProcessRequests();
 
     #ifndef DO_POSTGRESQL
     mysql_thread_end();
@@ -92,20 +97,12 @@ void SqlDelayThread::ProcessRequests()
     SqlOperation* s = nullptr;
     while (m_dbEngine->NextDelayedOperation(s))
     {
-        bool result = s->Execute(m_dbConnection);
-        const auto& callback = s->GetCallback();
-        if (callback)
-            (*callback)(result);
-        delete s;
+        m_dbEngine->ExecuteDelayedOperation(s, m_dbConnection);
     }
 
     // Process any serial operations for this worker
     while (m_serialDelayQueue.next(s))
     {
-        bool result = s->Execute(m_dbConnection);
-        const auto& callback = s->GetCallback();
-        if (callback)
-            (*callback)(result);
-        delete s;
+        m_dbEngine->ExecuteDelayedOperation(s, m_dbConnection);
     }
 }

@@ -24,7 +24,9 @@
 */
 
 #include "World.h"
+#include "WorldPlayerTasks.h"
 #include "Database/DatabaseEnv.h"
+#include "Database/CharacterStorage.h"
 #include "Config/Config.h"
 #include "CustomMerchantMgr.h"
 #include "Platform/Define.h"
@@ -1994,6 +1996,30 @@ void LoadPlayerEggLoot();
         exit(1);
     }
 
+#ifndef DO_POSTGRESQL
+    if (sConfig.GetBoolDefault("CharacterDatabase.RequireTransactionalTables", true) ||
+        CharacterDatabase.IsOrderedPersistence())
+    {
+        // Check after schema updates, before players and runtime writers are admitted.
+        if (!HasTransactionalCharacterStorage(CharacterDatabase))
+        {
+            sLog.outError("Character storage is not transactional/durable. Active tables must be InnoDB, "
+                "innodb_flush_log_at_trx_commit must be 1, and innodb_force_recovery must be 0. "
+                "Back up and migrate the character database while writers are stopped before starting the realm.");
+            Log::WaitBeforeContinueIfNeed();
+            exit(1);
+        }
+        sLog.outString("Character storage: active tables use InnoDB with durable commit settings.");
+        CharacterDatabase.EnableKnownAbortRetries(3);
+        if (CharacterDatabase.IsOrderedPersistence() && !CharacterDatabase.EnableOwnedTransactions())
+        {
+            sLog.outError("Cannot enable atomic player transactions on the verified character database.");
+            Log::WaitBeforeContinueIfNeed();
+            exit(1);
+        }
+    }
+#endif
+
     sLog.outString("Loading module strings...");
     if (!sObjectMgr.LoadModuleStrings())
     {
@@ -2598,6 +2624,16 @@ void TotalMoneyCallback(QueryResult* result, uint32 money)
 /// Update the World !
 void World::Update(uint32 diff)
 {
+    // A failed/ambiguous ordered write fences every later save and login. Stop
+    // before another tick can continue an economy whose RAM no longer matches DB.
+    if (CharacterDatabase.HasOrderedPersistenceFault())
+    {
+        sLog.outError("Character persistence failed. Stopping the realm with later writes fenced; "
+            "review the database error before restarting. An unknown COMMIT is never replayed.");
+        StopNow(ERROR_EXIT_CODE);
+        return;
+    }
+
     XScopeStatTimer ScopeStatTimer(sPerfMonitor.WorldTick);
 
     ///- Update the different timers
@@ -2640,6 +2676,20 @@ void World::Update(uint32 diff)
 
     /// <li> Handle session updates
     UpdateSessions(diff);
+
+    // Inventory mutation is not an async session task. Finish queued deliveries
+    // sequentially before maps can capture a trade/save snapshot or wait for ACK.
+    try
+    {
+        WorldPlayerTasks::RunPending();
+    }
+    catch (...)
+    {
+        CharacterDatabase.MarkOrderedPersistenceFault();
+        sLog.outError("Queued player mutation failed. Stopping before map updates to protect character persistence.");
+        StopNow(ERROR_EXIT_CODE);
+        return;
+    }
     m_canProcessAsyncPackets = true;
 
     /// <li> Update uptime table

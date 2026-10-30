@@ -1461,7 +1461,7 @@ class ObjectMgr
         }
         ItemTransmogrifyTemplateMap const& GetItemTransmogrifyTemplateMap() const { return m_itemTransmogs; }
         uint32 CreateItemTransmogrifyTemplate(uint32 destItemId, uint32 sourceDisplayId, uint32 sourceId);
-        void DeleteItemTransmogrifyTemplate(uint32 transmogrifyId);
+        void DeleteItemTransmogrifyTemplate(uint32 transmogrifyId, bool saveToDB = true);
         std::map<uint32, std::map<uint32, std::map<uint32, std::map<uint32, TransmogContainer>>>> NumPossibleTransmogs;
         bool IsItemTypeTransmoggable(uint32 invType);
         bool IsItemSubClassTransmoggable(uint32 subClass);
