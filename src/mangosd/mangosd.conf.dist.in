@@ -1771,6 +1771,19 @@ Rate.RespecMaxMultiplier = 1
 
 Rate.RespecMinMultiplier = 2
 
+# Barbershop.Cost.Base. A barbershop change costs level * level * this, in copper,
+# before the percentages below. 5 gives 5c at level 1, 5s at 10 and 1g 80s at 60
+# for a new style. 0 makes the barbershop free.
+
+Barbershop.Cost.Base = 5
+
+# Barbershop.Cost.Style, .Color, .FacialHair. The percentage of the base charged
+# for each change. A colour change is charged only when the style stays the same.
+
+Barbershop.Cost.Style = 100
+Barbershop.Cost.Color = 50
+Barbershop.Cost.FacialHair = 75
+
 # Rate.Reputation.Gain. Reputation Gain rate.
 
 Rate.Reputation.Gain = 1
