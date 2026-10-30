@@ -223,4 +223,3 @@ bool Player::_SaveInventory(InventorySaveBatch* batch)
         m_itemUpdateQueue.clear();
     return true;
 }
-

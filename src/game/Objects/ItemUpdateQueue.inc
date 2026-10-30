@@ -85,4 +85,3 @@ void Item::RemoveFromUpdateQueueOf(Player* player)
     player->m_itemUpdateQueue[uQueuePos] = nullptr;
     uQueuePos = -1;
 }
-

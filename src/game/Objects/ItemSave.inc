@@ -208,4 +208,3 @@ void Item::CompleteSaveToDB(bool deferred)
 
     SetState(ITEM_UNCHANGED);
 }
-
