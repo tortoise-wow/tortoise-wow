@@ -84,7 +84,7 @@ bool WDTFile::init(char* map_id, unsigned int mapID)
                     char* s = wdtGetPlainName(p);
                     fixnamen(s, strlen(s));
                     p = p + strlen(p) + 1;
-                    gWmoInstansName[q++] = s;
+                    gWmoInstansName[q++] = AddCollisionSuffix(s, path);
                 }
                 delete[] buf;
             }

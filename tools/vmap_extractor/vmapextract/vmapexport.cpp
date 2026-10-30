@@ -178,6 +178,95 @@ bool ExtractWmo()
 }
 
 
+// File names (lowercase, e.g. "farm.wmo") that more than one model path uses.
+static StringSet gCollidingModelNames;
+
+// One spelling for a model path, so the same file always gives the same key:
+// lowercase, backslashes, spaces as '_' (fixname2) and .mdx read as .m2.
+std::string NormalizeModelPath(std::string const& path)
+{
+    std::string key = path;
+    for (char& c : key)
+    {
+        if (c == '/')
+            c = '\\';
+        else if (c == ' ')
+            c = '_';
+        else
+            c = char(tolower((unsigned char)c));
+    }
+    if (key.size() > 4 && key.compare(key.size() - 4, 4, ".mdx") == 0)
+        key.replace(key.size() - 4, 4, ".m2");
+    return key;
+}
+
+static std::string PlainNameOf(std::string const& key)
+{
+    size_t slash = key.rfind('\\');
+    return slash == std::string::npos ? key : key.substr(slash + 1);
+}
+
+// A WMO group file ends in _NNN.wmo; only root files are models of their own.
+static bool IsWmoGroupFile(std::string const& key)
+{
+    size_t n = key.size();
+    return n > 8 && key.compare(n - 4, 4, ".wmo") == 0 && key[n - 8] == '_' &&
+           isdigit((unsigned char)key[n - 7]) && isdigit((unsigned char)key[n - 6]) &&
+           isdigit((unsigned char)key[n - 5]);
+}
+
+void FindModelNameCollisions()
+{
+    std::map<std::string, StringSet> pathsByName;
+    for (ArchiveSet::const_iterator ar = gOpenArchives.begin(); ar != gOpenArchives.end(); ++ar)
+    {
+        vector<string> filelist;
+        (*ar)->GetFileListTo(filelist);
+        for (vector<string>::const_iterator f = filelist.begin(); f != filelist.end(); ++f)
+        {
+            std::string key = NormalizeModelPath(*f);
+            bool isModel = key.size() > 4 && (key.compare(key.size() - 3, 3, ".m2") == 0 ||
+                                              key.compare(key.size() - 4, 4, ".wmo") == 0);
+            if (isModel && !IsWmoGroupFile(key))
+                pathsByName[PlainNameOf(key)].insert(key);
+        }
+    }
+
+    for (std::map<std::string, StringSet>::const_iterator it = pathsByName.begin(); it != pathsByName.end(); ++it)
+    {
+        if (it->second.size() < 2)
+            continue;
+        gCollidingModelNames.insert(it->first);
+        printf("Model name used by %u paths, giving each its own file: %s\n",
+               uint32(it->second.size()), it->first.c_str());
+    }
+    printf("%u model file names are shared by different models.\n", uint32(gCollidingModelNames.size()));
+}
+
+// Turns "Farm.wmo" into "Farm_h1a2b3c4d.wmo" when "farm.wmo" is a shared name.
+// The 8 hex digits are a hash (32-bit FNV-1a) of the model's full path.
+std::string AddCollisionSuffix(std::string name, std::string const& fullPath)
+{
+    std::string key = NormalizeModelPath(fullPath);
+    if (gCollidingModelNames.find(PlainNameOf(key)) == gCollidingModelNames.end())
+        return name;
+
+    uint32 hash = 2166136261u;
+    for (char c : key)
+    {
+        hash ^= (unsigned char)c;
+        hash *= 16777619u;
+    }
+
+    // "_h" before the digits: a name ending in "_" plus 3 digits would be read
+    // as a WMO group file by ExtractSingleWmo.
+    char suffix[16];
+    snprintf(suffix, sizeof(suffix), "_h%08x", hash);
+    size_t dot = name.rfind('.');
+    name.insert(dot == std::string::npos ? name.size() : dot, suffix);
+    return name;
+}
+
 // This zepp has position / orientation modified.
 // Don't know why ... Here is a hack-fix.
 void ZeppFixVect(float* v)
@@ -205,6 +294,7 @@ bool ExtractSingleWmo(std::string& fname)
     const char* plain_name = GetPlainName(fname.c_str());
     sprintf(szLocalFile, "%s/%s", szWorkDirWmo, plain_name);
     fixnamen(szLocalFile, strlen(szLocalFile));
+    snprintf(szLocalFile, sizeof(szLocalFile), "%s", AddCollisionSuffix(szLocalFile, fname).c_str());
 
     //if (FileExists(szLocalFile))
     //    return true;
@@ -274,7 +364,9 @@ bool ExtractSingleWmo(std::string& fname)
                 break;
             }
 
-            if (strcmp(szLocalFile, "./Buildings/Transport_Zeppelin.wmo") == 0)
+            // By path, not by output name: Turtle has a second transport_zeppelin.wmo
+            // (transports\zeppelin\), and the fix was written for the stock one.
+            if (NormalizeModelPath(fname) == "world\\wmo\\transports\\transport_zeppelin\\transport_zeppelin.wmo")
                 FixZepp(fgroup);
 
             Wmo_nVertices += fgroup.ConvertToVMAPGroupWmo(output, &froot, preciseVectorData);
@@ -501,6 +593,7 @@ int main(int argc, char** argv)
         return 1;
     }
     ReadLiquidTypeTableDBC();
+    FindModelNameCollisions();
 
     // extract data
     if (success)
