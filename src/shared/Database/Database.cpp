@@ -73,6 +73,7 @@ SqlPreparedStatement * SqlConnection::GetStmt( int nIndex )
         {
             //MANGOS_ASSERT(false && "Unable to prepare SQL statement");
             sLog.outError("Can't prepare %s, statement not executed!", fmt.c_str());
+            delete pStmt;
             return nullptr;
         }
 
@@ -131,6 +132,24 @@ bool SqlConnection::ExecuteStmt(int nIndex, const SqlStmtParameters& id )
         //execute statement
         return pStmt->execute();
     }
+    return false;
+}
+
+bool SqlConnection::ExecuteMigrationBatch(const std::vector<std::string>& statements)
+{
+    if (!BeginTransaction())
+        return false;
+    for (const auto& statement : statements)
+    {
+        if (!Execute(statement.c_str()))
+        {
+            RollbackTransaction();
+            return false;
+        }
+    }
+    if (CommitTransaction())
+        return true;
+    RollbackTransaction();
     return false;
 }
 
@@ -502,7 +521,7 @@ bool Database::BeginTransaction(uint32 serialId)
     }
 
     //initiate transaction on current thread
-    m_TransStorage->init(serialId);
+    m_TransStorage->init(serialId, m_knownAbortRetries);
     return true;
 }
 
@@ -571,6 +590,18 @@ bool Database::CommitTransactionDirect()
     delete pTrans;
 
     return res;
+}
+
+bool Database::ExecuteMigrationBatch(const std::vector<std::string>& statements)
+{
+    // The updater owns this connection only before runtime writers are enabled.
+    if (!m_pAsyncConn || m_bAllowAsyncTransactions || InTransaction())
+    {
+        sLog.outError("Database migrations require startup with no pending runtime transaction.");
+        return false;
+    }
+    SqlConnection::Lock guard(m_pAsyncConn);
+    return guard->ExecuteMigrationBatch(statements);
 }
 
 bool Database::RollbackTransaction()
@@ -696,10 +727,10 @@ Database::TransHelper::~TransHelper()
     reset();
 }
 
-SqlTransaction * Database::TransHelper::init(uint32 serialId)
+SqlTransaction * Database::TransHelper::init(uint32 serialId, uint32 knownAbortRetries)
 {
     MANGOS_ASSERT(!m_pTrans);   //if we will get a nested transaction request - we MUST fix code!!!
-    m_pTrans = new SqlTransaction(serialId);
+    m_pTrans = new SqlTransaction(serialId, knownAbortRetries);
 
     return m_pTrans;
 }
