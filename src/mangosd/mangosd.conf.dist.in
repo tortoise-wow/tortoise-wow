@@ -47,6 +47,14 @@ LogsDatabase.Info = "127.0.0.1;3306;mangos;mangos;tw_logs"
 # Five historical archival copies are excluded; runtime transactions must not use them.
 CharacterDatabase.RequireTransactionalTables = 1
 
+# Put all runtime character writes, reads, direct calls and login holders in one
+# FIFO with one executor. This overrides CharacterDatabase.WorkerThreads and
+# reduces save parallelism; the other databases keep their configured workers.
+# Atomic player trades require this mode and verified transactional storage.
+# TRADE_COMPLETE is sent only after COMMIT acknowledgement. A write failure
+# fences later character operations and stops the realm; it is not retried blindly.
+CharacterDatabase.OrderedPersistence = 1
+
 # DB Auto-updater
 
 Database.AutoUpdate.Enabled = 1

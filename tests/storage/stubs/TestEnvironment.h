@@ -56,7 +56,7 @@ public:
     virtual void ThreadStart() {}
     virtual void ThreadEnd() {}
     void StopServer() {}
-    void AddToSerialDelayQueue(SqlOperation*) {}
+    bool AddToSerialDelayQueue(SqlOperation*) { return true; }
     std::string statement = "UPDATE storage_test SET value=?";
 protected:
     virtual SqlConnection* CreateConnection() { return nullptr; }

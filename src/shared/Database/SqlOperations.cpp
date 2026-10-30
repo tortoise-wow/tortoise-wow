@@ -52,10 +52,39 @@ SqlTransaction::~SqlTransaction()
         delete m_queue.back();
         m_queue.pop_back();
     }
+    OnAdmission(); // Unsubmitted rollback/TSS destruction also releases the lease.
+}
+
+void SqlTransaction::HoldBuilderLease(std::shared_ptr<std::atomic<uint32>> counter)
+{
+    MANGOS_ASSERT(!m_builderLease);
+    m_builderLease = std::move(counter);
+    ++*m_builderLease;
+}
+
+void SqlTransaction::OnAdmission()
+{
+    if (m_builderLease) { --*m_builderLease; m_builderLease.reset(); }
+}
+
+bool SqlTransaction::DelayExecute(SqlOperation* sql)
+{
+    std::unique_ptr<SqlOperation> owner(sql);
+    if (!sql || m_appendFailed)
+    {
+        m_appendFailed = true;
+        return false;
+    }
+    try { m_queue.push_back(sql); }
+    catch (const std::bad_alloc&) { m_appendFailed = true; return false; }
+    owner.release();
+    return true;
 }
 
 bool SqlTransaction::Execute(SqlConnection *conn)
 {
+    if (m_appendFailed)
+        return false;
     if(m_queue.empty())
         return true;
 
@@ -118,8 +147,19 @@ bool SqlQuery::Execute(SqlConnection *conn)
     m_callback->SetResult(conn->Query(m_sql));
     /// add the callback to the sql result queue of the thread it originated from
     m_queue->add(m_callback);
+    m_callback = nullptr;
 
     return true;
+}
+
+void SqlQuery::Cancel()
+{
+    if (m_callback && m_queue)
+    {
+        m_callback->SetResult(nullptr);
+        m_queue->add(m_callback);
+        m_callback = nullptr;
+    }
 }
 
 void SqlResultQueue::Update(uint32 timeout)
@@ -200,8 +240,7 @@ bool SqlQueryHolder::Execute(MaNGOS::IQueryCallback * callback, Database *databa
     /// which will in turn resync on execution (via the queue) and call back
     SqlQueryHolderEx *holderEx = new SqlQueryHolderEx(this, callback, queue, serialId);
 
-    database->AddToSerialDelayQueue(holderEx);
-    return true;
+    return database->AddToSerialDelayQueue(holderEx);
 }
 
 bool SqlQueryHolder::SetQuery(size_t index, const char *sql)
@@ -327,6 +366,20 @@ bool SqlQueryHolderEx::Execute(SqlConnection *conn)
 
     /// sync with the caller thread
     m_queue->add(m_callback);
+    m_callback = nullptr;
 
     return true;
+}
+
+void SqlQueryHolderEx::Cancel()
+{
+    if (m_callback && m_queue)
+    {
+        m_holder->DeleteAllResults();
+        for (size_t i = 0; i < m_holder->m_queries.size(); ++i)
+            m_holder->SetResult(i, nullptr);
+        m_callback->SetResult(nullptr);
+        m_queue->add(m_callback);
+        m_callback = nullptr;
+    }
 }

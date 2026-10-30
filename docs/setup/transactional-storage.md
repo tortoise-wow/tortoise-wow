@@ -45,10 +45,13 @@ are excluded: `character_bck`, `character_duplicate_account`,
 read-only archives outside runtime save transactions. New archive exceptions
 require an explicit code and ownership review.
 
-Setting `CharacterDatabase.RequireTransactionalTables = 0` skips this startup
-check; it does not make MyISAM transactional or provide rollback protection. Keep
-the default enabled for a realm that accepts players. A rejected startup requires
-an offline storage/configuration correction before reopening the realm.
+Ordered character persistence also requires this startup check. Setting
+`CharacterDatabase.RequireTransactionalTables = 0` skips it only when ordered
+persistence is disabled too; it does not make MyISAM transactional or provide
+rollback protection. Keep the defaults enabled for a realm that accepts players.
+A rejected startup requires an offline storage/configuration correction before
+reopening the realm. See [atomic player trades](atomic-trades.md) for queue,
+acknowledgement, failure and throughput behavior.
 
 ## Existing installations
 

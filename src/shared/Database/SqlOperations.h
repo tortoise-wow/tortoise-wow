@@ -30,6 +30,9 @@
 #include <memory>
 #include <optional>
 #include <functional>
+#include <future>
+#include <algorithm>
+#include <atomic>
 
 /// ---- BASE ---
 
@@ -46,7 +49,11 @@ class SqlOperation
         uint32 GetSerialId() const { return serialId; }
         virtual void OnRemove() { delete this; }
         virtual bool Execute(SqlConnection *conn) = 0;
-        virtual ~SqlOperation() {}
+        virtual bool IsWriteOperation() const { return true; }
+        virtual void Cancel() {}
+        // Called under the ordered admission gate, before queue exposure.
+        virtual void OnAdmission() {}
+        virtual ~SqlOperation() { try { Complete(false); } catch (...) {} }
 
         const auto& GetCallback() const { return callback; }
 
@@ -55,9 +62,17 @@ class SqlOperation
             callback = std::make_unique<std::function<void(bool)>>(*cb);
         }
 
+        void SetCompletion(std::shared_ptr<std::promise<bool>> completion) { m_completion = std::move(completion); }
+        void Complete(bool result)
+        {
+            auto completion = std::move(m_completion);
+            if (completion) completion->set_value(result);
+        }
+
     protected:
         uint32 serialId;
         std::unique_ptr<std::function<void(bool)>> callback;
+        std::shared_ptr<std::promise<bool>> m_completion;
 };
 
 /// ---- ASYNC STATEMENTS / TRANSACTIONS ----
@@ -87,13 +102,24 @@ class SqlTransaction : public SqlOperation
     private:
         std::vector<SqlOperation * > m_queue;
         const uint32 m_knownAbortRetries;
+        bool m_appendFailed = false;
+        std::vector<uint32> m_participants;
+        std::shared_ptr<std::atomic<uint32>> m_builderLease;
 
     public:
         SqlTransaction(uint32 serialId, uint32 knownAbortRetries = 0) :
             SqlOperation(serialId), m_knownAbortRetries(knownAbortRetries) {}
         ~SqlTransaction();
 
-        void DelayExecute(SqlOperation * sql)   {   m_queue.push_back(sql); }
+        bool DelayExecute(SqlOperation* sql);
+        void MarkAppendFailure() { m_appendFailed = true; }
+        bool HasAppendFailure() const { return m_appendFailed; }
+        bool Empty() const { return m_queue.empty(); }
+        void SetParticipants(std::vector<uint32> participants) { m_participants = std::move(participants); }
+        bool IsOwned() const { return !m_participants.empty(); }
+        bool HasParticipant(uint32 guid) const { return std::binary_search(m_participants.begin(), m_participants.end(), guid); }
+        void HoldBuilderLease(std::shared_ptr<std::atomic<uint32>> counter);
+        void OnAdmission() override;
 
         bool Execute(SqlConnection *conn);
 };
@@ -143,8 +169,10 @@ class SqlQuery : public SqlOperation
     public:
         SqlQuery(const char *sql, MaNGOS::IQueryCallback * callback, SqlResultQueue * queue)
             : m_sql(mangos_strdup(sql)), m_callback(callback), m_queue(queue) {}
-        ~SqlQuery() { char* tofree = const_cast<char*>(m_sql); delete [] tofree; }
+        ~SqlQuery() { char* tofree = const_cast<char*>(m_sql); delete [] tofree; delete m_callback; }
         bool Execute(SqlConnection *conn);
+        bool IsWriteOperation() const override { return false; }
+        void Cancel() override;
 };
 
 class SqlQueryHolder
@@ -179,6 +207,9 @@ class SqlQueryHolderEx : public SqlOperation
     public:
         SqlQueryHolderEx(SqlQueryHolder *holder, MaNGOS::IQueryCallback * callback, SqlResultQueue * queue, uint32 id)
             : SqlOperation(id), m_holder(holder), m_callback(callback), m_queue(queue) {}
+        ~SqlQueryHolderEx() override { delete m_callback; }
         bool Execute(SqlConnection *conn);
+        bool IsWriteOperation() const override { return false; }
+        void Cancel() override;
 };
 #endif                                                      //__SQLOPERATIONS_H

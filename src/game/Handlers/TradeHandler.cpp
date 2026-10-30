@@ -33,6 +33,7 @@
 #include "Language.h"
 #include "Chat.h"
 #include "TradeMoney.h"
+#include "Database/DatabaseEnv.h"
 #ifdef ENABLE_ELUNA
 #include "LuaEngine.h"
 #endif
@@ -323,7 +324,8 @@ void WorldSession::HandleAcceptTradeOpcode(WorldPacket& recvPacket)
     // set before checks to properly undo at problems (it already set in to client)
     my_trade->SetAccepted(true);
 
-    if (_player->GetDistance3dToCenter(trader) > TRADE_DISTANCE)
+    if (_player->GetMap() != trader->GetMap() ||
+        _player->GetDistance3dToCenter(trader) > TRADE_DISTANCE)
     {
         SendTradeStatus(TRADE_STATUS_TARGET_TO_FAR);
         return;
@@ -398,6 +400,14 @@ void WorldSession::HandleAcceptTradeOpcode(WorldPacket& recvPacket)
             "This trade would exceed your gold limit.");
         trader->GetSession()->SendNotification(hisBalanceFits ? "Your partner cannot receive that much gold." :
             "This trade would exceed your gold limit.");
+        return;
+    }
+    if (!_player->IsInventorySaveEnabled() || !trader->IsInventorySaveEnabled())
+    {
+        my_trade->SetAccepted(false, true);
+        his_trade->SetAccepted(false, true);
+        SendNotification("Trading is temporarily unavailable. Please try again later.");
+        trader->GetSession()->SendNotification("Trading is temporarily unavailable. Please try again later.");
         return;
     }
     if (his_trade->IsAccepted())
@@ -527,6 +537,25 @@ void WorldSession::HandleAcceptTradeOpcode(WorldPacket& recvPacket)
             return;
         }
 
+        // Reserve ownership before the first irreversible inventory mutation.
+        // Every character save/read uses the same ordered database queue, so
+        // neither participant's earlier save or later login can cross this batch.
+        auto transaction = CharacterDatabase.BeginOwnedTransaction(
+            {_player->GetGUIDLow(), trader->GetGUIDLow()});
+        if (!transaction)
+        {
+            clearAcceptTradeMode(my_trade, his_trade);
+            my_trade->SetAccepted(false, true);
+            his_trade->SetAccepted(false, true);
+            if (my_spell)
+                my_spell->Delete();
+            if (his_spell)
+                his_spell->Delete();
+            SendNotification("Trading is temporarily unavailable. Please try again later.");
+            trader->GetSession()->SendNotification("Trading is temporarily unavailable. Please try again later.");
+            return;
+        }
+
         // execute trade: 1. remove
         for (int i = 0; i < TRADE_SLOT_TRADED_COUNT; ++i)
         {
@@ -580,16 +609,42 @@ void WorldSession::HandleAcceptTradeOpcode(WorldPacket& recvPacket)
         if (his_spell)
             his_spell->prepare(std::move(his_targets));
 
-        // cleanup
+        // The same map actor owns both players throughout this synchronous scope.
+        // SQL serialization retains dirty flags and removed-item ownership until
+        // COMMIT is acknowledged; no DB worker callback touches gameplay objects.
+        Player::InventorySaveBatch mySave;
+        Player::InventorySaveBatch hisSave;
+        bool prepared = _player->AppendInventoryAndGoldToDB(mySave) &&
+            trader->AppendInventoryAndGoldToDB(hisSave);
+        bool committed = prepared && transaction->Commit();
+        transaction.reset();
+
+        // A moved/merged item cannot be reconstructed safely from old pointers.
+        // Fence subsequent writes on failure (including unknown COMMIT), retain
+        // pending item state and stop; reconnect reads either the complete old
+        // trade or the complete committed trade. Never announce COMPLETE on false.
+        bool completed = committed && _player->CompleteInventoryAndGoldSave(mySave) &&
+            trader->CompleteInventoryAndGoldSave(hisSave);
+
         clearAcceptTradeMode(my_trade, his_trade);
         delete _player->m_trade;
         _player->m_trade = nullptr;
         delete trader->m_trade;
         trader->m_trade = nullptr;
 
-        // desynchronized with the other saves here, let players save gold per their own serialized transaction
-        _player->SaveInventoryAndGoldToDB();
-        trader->SaveInventoryAndGoldToDB();
+        if (!completed)
+        {
+            CharacterDatabase.MarkOrderedPersistenceFault();
+            sLog.outError("Atomic trade could not be completed safely for players %u and %u "
+                "(prepared=%u, committed=%u). Later character writes are fenced; stopping the realm.",
+                _player->GetGUIDLow(), trader->GetGUIDLow(), uint32(prepared), uint32(committed));
+            SendTradeStatus(TRADE_STATUS_TRADE_CANCELED);
+            trader->GetSession()->SendTradeStatus(TRADE_STATUS_TRADE_CANCELED);
+            SendNotification("Trade completion could not be confirmed. The server is stopping; reconnect after it restarts.");
+            trader->GetSession()->SendNotification("Trade completion could not be confirmed. The server is stopping; reconnect after it restarts.");
+            World::StopNow(ERROR_EXIT_CODE);
+            return;
+        }
 
         trader->GetSession()->SendTradeStatus(TRADE_STATUS_TRADE_COMPLETE);
         SendTradeStatus(TRADE_STATUS_TRADE_COMPLETE);

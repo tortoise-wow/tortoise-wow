@@ -31,6 +31,8 @@
 #include <thread>
 #include <optional>
 #include <atomic>
+#include <future>
+#include <mutex>
 
 class SqlTransaction;
 class SqlResultQueue;
@@ -131,25 +133,13 @@ class Database
         virtual void HaltDelayThread();
 
         /// Synchronous DB queries
-        inline QueryResult* Query(const char *sql)
-        {
-            SqlConnection::Lock guard(getQueryConnection());
-            return guard->Query(sql);
-        }
+        QueryResult* Query(const char *sql);
 
 #ifdef ENABLE_ELUNA
         // Eluna holds query results as std::shared_ptr<QueryNamedResult>.
-        inline std::shared_ptr<QueryNamedResult> QueryNamed(const char *sql)
-        {
-            SqlConnection::Lock guard(getQueryConnection());
-            return std::shared_ptr<QueryNamedResult>(guard->QueryNamed(sql));
-        }
+        std::shared_ptr<QueryNamedResult> QueryNamed(const char *sql);
 #else
-        inline QueryNamedResult* QueryNamed(const char *sql)
-        {
-            SqlConnection::Lock guard(getQueryConnection());
-            return guard->QueryNamed(sql);
-        }
+        QueryNamedResult* QueryNamed(const char *sql);
 #endif
 
         QueryResult* PQuery(const char *format,...) ATTR_PRINTF(2,3);
@@ -159,14 +149,7 @@ class Database
         QueryNamedResult* PQueryNamed(const char *format,...) ATTR_PRINTF(2,3);
 #endif
 
-        inline bool DirectExecute(const char* sql)
-        {
-            if(!m_pAsyncConn)
-                return false;
-
-            SqlConnection::Lock guard(m_pAsyncConn);
-            return guard->Execute(sql);
-        }
+        bool DirectExecute(const char* sql);
 
         bool DirectPExecute(const char *format,...) ATTR_PRINTF(2,3);
 
@@ -258,6 +241,33 @@ class Database
         // Enable only after verifying that every runtime save table is transactional.
         void EnableKnownAbortRetries(uint32 retries) { m_knownAbortRetries = retries > 3 ? 3 : retries; }
 
+        // Configure before Initialize. All runtime work then shares one FIFO,
+        // including synchronous calls and query holders, on one executor.
+        bool ConfigureOrderedPersistence();
+        bool IsOrderedPersistence() const { return m_orderedPersistence; }
+        // The caller must first verify all runtime save tables are InnoDB.
+        bool EnableOwnedTransactions();
+        bool HasOrderedPersistenceFault() const { return m_orderedFault.load(); }
+        void MarkOrderedPersistenceFault();
+
+        class OwnedTransaction
+        {
+            friend class Database;
+            Database& m_database;
+            SqlTransaction* m_transaction;
+            std::unique_lock<std::mutex> m_admission;
+            OwnedTransaction(Database& db, SqlTransaction* transaction, std::unique_lock<std::mutex> admission);
+        public:
+            ~OwnedTransaction();
+            OwnedTransaction(const OwnedTransaction&) = delete;
+            OwnedTransaction& operator=(const OwnedTransaction&) = delete;
+            // Actor-thread only. Returns actual COMMIT acknowledgement.
+            bool Commit();
+        };
+        std::unique_ptr<OwnedTransaction> BeginOwnedTransaction(std::vector<uint32> participants);
+        bool IsOwnedTransactionParticipant(uint32 guid);
+        bool InOwnedTransaction();
+
         //PREPARED STATEMENT API
 
         //allocate index for prepared statement with SQL request 'fmt'
@@ -287,15 +297,18 @@ class Database
         //you should call it explicitly after your server successfully started up
         //NO ASYNC TRANSACTIONS DURING SERVER STARTUP - ONLY DURING RUNTIME!!!
         void AllowAsyncTransactions() { m_bAllowAsyncTransactions = true; }
-        inline void AddToDelayQueue(SqlOperation* op) { m_delayQueue->add(op); }
+        // Takes ownership on both acceptance and rejection.
+        bool AddToDelayQueue(SqlOperation* op);
         inline bool NextDelayedOperation(SqlOperation*& op) { return m_delayQueue->next(op); }
 
-        inline void AddToSerialDelayQueue(int workerId, SqlOperation* op) { m_threadsBodies[workerId]->addSerialOperation(op); }
+        bool AddToSerialDelayQueue(int workerId, SqlOperation* op);
         bool NextSerialDelayedOperation(int workerId, SqlOperation*& op);
 
         bool HasAsyncQuery();
 
-        void AddToSerialDelayQueue(SqlOperation *op);
+        bool AddToSerialDelayQueue(SqlOperation *op);
+        // Worker execution/cancellation boundary; always releases operation ownership.
+        void ExecuteDelayedOperation(SqlOperation* op, SqlConnection* connection);
 
         // Frees data, cancels scheduled queries, closes connection
         void StopServer();
@@ -385,5 +398,16 @@ class Database
         std::string m_logsDir;
         uint32 m_pingIntervallms;
         uint32 m_knownAbortRetries;
+        bool m_orderedPersistence = false;
+        bool m_ownedTransactionsEnabled = false;
+        std::atomic<bool> m_orderedFault{false};
+        std::atomic<bool> m_orderedStopping{false};
+        std::mutex m_orderedAdmission;
+        std::shared_ptr<std::atomic<uint32>> m_openNormalBuilders;
+        bool RejectOwnedBuilder();
+        void MarkAppendFailure();
+        bool IsOrderedExecutorThread() const;
+        bool RunOrderedSynchronously(std::unique_ptr<SqlOperation> operation);
+        QueryNamedResult* QueryNamedInternal(const char* sql);
 };
 #endif

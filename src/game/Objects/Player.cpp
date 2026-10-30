@@ -18312,6 +18312,9 @@ void Player::_LoadGuild(QueryResult* result)
 
 bool Player::SaveToDB(bool online, bool force, bool direct)
 {
+    if (CharacterDatabase.HasOrderedPersistenceFault())
+        return false;
+
     // we should assure this: ASSERT((m_nextSave != sWorld.getConfig(CONFIG_UINT32_INTERVAL_SAVE)));
     // delay auto save at any saves (manual, in code, or autosave)
     m_nextSave = sWorld.getConfig(CONFIG_UINT32_INTERVAL_SAVE);
@@ -18563,6 +18566,15 @@ bool Player::SaveToDB(bool online, bool force, bool direct)
 // relogging before the query completes
 void Player::SaveInventoryAndGoldToDB()
 {
+    if (CharacterDatabase.HasOrderedPersistenceFault())
+        return;
+    if (CharacterDatabase.InOwnedTransaction())
+    {
+        // Owned callers must use the non-consuming append API.
+        CharacterDatabase.MarkOrderedPersistenceFault();
+        return;
+    }
+
     bool haveTransaction = CharacterDatabase.InTransaction();
     if (!haveTransaction && !CharacterDatabase.BeginTransaction(GetGUIDLow()))
     {
@@ -18578,6 +18590,8 @@ void Player::SaveInventoryAndGoldToDB()
     if (!haveTransaction)
         CharacterDatabase.CommitTransaction();
 }
+
+#include "PlayerInventorySave.inc"
 
 // Must be serialized in a transaction with the player GUID, or it can lead to duping by
 // relogging before the query completes
@@ -18690,121 +18704,6 @@ bool Player::SaveAura(SpellAuraHolder* holder, AuraSaveStruct& saveStruct)
     }
 
     return false;
-}
-
-void Player::_SaveInventory()
-{
-    // Turtle: save buyback items in db too, so they persist through logout
-    std::set<Item*> buyBackItems;
-    for (uint8 i = BUYBACK_SLOT_START; i < BUYBACK_SLOT_END; ++i)
-    {
-        Item* item = m_items[i];
-        if (!item)
-            continue;
-
-        if (std::find(m_itemUpdateQueue.begin(), m_itemUpdateQueue.end(), item) == m_itemUpdateQueue.end())
-        {
-            buyBackItems.insert(item);
-            item->SetSlot(i);
-            item->SetContainer(nullptr);
-
-            if (item->GetState() == ITEM_UNCHANGED)
-                m_items[i]->FSetState(ITEM_CHANGED);
-
-            m_itemUpdateQueue.push_back(item);
-        }
-    }
-
-    // update enchantment durations
-    for (auto& itr : m_enchantDuration)
-        itr.item->SetEnchantmentDuration(itr.slot, itr.leftduration);
-
-    // if no changes
-    if (m_itemUpdateQueue.empty()) return;
-
-    for (auto& item : m_itemUpdateQueue)
-    {
-        if (!item)
-            continue;
-
-        if (item->GetState() != ITEM_REMOVED && item->GetState() != ITEM_STASHED &&
-            buyBackItems.find(item) == buyBackItems.end())
-        {
-            // Plusieurs tests anti dupli ...
-            Item *test = GetItemByPos(item->GetBagSlot(), item->GetSlot());
-
-            if (test == nullptr)
-            {
-                uint32 bagTestGUID = 0;
-                if (Item* test2 = GetItemByPos(INVENTORY_SLOT_BAG_0, item->GetBagSlot()))
-                    bagTestGUID = test2->GetGUIDLow();
-                // according to the test that was just performed nothing should be in this slot, delete
-                static SqlStatementID deleteInventoryAntiDupli;
-                SqlStatement stmt = CharacterDatabase.CreateStatement(deleteInventoryAntiDupli, "DELETE FROM character_inventory WHERE bag=? AND slot=? AND guid=?");
-                stmt.addUInt32(bagTestGUID);
-                stmt.addUInt32(item->GetSlot());
-                stmt.addUInt32(GetGUIDLow());
-                stmt.Execute();
-                // also THIS item should be somewhere else, cheat attempt
-                GetSession()->ProcessAnticheatAction("PassiveAnticheat", "_SaveInventory: item not found", CHEAT_ACTION_INFO_LOG);
-                item->FSetState(ITEM_REMOVED); // we are IN updateQueue right now, can't use SetState which modifies the queue
-                // don't skip, let the switch delete it
-            }
-            else if (test != item)
-            {
-                if (item->GetState() != ITEM_NEW) // only for existing items, no dupes
-                    item->SaveToDB();
-                // ...but do not save position in inventory
-                continue;
-            }
-        }
-        if (item->GetOwnerGuid() != GetObjectGuid())
-            GetSession()->ProcessAnticheatAction("PassiveAnticheat", "_SaveInventory: attempting to save not owned item", CHEAT_ACTION_INFO_LOG);
-
-        static SqlStatementID insertInventory ;
-        static SqlStatementID updateInventory ;
-        static SqlStatementID deleteInventory ;
-
-        Bag *container = item->GetContainer();
-        uint32 bag_guid = container ? container->GetGUIDLow() : 0;
-
-        switch (item->GetState())
-        {
-            case ITEM_NEW:
-            {
-                SqlStatement stmt = CharacterDatabase.CreateStatement(insertInventory, "INSERT INTO character_inventory (guid,bag,slot,item,item_template) VALUES (?, ?, ?, ?, ?)");
-                stmt.addUInt32(GetGUIDLow());
-                stmt.addUInt32(bag_guid);
-                stmt.addUInt8(item->GetSlot());
-                stmt.addUInt32(item->GetGUIDLow());
-                stmt.addUInt32(item->GetEntry());
-                stmt.Execute();
-            }
-            break;
-            case ITEM_CHANGED:
-            {
-                SqlStatement stmt = CharacterDatabase.CreateStatement(updateInventory, "UPDATE character_inventory SET guid = ?, bag = ?, slot = ?, item_template = ? WHERE item = ?");
-                stmt.addUInt32(GetGUIDLow());
-                stmt.addUInt32(bag_guid);
-                stmt.addUInt8(item->GetSlot());
-                stmt.addUInt32(item->GetEntry());
-                stmt.addUInt32(item->GetGUIDLow());
-                stmt.Execute();
-            }
-            break;
-            case ITEM_REMOVED:
-            {
-                SqlStatement stmt = CharacterDatabase.CreateStatement(deleteInventory, "DELETE FROM character_inventory WHERE item = ?");
-                stmt.PExecute(item->GetGUIDLow());
-            }
-            break;
-            case ITEM_UNCHANGED:
-                break;
-        }
-
-        item->SaveToDB();                                   // item have unchanged inventory record and can be save standalone
-    }
-    m_itemUpdateQueue.clear();
 }
 
 void Player::_SaveQuestStatus()
