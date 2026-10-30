@@ -98,6 +98,19 @@ int main(int, char**) {
     std::cout << std::unitbuf;
     {
         auto state=std::make_shared<State>(); FixtureDatabase db(state);
+        Check(!db.BeginOwnedTransaction({}),"empty participant set refused");
+        Check(!db.BeginOwnedTransaction({0}),"zero singleton participant refused");
+        Check(!db.BeginOwnedTransaction({1,0}),"zero in participant group refused");
+        Check(!db.BeginOwnedTransaction({1,1}),"duplicate participants refused");
+        Check(!db.HasOrderedPersistenceFault(),"invalid admission does not fault before mutation");
+        auto single=db.BeginOwnedTransaction({1}); Check(bool(single),"positive singleton owned actor accepted");
+        Check(db.IsOwnedTransactionParticipant(1)&&!db.IsOwnedTransactionParticipant(2),"singleton membership exact");
+        Check(db.Execute("UPDATE single actor"),"single actor appends"); Check(single->Commit(),"single actor actual commit ACK"); Barrier(db);
+        Check(state->Events()==std::vector<std::string>({"BEGIN","UPDATE single actor","COMMIT","SELECT barrier"}),"singleton uses the same atomic FIFO boundary");
+        std::cout<<"PASS singleton actor admission with zero/duplicate refusal\n";
+    }
+    {
+        auto state=std::make_shared<State>(); FixtureDatabase db(state);
         Check(!db.ConfigureOrderedPersistence(),"cannot configure over initialized worker pool");
         Check(db.BeginTransaction(11),"prior GUID transaction begins"); Check(db.Execute("UPDATE prior GUID11"),"prior SQL appends"); Check(db.CommitTransaction(),"prior GUID transaction admitted");
         Check(db.Execute("UPDATE global"),"global SQL admitted");

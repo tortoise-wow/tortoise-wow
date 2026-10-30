@@ -550,22 +550,4 @@ void ReputationMgr::LoadFromDB(QueryResult *result)
     }
 }
 
-void ReputationMgr::SaveToDB()
-{
-    static SqlStatementID delRep;
-    static SqlStatementID insRep;
-
-    SqlStatement stmtDel = CharacterDatabase.CreateStatement(delRep, "DELETE FROM character_reputation WHERE guid = ? AND faction=?");
-    SqlStatement stmtIns = CharacterDatabase.CreateStatement(insRep, "INSERT INTO character_reputation (guid,faction,standing,flags) VALUES (?, ?, ?, ?)");
-
-    for (auto& m_faction : m_factions)
-    {
-        FactionState& faction = m_faction.second;
-        if (faction.needSave)
-        {
-            stmtDel.PExecute(m_player->GetGUIDLow(), faction.ID);
-            stmtIns.PExecute(m_player->GetGUIDLow(), faction.ID, faction.Standing, faction.Flags);
-            faction.needSave = false;
-        }
-    }
-}
+#include "ReputationSave.inc"

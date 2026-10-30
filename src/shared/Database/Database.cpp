@@ -234,7 +234,7 @@ std::unique_ptr<Database::OwnedTransaction> Database::BeginOwnedTransaction(std:
         !m_orderedPersistence || !m_ownedTransactionsEnabled || !m_bAllowAsyncTransactions)
         return nullptr;
     std::sort(participants.begin(), participants.end());
-    if (participants.size() < 2 || !participants.front() ||
+    if (participants.empty() || !participants.front() ||
         std::adjacent_find(participants.begin(), participants.end()) != participants.end())
         return nullptr;
     std::unique_lock<std::mutex> admission(m_orderedAdmission);

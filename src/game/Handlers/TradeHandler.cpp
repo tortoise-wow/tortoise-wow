@@ -33,6 +33,7 @@
 #include "Language.h"
 #include "Chat.h"
 #include "TradeMoney.h"
+#include "AtomicPlayerSave.h"
 #include "Database/DatabaseEnv.h"
 #ifdef ENABLE_ELUNA
 #include "LuaEngine.h"
@@ -540,8 +541,7 @@ void WorldSession::HandleAcceptTradeOpcode(WorldPacket& recvPacket)
         // Reserve ownership before the first irreversible inventory mutation.
         // Every character save/read uses the same ordered database queue, so
         // neither participant's earlier save or later login can cross this batch.
-        auto transaction = CharacterDatabase.BeginOwnedTransaction(
-            {_player->GetGUIDLow(), trader->GetGUIDLow()});
+        AtomicPlayerSaveScope transaction({_player, trader});
         if (!transaction)
         {
             clearAcceptTradeMode(my_trade, his_trade);
@@ -612,19 +612,15 @@ void WorldSession::HandleAcceptTradeOpcode(WorldPacket& recvPacket)
         // The same map actor owns both players throughout this synchronous scope.
         // SQL serialization retains dirty flags and removed-item ownership until
         // COMMIT is acknowledged; no DB worker callback touches gameplay objects.
-        Player::InventorySaveBatch mySave;
-        Player::InventorySaveBatch hisSave;
-        bool prepared = _player->AppendInventoryAndGoldToDB(mySave) &&
-            trader->AppendInventoryAndGoldToDB(hisSave);
-        bool committed = prepared && transaction->Commit();
-        transaction.reset();
+        // Nested auto-reward quests may have requested a full player snapshot;
+        // the outer owner serializes each participant exactly once at this point.
+        bool committed = transaction.Commit();
 
         // A moved/merged item cannot be reconstructed safely from old pointers.
         // Fence subsequent writes on failure (including unknown COMMIT), retain
         // pending item state and stop; reconnect reads either the complete old
         // trade or the complete committed trade. Never announce COMPLETE on false.
-        bool completed = committed && _player->CompleteInventoryAndGoldSave(mySave) &&
-            trader->CompleteInventoryAndGoldSave(hisSave);
+        bool completed = committed;
 
         clearAcceptTradeMode(my_trade, his_trade);
         delete _player->m_trade;
@@ -636,8 +632,8 @@ void WorldSession::HandleAcceptTradeOpcode(WorldPacket& recvPacket)
         {
             CharacterDatabase.MarkOrderedPersistenceFault();
             sLog.outError("Atomic trade could not be completed safely for players %u and %u "
-                "(prepared=%u, committed=%u). Later character writes are fenced; stopping the realm.",
-                _player->GetGUIDLow(), trader->GetGUIDLow(), uint32(prepared), uint32(committed));
+                "(committed=%u). Later character writes are fenced; stopping the realm.",
+                _player->GetGUIDLow(), trader->GetGUIDLow(), uint32(committed));
             SendTradeStatus(TRADE_STATUS_TRADE_CANCELED);
             trader->GetSession()->SendTradeStatus(TRADE_STATUS_TRADE_CANCELED);
             SendNotification("Trade completion could not be confirmed. The server is stopping; reconnect after it restarts.");

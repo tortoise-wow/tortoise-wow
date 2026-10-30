@@ -1078,8 +1078,16 @@ class ObjectMgr
         void FreeAuctionID(uint32 id);
         uint32 GenerateGuildId() { return m_GuildIds.Generate(); }
         uint32 GenerateGroupId() { return m_GroupIds.Generate(); }
-        uint32 GenerateItemTextID() { return m_ItemTextIds.Generate(); }
-        uint32 GenerateMailID() { return m_MailIds.Generate(); }
+        uint32 GenerateItemTextID()
+        {
+            std::lock_guard<std::mutex> guard(m_itemTextMutex);
+            return m_ItemTextIds.Generate();
+        }
+        uint32 GenerateMailID()
+        {
+            std::lock_guard<std::mutex> guard(m_mailIdMutex);
+            return m_MailIds.Generate();
+        }
         uint32 GeneratePetitionID() { return m_PetitionIds.Generate(); }
         uint32 GeneratePetNumber();
 
@@ -1087,9 +1095,14 @@ class ObjectMgr
         void GeneratePetNumberRange(uint32& first, uint32& last);
 
         uint32 CreateItemText(std::string text);
-        void AddItemText(uint32 itemTextId, std::string text) { m_ItemTextsMap[itemTextId] = text; }
+        void AddItemText(uint32 itemTextId, std::string text)
+        {
+            std::lock_guard<std::mutex> guard(m_itemTextMutex);
+            m_ItemTextsMap[itemTextId] = std::move(text);
+        }
         std::string GetItemText( uint32 id )
         {
+            std::lock_guard<std::mutex> guard(m_itemTextMutex);
             ItemTextMap::const_iterator itr = m_ItemTextsMap.find( id );
             if ( itr != m_ItemTextsMap.end() )
                 return itr->second;
@@ -1670,6 +1683,8 @@ class ObjectMgr
         GroupMap            m_GroupMap;
 
         ItemTextMap         m_ItemTextsMap;
+        std::mutex          m_itemTextMutex;
+        std::mutex          m_mailIdMutex;
 
         AreaTriggerMap    m_AreaTriggersMap;
         QuestAreaTriggerMap m_QuestAreaTriggerMap;

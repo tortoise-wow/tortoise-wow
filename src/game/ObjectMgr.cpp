@@ -4590,7 +4590,7 @@ void ObjectMgr::LoadItemTexts()
     do
     {
         Field* fields = result->Fetch();
-        m_ItemTextsMap[ fields[0].GetUInt32() ] = fields[1].GetCppString();
+        AddItemText(fields[0].GetUInt32(), fields[1].GetCppString());
     }
     while (result->NextRow());
 }
@@ -5744,7 +5744,7 @@ uint32 ObjectMgr::CreateItemText(std::string text)
 {
     uint32 newItemTextId = GenerateItemTextID();
     //insert new itempage to container
-    m_ItemTextsMap[ newItemTextId ] = text;
+    AddItemText(newItemTextId, text);
     //save new itempage
     CharacterDatabase.escape_string(text);
     //any Delete query needed, itemTextId is maximum of all ids
