@@ -25,6 +25,7 @@
 #include <ctime>
 
 #include "Player.h"
+#include "AtomicPlayerSave.h"
 #include "Language.h"
 #include "Database/DatabaseEnv.h"
 #include "Log.h"
@@ -3618,6 +3619,8 @@ void Player::RemoveFromGroup(Group* group, ObjectGuid guid)
     }
 }
 
+#include "PlayerRewardPackets.inc"
+
 void Player::SendLogXPGain(uint32 GivenXP, Unit* victim, uint32 RestXP) const
 {
     WorldPacket data(SMSG_LOG_XPGAIN, 21);
@@ -3629,7 +3632,7 @@ void Player::SendLogXPGain(uint32 GivenXP, Unit* victim, uint32 RestXP) const
         data << uint32(GivenXP);                            // experience without rested bonus
         data << float(1);                                   // 1 - none 0 - 100% group bonus output
     }
-    GetSession()->SendPacket(&data);
+    _SendRewardPacket(std::move(data));
 }
 
 void Player::GiveXP(uint32 xp, Unit* victim)
@@ -3747,8 +3750,9 @@ void Player::CheckInfernoInvite()
             std::string subject = "A Mysterious Missive";
             std::string body = "This quest is the beginning of the Inferno Mode attunement.\n\nCompletion of this chain will result in PERMANENT hardcore gameplay, even upon reaching level 60.";
             Item* ToMailItem = Item::CreateItem(itemEntry, 1, this);
-            ToMailItem->SaveToDB();
-            MailDraft(subject, sObjectMgr.CreateItemText(body))
+            if (!CharacterDatabase.InOwnedTransaction())
+                ToMailItem->SaveToDB();
+            MailDraft(subject, body)
                 .AddItem(ToMailItem)
                 .SendMailTo(this, MailSender(MAIL_CREATURE, uint32(81030), MAIL_STATIONERY_DEFAULT), MAIL_CHECK_MASK_COPIED, 0, 30 * DAY);
 
@@ -3888,10 +3892,20 @@ void Player::GiveLevel(uint32 level)
                 std::string subject = "Lockbox of the Immortal Soul";
                 std::string message = "Greetings, hero! Like you I undertook the same journey you have. I weathered the greatest dangers and foes without ever losing consciousness or falling to the brink of death.\n\nNow I stand immortal, just as you do. I have reached the peak of my power!\n\nTo celebrate your ascension in the ranks of immortality, I have attached a tabard that only we can wear.\n\n Wear it with pride and continue to avoid death! If you continue on this path, we shall meet one day.";
                 Item* ToMailItem = Item::CreateItem(itemEntry, 1, this);
-                ToMailItem->SaveToDB();
-                MailDraft(subject, sObjectMgr.CreateItemText(message))
-                    .AddItem(ToMailItem)
-                    .SendMailTo(this, MailSender(MAIL_CREATURE, uint32(16547), MAIL_STATIONERY_DEFAULT), MAIL_CHECK_MASK_COPIED, 0, 30 * DAY);
+                if (ToMailItem)
+                {
+                    if (!CharacterDatabase.InOwnedTransaction())
+                        ToMailItem->SaveToDB();
+                    MailDraft(subject, message)
+                        .AddItem(ToMailItem)
+                        .SendMailTo(this, MailSender(MAIL_CREATURE, uint32(16547), MAIL_STATIONERY_DEFAULT), MAIL_CHECK_MASK_COPIED, 0, 30 * DAY);
+                }
+                else
+                {
+                    sLog.outError("Cannot create hardcore level reward item %u for player %u.", itemEntry, GetGUIDLow());
+                    if (AtomicPlayerSaveScope::Active())
+                        CharacterDatabase.MarkOrderedPersistenceFault();
+                }
             }
             else
             {
@@ -3977,7 +3991,7 @@ void Player::GiveLevel(uint32 level)
     for (int i = STAT_STRENGTH; i < MAX_STATS; ++i)         // Stats loop (0-4)
         data << uint32(int32(info.stats[i]) - GetCreateStat(Stats(i)));
 
-    GetSession()->SendPacket(&data);
+    _SendRewardPacket(std::move(data));
     
     SetUInt32Value(PLAYER_NEXT_LEVEL_XP, sObjectMgr.GetXPForLevel(level));
 
@@ -4598,11 +4612,24 @@ void Player::LearnSpell(uint32 spell_id, bool dependent, bool talent)
     {
         WorldPacket data(SMSG_LEARNED_SPELL, 4);
         data << uint32(spell_id);
-        GetSession()->SendPacket(&data);
-        ScriptRegistry<PlayerScript>::ForEachEnabledHook(PLAYERHOOK_ON_LEARN_SPELL, [&](PlayerScript* script)
+        _SendRewardPacket(std::move(data));
+        if (AtomicPlayerSaveScope::Active())
         {
-            script->OnLearnSpell(this, spell_id);
-        });
+            ObjectGuid playerGuid = GetObjectGuid();
+            AtomicPlayerSaveScope::DeferAfterCommit([playerGuid, spell_id]()
+            {
+                if (Player* player = sObjectAccessor.FindPlayer(playerGuid))
+                    ScriptRegistry<PlayerScript>::ForEachEnabledHook(PLAYERHOOK_ON_LEARN_SPELL, [&](PlayerScript* script)
+                    {
+                        script->OnLearnSpell(player, spell_id);
+                    });
+            });
+        }
+        else
+            ScriptRegistry<PlayerScript>::ForEachEnabledHook(PLAYERHOOK_ON_LEARN_SPELL, [&](PlayerScript* script)
+            {
+                script->OnLearnSpell(this, spell_id);
+            });
     }
 
     // learn all disabled higher ranks (recursive) - skip for talent spells
@@ -14017,10 +14044,7 @@ void Player::SendNewItem(Item *item, uint32 count, bool received, bool created, 
     data << uint32(count);                                  // count of items
     //data << uint32(GetItemCount(item->GetEntry()));       // [-ZERO] count of items in inventory
 
-    if (broadcast && GetGroup())
-        GetGroup()->BroadcastPacket(&data, true);
-    else
-        GetSession()->SendPacket(&data);
+    _SendRewardPacket(std::move(data), broadcast);
 }
 
 /*********************************************************/
@@ -15082,28 +15106,7 @@ void Player::FullQuestComplete(uint32 questId)
     CompleteQuest(questId);
 }
 
-void Player::CompleteQuest(uint32 quest_id)
-{
-    if (quest_id)
-    {
-        SetQuestStatus(quest_id, QUEST_STATUS_COMPLETE);
-
-        uint16 log_slot = FindQuestSlot(quest_id);
-        if (log_slot < MAX_QUEST_LOG_SIZE)
-            SetQuestSlotState(log_slot, QUEST_STATE_COMPLETE);
-
-        if (Quest const* qInfo = sObjectMgr.GetQuestTemplate(quest_id))
-        {
-            ScriptRegistry<PlayerScript>::ForEachEnabledHook(PLAYERHOOK_ON_PLAYER_COMPLETE_QUEST, [&](PlayerScript* script)
-            {
-                script->OnPlayerCompleteQuest(this, qInfo);
-            });
-
-            if (qInfo->HasQuestFlag(QUEST_FLAGS_AUTO_REWARDED))
-                RewardQuest(qInfo, 0, this, false);
-        }
-    }
-}
+#include "PlayerQuestCompletion.inc"
 
 void Player::IncompleteQuest(uint32 quest_id)
 {
@@ -15159,8 +15162,14 @@ void Player::RemoveQuestAtSlot(uint32 slot)
     }
 }
 
-void Player::RewardQuest(Quest const *pQuest, uint32 reward, WorldObject* questEnder, bool announce)
+#include "PlayerNativeQuestRewards.inc"
+
+bool Player::RewardQuest(Quest const *pQuest, uint32 reward, WorldObject* questEnder, bool announce)
 {
+    AtomicPlayerSaveScope scope({this});
+    if (!scope)
+        return false;
+
     uint32 quest_id = pQuest->GetQuestId();
 
     for (int i = 0; i < QUEST_ITEM_OBJECTIVES_COUNT; ++i)
@@ -15270,6 +15279,35 @@ void Player::RewardQuest(Quest const *pQuest, uint32 reward, WorldObject* questE
     if (q_status.uState != QUEST_NEW)
         q_status.uState = QUEST_CHANGED;
 
+    bool worldSpell = false;
+    if (!_ApplyNativeQuestRewards(pQuest, questEnder, worldSpell))
+    {
+        scope.Fail();
+        return false;
+    }
+    if (!scope.RequestFullSave(*this))
+    {
+        scope.Fail();
+        return false;
+    }
+    ObjectGuid playerGuid = GetObjectGuid();
+    ObjectGuid enderGuid = questEnder->GetObjectGuid();
+    AtomicPlayerSaveScope::DeferAfterCommit([playerGuid, quest_id, XP, enderGuid, announce, worldSpell]()
+    {
+        if (Player* player = sObjectAccessor.FindPlayer(playerGuid))
+            player->_FinishQuestReward(quest_id, XP, enderGuid, announce, worldSpell);
+    });
+    return scope.IsOwner() ? scope.Commit() : bool(scope);
+}
+
+void Player::_FinishQuestReward(uint32 quest_id, uint32 XP, ObjectGuid enderGuid, bool announce, bool worldSpell)
+{
+    Quest const* pQuest = sObjectMgr.GetQuestTemplate(quest_id);
+    WorldObject* questEnder = enderGuid == GetObjectGuid() ? this :
+        (FindMap() ? FindMap()->GetWorldObject(enderGuid) : nullptr);
+    if (!pQuest || !questEnder)
+        return;
+
     if (announce)
         SendQuestReward(pQuest, XP, questEnder);
 
@@ -15288,79 +15326,13 @@ void Player::RewardQuest(Quest const *pQuest, uint32 reward, WorldObject* questE
     if (!handled && pQuest->GetQuestCompleteScript() != 0)
         GetMap()->ScriptsStart(sQuestEndScripts, pQuest->GetQuestCompleteScript(), questEnder->GetObjectGuid(), GetObjectGuid());
 
-    // Find spell cast on spell reward if any, then find the appropriate caster and cast it
-    uint32 spellId = pQuest->GetRewSpellCast() ? pQuest->GetRewSpellCast() : pQuest->GetRewSpell();
-
-    if (spellId)
+    if (worldSpell)
     {
-        if (SpellEntry const* spellProto = sSpellMgr.GetSpellEntry(spellId))
-        {
-            Unit* caster = this;
-
-            if (questEnder->GetTypeId() == TYPEID_UNIT)
-            {
-                for (uint8 i = 0; i < MAX_EFFECT_INDEX; ++i)
-                {
-                    if (spellProto->Effect[i] == SPELL_EFFECT_LEARN_SPELL ||
-                        spellProto->Effect[i] == SPELL_EFFECT_CREATE_ITEM ||
-                        spellProto->EffectImplicitTargetA[i] == TARGET_UNIT ||
-                        spellProto->EffectImplicitTargetA[i] == TARGET_UNIT_FRIEND)
-                    {
-                        caster = (Unit*)questEnder;
-                        break;
-                    }
-                }
-            }
-
-            caster->CastSpell(this, spellId, true);
-        }
+        uint32 spellId = pQuest->GetRewSpellCast() ? pQuest->GetRewSpellCast() : pQuest->GetRewSpell();
+        if (SpellEntry const* entry = sSpellMgr.GetSpellEntry(spellId))
+            NativeQuestRewardCaster(this, questEnder, entry)->CastSpell(this, spellId, true);
     }
-
-    uint32 zone = 0;
-    uint32 area = 0;
-
-    // remove auras from spells with quest reward state limitations
-    SpellAreaForQuestMapBounds saEndBounds = sSpellMgr.GetSpellAreaForQuestEndMapBounds(quest_id);
-    if (saEndBounds.first != saEndBounds.second)
-    {
-        GetZoneAndAreaId(zone, area);
-
-        for (SpellAreaForAreaMap::const_iterator itr = saEndBounds.first; itr != saEndBounds.second; ++itr)
-            if (!itr->second->IsFitToRequirements(this, zone, area))
-                RemoveAurasDueToSpell(itr->second->spellId);
-    }
-
-    // Some spells applied at quest reward
-    SpellAreaForQuestMapBounds saBounds = sSpellMgr.GetSpellAreaForQuestMapBounds(quest_id, false);
-    if (saBounds.first != saBounds.second)
-    {
-        if (!zone || !area)
-            GetZoneAndAreaId(zone, area);
-
-        for (SpellAreaForAreaMap::const_iterator itr = saBounds.first; itr != saBounds.second; ++itr)
-            if (itr->second->autocast && itr->second->IsFitToRequirements(this, zone, area))
-                if (!HasAura(itr->second->spellId, EFFECT_INDEX_0))
-                    CastSpell(this, itr->second->spellId, true);
-    }
-
-    // Titles players get when they complete quests
-
-    // Thunderfury Quest
-    if (quest_id == 7787) // Rise, Thunderfury!
-        AwardTitle(TITLE_STORMWIELDER);   // Stormwielder
-
-    // Atiesh Quests
-    if (quest_id == 9270 /*Mage*/ || quest_id == 9269 /*Druid*/ || quest_id == 9271 /*Warlock*/ || quest_id == 9257 /*Priest*/)
-        AwardTitle(TITLE_GUARDIAN_OF_TIRISFAL); // Guardian of Tirisfal
-
-    if (HasEarnedTitle(TITLE_LOREKEEPER))
-        AwardTitle(TITLE_LOREKEEPER);
-
-    if (HasEarnedTitle(TITLE_SEEKER_OF_KNOWLEDGE))
-    {
-        AwardTitle(TITLE_SEEKER_OF_KNOWLEDGE);
-        sWorld.SendWorldText(50305, GetName());
-    }
+    DispatchWorldQuestRewardAuras(this, quest_id);
 }
 
 void Player::FailQuest(uint32 questId)
@@ -18310,8 +18282,13 @@ void Player::_LoadGuild(QueryResult* result)
 /***                   SAVE SYSTEM                     ***/
 /*********************************************************/
 
+#include "PlayerCharacterSave.inc"
+
 bool Player::SaveToDB(bool online, bool force, bool direct)
 {
+    if (CharacterDatabase.HasOrderedPersistenceFault())
+        return false;
+
     // we should assure this: ASSERT((m_nextSave != sWorld.getConfig(CONFIG_UINT32_INTERVAL_SAVE)));
     // delay auto save at any saves (manual, in code, or autosave)
     m_nextSave = sWorld.getConfig(CONFIG_UINT32_INTERVAL_SAVE);
@@ -18331,171 +18308,10 @@ bool Player::SaveToDB(bool online, bool force, bool direct)
 
     m_honorMgr.Update();
 
-    static SqlStatementID insChar;
-
-    SqlStatement uberInsert = CharacterDatabase.CreateStatement(insChar, "REPLACE INTO characters (guid,account,name,race,class,gender,level,xp,money,playerBytes,playerBytes2,playerFlags,"
-                              "map, position_x, position_y, position_z, orientation, "
-                              "taximask, online, cinematic, "
-                              "totaltime, leveltime, rest_bonus, logout_time, is_logout_resting, resettalents_multiplier, resettalents_time, "
-                              "trans_x, trans_y, trans_z, trans_o, transguid, extra_flags, stable_slots, at_login, zone, "
-                              "death_expire_time, taxi_path, "
-                              "honorRankPoints, honorHighestRank, honorStanding, honorLastWeekHK, honorLastWeekCP, honorStoredHK, honorStoredDK, "
-                              "watchedFaction, drunk, health, power1, power2, power3, "
-                              "power4, power5, exploredZones, equipmentCache, ammoId, actionBars, "
-                              "area, world_phase_mask, customFlags, city_protector, ignore_titles, mortality_status, total_deaths, xp_gain, extraBonusTalentCount) "
-                              "VALUES ( ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,"
-                              "?, ?, ?, ?, ?, "
-                              "?, ?, ?, "
-                              "?, ?, ?, ?, ?, ?, ?, "
-                              "?, ?, ?, ?, ?, ?, ?, ?, ?, "
-                              "?, ?, "
-                              "?, ?, ?, ?, ?, ?, ?, "
-                              "?, ?, ?, ?, ?, ?, "
-                              "?, ?, ?, ?, ?, ?, "
-                              "?, ?, ?, ?, ?, ?, ?, ?, ?) ");
-
-    uberInsert.addUInt32(GetGUIDLow());
-    uberInsert.addUInt32(GetSession()->GetAccountId());
-    uberInsert.addString(m_name);
-    uberInsert.addUInt8(GetRace());
-    uberInsert.addUInt8(GetClass());
-    uberInsert.addUInt8(GetGender());
-    uberInsert.addUInt32(GetLevel());
-    uberInsert.addUInt32(GetUInt32Value(PLAYER_XP));
-    uberInsert.addUInt32(GetMoney());
-    uberInsert.addUInt32(GetUInt32Value(PLAYER_BYTES));
-    uberInsert.addUInt32(GetUInt32Value(PLAYER_BYTES_2));
-
-    // Nostalrius: Fix toggled PvP flag after relog.
-    uint32 playerFlags = GetUInt32Value(PLAYER_FLAGS) & ~(PLAYER_FLAGS_PVP_DESIRED);
-    if (IsPvP())
-        playerFlags |= PLAYER_FLAGS_PVP_DESIRED;
-    uberInsert.addUInt32(playerFlags);
-
-    if (!IsBeingTeleported())
+    if (!_AppendCharacterRowToDB(online))
     {
-        uberInsert.addUInt32(GetMapId());
-        uberInsert.addFloat(finiteAlways(GetPositionX()));
-        uberInsert.addFloat(finiteAlways(GetPositionY()));
-        uberInsert.addFloat(finiteAlways(GetPositionZ()));
-        uberInsert.addFloat(MapManager::NormalizeOrientation(finiteAlways(GetOrientation())));
-    }
-    else
-    {
-        uberInsert.addUInt32(GetTeleportDest().mapId);
-        uberInsert.addFloat(finiteAlways(GetTeleportDest().x));
-        uberInsert.addFloat(finiteAlways(GetTeleportDest().y));
-        uberInsert.addFloat(finiteAlways(GetTeleportDest().z));
-        uberInsert.addFloat(MapManager::NormalizeOrientation(finiteAlways(GetTeleportDest().o)));
-    }
-
-    std::ostringstream ss;
-    ss << m_taxi;                                   // string with TaxiMaskSize numbers
-    uberInsert.addString(ss);
-
-    if (!IsInWorld())
-        online = false;
-    uberInsert.addUInt32(online);
-
-    uberInsert.addUInt32(m_cinematic);
-
-    uberInsert.addUInt32(m_Played_time[PLAYED_TIME_TOTAL]);
-    uberInsert.addUInt32(m_Played_time[PLAYED_TIME_LEVEL]);
-
-    uberInsert.addFloat(finiteAlways(m_rest_bonus));
-    uberInsert.addUInt64(uint64(time(nullptr)));
-    uberInsert.addUInt32(HasFlag(PLAYER_FLAGS, PLAYER_FLAGS_RESTING) ? 1 : 0);
-    //save, far from tavern/city
-    //save, but in tavern/city
-    uberInsert.addUInt32(m_resetTalentsMultiplier);
-    uberInsert.addUInt64(uint64(m_resetTalentsTime));
-
-    uberInsert.addFloat(finiteAlways(m_movementInfo.GetTransportPos().x));
-    uberInsert.addFloat(finiteAlways(m_movementInfo.GetTransportPos().y));
-    uberInsert.addFloat(finiteAlways(m_movementInfo.GetTransportPos().z));
-    uberInsert.addFloat(MapManager::NormalizeOrientation(finiteAlways(m_movementInfo.GetTransportPos().o)));
-    if (m_transport)
-        uberInsert.addUInt32(m_transport->GetGUIDLow());
-    else
-        uberInsert.addUInt32(0);
-
-    uberInsert.addUInt32(m_ExtraFlags);
-
-    uberInsert.addUInt32(uint32(m_stableSlots));                    // to prevent save uint8 as char
-
-    uberInsert.addUInt32(uint32(m_atLoginFlags));
-
-    uberInsert.addUInt32(GetCachedZoneId());
-
-    uberInsert.addUInt64(uint64(m_deathExpireTime));
-
-    ss << m_taxi.SaveTaxiDestinationsToString();       //string
-    uberInsert.addString(ss);
-
-    // Honor stored data
-    uberInsert.addFloat(finiteAlways(m_honorMgr.GetRankPoints()));
-    uberInsert.addUInt32(uint32(m_honorMgr.GetHighestRank().rank));
-    uberInsert.addUInt32(m_honorMgr.GetStanding());
-    uberInsert.addUInt32(m_honorMgr.GetLastWeekHK());
-    uberInsert.addFloat(finiteAlways(m_honorMgr.GetLastWeekCP()));
-    uberInsert.addUInt32(m_honorMgr.GetStoredHK());
-    uberInsert.addUInt32(m_honorMgr.GetStoredDK());
-
-    // FIXME: at this moment send to DB as unsigned, including unit32(-1)
-    uberInsert.addUInt32(GetUInt32Value(PLAYER_FIELD_WATCHED_FACTION_INDEX));
-
-    uberInsert.addUInt16(uint16(GetUInt32Value(PLAYER_BYTES_3) & 0xFFFE));
-
-    uberInsert.addUInt32(GetHealth());
-
-    for (uint32 i = 0; i < MAX_POWERS; ++i)
-        uberInsert.addUInt32(GetPower(Powers(i)));
-
-    for (uint32 i = 0; i < PLAYER_EXPLORED_ZONES_SIZE; ++i)         //string
-        ss << GetUInt32Value(PLAYER_EXPLORED_ZONES_1 + i) << " ";
-    uberInsert.addString(ss);
-
-    for (uint32 i = 0; i < EQUIPMENT_SLOT_END; ++i)         //string: item id, ench (perm/temp)
-    {
-        ss << GetUInt32Value(PLAYER_VISIBLE_ITEM_1_0 + i * MAX_VISIBLE_ITEM_OFFSET) << " ";
-
-        uint32 ench1 = GetUInt32Value(PLAYER_VISIBLE_ITEM_1_0 + i * MAX_VISIBLE_ITEM_OFFSET + 1 + PERM_ENCHANTMENT_SLOT);
-        uint32 ench2 = GetUInt32Value(PLAYER_VISIBLE_ITEM_1_0 + i * MAX_VISIBLE_ITEM_OFFSET + 1 + TEMP_ENCHANTMENT_SLOT);
-        ss << uint32(MAKE_PAIR32(ench1, ench2)) << " ";
-    }
-
-    // 1 in vanilla/tbc - 4 in wotlk
-    for (uint32 i = INVENTORY_SLOT_BAG_START; i < INVENTORY_SLOT_BAG_START + 1; ++i) // string: item id, ench (perm/temp)
-    {
-        ss << (m_items[i] ? m_items[i]->GetEntry() : 0) << " ";
-        ss << uint32(MAKE_PAIR32(0, 0)) << " ";
-    }
-
-    uberInsert.addString(ss);
-
-    uberInsert.addUInt32(GetUInt32Value(PLAYER_AMMO_ID));
-
-    uberInsert.addUInt32(uint32(GetByteValue(PLAYER_FIELD_BYTES, 2)));
-    // Nostalrius
-    uberInsert.addUInt32(GetAreaId());
-    uberInsert.addUInt32(GetWorldMask());
-    uberInsert.addUInt32(customFlags);
-    uberInsert.addUInt8(IsCityProtector() ? 1 : 0);
-    uberInsert.addUInt8(IsIgnoringTitles() ? 1 : 0);
-    uberInsert.addUInt8(m_hardcoreStatus);
-    uberInsert.addUInt32(GetTotalDeathCount());
-    uberInsert.addUInt8(HasXPGainEnabled());
-    uberInsert.addUInt32(m_extraBonusTalentCount);
-    
-    if (direct)
-    {
-        if (!uberInsert.DirectExecute())
-            return false;
-    }
-    else
-    {
-        if (!uberInsert.Execute())
-            return false;
+        CharacterDatabase.RollbackTransaction();
+        return false;
     }
 
     _SaveBGData();
@@ -18566,9 +18382,21 @@ bool Player::SaveToDB(bool online, bool force, bool direct)
 // relogging before the query completes
 void Player::SaveInventoryAndGoldToDB()
 {
+    if (CharacterDatabase.HasOrderedPersistenceFault())
+        return;
+    if (CharacterDatabase.InOwnedTransaction())
+    {
+        // Owned callers must use the non-consuming append API.
+        CharacterDatabase.MarkOrderedPersistenceFault();
+        return;
+    }
+
     bool haveTransaction = CharacterDatabase.InTransaction();
-    if (!haveTransaction)
-        CharacterDatabase.BeginTransaction(GetGUIDLow());
+    if (!haveTransaction && !CharacterDatabase.BeginTransaction(GetGUIDLow()))
+    {
+        sLog.outError("[PLAYER SAVE] Cannot begin inventory save for %s.", GetGuidStr().c_str());
+        return;
+    }
     else if (CharacterDatabase.GetTransactionSerialId() != GetGUIDLow())
         sLog.outError("[PLAYER SAVE] Player %s items are being saved in a transaction that is not serialized with its own GUID... potential dupe avenue", GetGuidStr().c_str());
 
@@ -18578,6 +18406,8 @@ void Player::SaveInventoryAndGoldToDB()
     if (!haveTransaction)
         CharacterDatabase.CommitTransaction();
 }
+
+#include "PlayerInventorySave.inc"
 
 // Must be serialized in a transaction with the player GUID, or it can lead to duping by
 // relogging before the query completes
@@ -18589,18 +18419,19 @@ void Player::SaveGoldToDB()
     stmt.PExecute(GetMoney(), GetGUIDLow());
 }
 
-void Player::_SaveAuras()
+bool Player::_SaveAuras()
 {
     static SqlStatementID deleteAuras ;
     static SqlStatementID insertAuras ;
 
     SqlStatement stmt = CharacterDatabase.CreateStatement(deleteAuras, "DELETE FROM character_aura WHERE guid = ?");
-    stmt.PExecute(GetGUIDLow());
+    if (!stmt.PExecute(GetGUIDLow()))
+        return false;
 
     SpellAuraHolderMap const& auraHolders = GetSpellAuraHolderMap();
 
     if (auraHolders.empty())
-        return;
+        return true;
 
     stmt = CharacterDatabase.CreateStatement(insertAuras, "INSERT INTO character_aura (guid, caster_guid, item_guid, spell, stackcount, remaincharges, "
             "basepoints0, basepoints1, basepoints2, periodictime0, periodictime1, periodictime2, maxduration, remaintime, effIndexMask) "
@@ -18630,8 +18461,10 @@ void Player::_SaveAuras()
         stmt.addInt32(s.maxduration);
         stmt.addInt32(s.remaintime);
         stmt.addUInt32(s.effIndexMask);
-        stmt.Execute();
+        if (!stmt.Execute())
+            return false;
     }
+    return true;
 }
 
 bool Player::SaveAura(SpellAuraHolder* holder, AuraSaveStruct& saveStruct)
@@ -18692,279 +18525,7 @@ bool Player::SaveAura(SpellAuraHolder* holder, AuraSaveStruct& saveStruct)
     return false;
 }
 
-void Player::_SaveInventory()
-{
-    // Turtle: save buyback items in db too, so they persist through logout
-    std::set<Item*> buyBackItems;
-    for (uint8 i = BUYBACK_SLOT_START; i < BUYBACK_SLOT_END; ++i)
-    {
-        Item* item = m_items[i];
-        if (!item)
-            continue;
-
-        if (std::find(m_itemUpdateQueue.begin(), m_itemUpdateQueue.end(), item) == m_itemUpdateQueue.end())
-        {
-            buyBackItems.insert(item);
-            item->SetSlot(i);
-            item->SetContainer(nullptr);
-
-            if (item->GetState() == ITEM_UNCHANGED)
-                m_items[i]->FSetState(ITEM_CHANGED);
-
-            m_itemUpdateQueue.push_back(item);
-        }
-    }
-
-    // update enchantment durations
-    for (auto& itr : m_enchantDuration)
-        itr.item->SetEnchantmentDuration(itr.slot, itr.leftduration);
-
-    // if no changes
-    if (m_itemUpdateQueue.empty()) return;
-
-    for (auto& item : m_itemUpdateQueue)
-    {
-        if (!item)
-            continue;
-
-        if (item->GetState() != ITEM_REMOVED && item->GetState() != ITEM_STASHED &&
-            buyBackItems.find(item) == buyBackItems.end())
-        {
-            // Plusieurs tests anti dupli ...
-            Item *test = GetItemByPos(item->GetBagSlot(), item->GetSlot());
-
-            if (test == nullptr)
-            {
-                uint32 bagTestGUID = 0;
-                if (Item* test2 = GetItemByPos(INVENTORY_SLOT_BAG_0, item->GetBagSlot()))
-                    bagTestGUID = test2->GetGUIDLow();
-                // according to the test that was just performed nothing should be in this slot, delete
-                static SqlStatementID deleteInventoryAntiDupli;
-                SqlStatement stmt = CharacterDatabase.CreateStatement(deleteInventoryAntiDupli, "DELETE FROM character_inventory WHERE bag=? AND slot=? AND guid=?");
-                stmt.addUInt32(bagTestGUID);
-                stmt.addUInt32(item->GetSlot());
-                stmt.addUInt32(GetGUIDLow());
-                stmt.Execute();
-                // also THIS item should be somewhere else, cheat attempt
-                GetSession()->ProcessAnticheatAction("PassiveAnticheat", "_SaveInventory: item not found", CHEAT_ACTION_INFO_LOG);
-                item->FSetState(ITEM_REMOVED); // we are IN updateQueue right now, can't use SetState which modifies the queue
-                // don't skip, let the switch delete it
-            }
-            else if (test != item)
-            {
-                if (item->GetState() != ITEM_NEW) // only for existing items, no dupes
-                    item->SaveToDB();
-                // ...but do not save position in inventory
-                continue;
-            }
-        }
-        if (item->GetOwnerGuid() != GetObjectGuid())
-            GetSession()->ProcessAnticheatAction("PassiveAnticheat", "_SaveInventory: attempting to save not owned item", CHEAT_ACTION_INFO_LOG);
-
-        static SqlStatementID insertInventory ;
-        static SqlStatementID updateInventory ;
-        static SqlStatementID deleteInventory ;
-
-        Bag *container = item->GetContainer();
-        uint32 bag_guid = container ? container->GetGUIDLow() : 0;
-
-        switch (item->GetState())
-        {
-            case ITEM_NEW:
-            {
-                SqlStatement stmt = CharacterDatabase.CreateStatement(insertInventory, "INSERT INTO character_inventory (guid,bag,slot,item,item_template) VALUES (?, ?, ?, ?, ?)");
-                stmt.addUInt32(GetGUIDLow());
-                stmt.addUInt32(bag_guid);
-                stmt.addUInt8(item->GetSlot());
-                stmt.addUInt32(item->GetGUIDLow());
-                stmt.addUInt32(item->GetEntry());
-                stmt.Execute();
-            }
-            break;
-            case ITEM_CHANGED:
-            {
-                SqlStatement stmt = CharacterDatabase.CreateStatement(updateInventory, "UPDATE character_inventory SET guid = ?, bag = ?, slot = ?, item_template = ? WHERE item = ?");
-                stmt.addUInt32(GetGUIDLow());
-                stmt.addUInt32(bag_guid);
-                stmt.addUInt8(item->GetSlot());
-                stmt.addUInt32(item->GetEntry());
-                stmt.addUInt32(item->GetGUIDLow());
-                stmt.Execute();
-            }
-            break;
-            case ITEM_REMOVED:
-            {
-                SqlStatement stmt = CharacterDatabase.CreateStatement(deleteInventory, "DELETE FROM character_inventory WHERE item = ?");
-                stmt.PExecute(item->GetGUIDLow());
-            }
-            break;
-            case ITEM_UNCHANGED:
-                break;
-        }
-
-        item->SaveToDB();                                   // item have unchanged inventory record and can be save standalone
-    }
-    m_itemUpdateQueue.clear();
-}
-
-void Player::_SaveQuestStatus()
-{
-    static SqlStatementID insertQuestStatus ;
-
-    static SqlStatementID updateQuestStatus ;
-
-    // we don't need transactions here.
-    for (QuestStatusMap::iterator i = mQuestStatus.begin(); i != mQuestStatus.end();)
-    {
-        // Nostalrius
-        if (i->second.uState == QUEST_DELETED)
-        {
-            static SqlStatementID deleteQuestStatus ;
-            SqlStatement stmt = CharacterDatabase.CreateStatement(deleteQuestStatus, "DELETE FROM character_queststatus WHERE guid = ? AND quest = ?");
-            stmt.PExecute(GetGUIDLow(), i->first);
-            mQuestStatus.erase(i);
-            i = mQuestStatus.begin();
-            continue;
-        }
-        switch (i->second.uState)
-        {
-            case QUEST_NEW :
-            {
-                SqlStatement stmt = CharacterDatabase.CreateStatement(insertQuestStatus, "REPLACE INTO character_queststatus (guid,quest,status,rewarded,explored,timer,mobcount1,mobcount2,mobcount3,mobcount4,itemcount1,itemcount2,itemcount3,itemcount4,reward_choice) "
-                                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
-
-                stmt.addUInt32(GetGUIDLow());
-                stmt.addUInt32(i->first);
-                stmt.addUInt8(i->second.m_status);
-                stmt.addUInt8(i->second.m_rewarded);
-                stmt.addUInt8(i->second.m_explored);
-                stmt.addUInt64(uint64(i->second.m_timer / IN_MILLISECONDS + sWorld.GetGameTime()));
-                for (uint32 k : i->second.m_creatureOrGOcount)
-                    stmt.addUInt32(k);
-                for (uint32 k : i->second.m_itemcount)
-                    stmt.addUInt32(k);
-                stmt.addUInt32(i->second.m_reward_choice);
-                stmt.Execute();
-            }
-            break;
-            case QUEST_CHANGED :
-            {
-                SqlStatement stmt = CharacterDatabase.CreateStatement(updateQuestStatus, "UPDATE character_queststatus SET status = ?,rewarded = ?,reward_choice = ?,explored = ?,timer = ?,"
-                                    "mobcount1 = ?,mobcount2 = ?,mobcount3 = ?,mobcount4 = ?,itemcount1 = ?,itemcount2 = ?,itemcount3 = ?,itemcount4 = ?  WHERE guid = ? AND quest = ?");
-
-                stmt.addUInt8(i->second.m_status);
-                stmt.addUInt8(i->second.m_rewarded);
-                stmt.addUInt32(i->second.m_reward_choice);
-                stmt.addUInt8(i->second.m_explored);
-                stmt.addUInt64(uint64(i->second.m_timer / IN_MILLISECONDS + sWorld.GetGameTime()));
-                for (uint32 k : i->second.m_creatureOrGOcount)
-                    stmt.addUInt32(k);
-                for (uint32 k : i->second.m_itemcount)
-                    stmt.addUInt32(k);
-                stmt.addUInt32(GetGUIDLow());
-                stmt.addUInt32(i->first);
-                stmt.Execute();
-            }
-            break;
-            case QUEST_UNCHANGED:
-                break;
-        };
-        i->second.uState = QUEST_UNCHANGED;
-        ++i;
-    }
-}
-
-void Player::_SaveSkills()
-{
-    static SqlStatementID delSkills;
-    static SqlStatementID insSkills;
-    static SqlStatementID updSkills;
-
-    // we don't need transactions here.
-    for (SkillStatusMap::iterator itr = mSkillStatus.begin(); itr != mSkillStatus.end();)
-    {
-        if (itr->second.uState == SKILL_UNCHANGED)
-        {
-            ++itr;
-            continue;
-        }
-
-        if (itr->second.uState == SKILL_DELETED)
-        {
-            SqlStatement stmt = CharacterDatabase.CreateStatement(delSkills, "DELETE FROM character_skills WHERE guid = ? AND skill = ?");
-            stmt.PExecute(GetGUIDLow(), itr->first);
-            mSkillStatus.erase(itr++);
-            continue;
-        }
-
-        uint32 valueData = GetUInt32Value(PLAYER_SKILL_VALUE_INDEX(itr->second.pos));
-        uint16 value = SKILL_VALUE(valueData);
-        uint16 max = SKILL_MAX(valueData);
-
-        switch (itr->second.uState)
-        {
-            case SKILL_NEW:
-            {
-                SqlStatement stmt = CharacterDatabase.CreateStatement(insSkills, "INSERT INTO character_skills (guid, skill, value, max) VALUES (?, ?, ?, ?)");
-                stmt.PExecute(GetGUIDLow(), itr->first, value, max);
-            }
-            break;
-            case SKILL_CHANGED:
-            {
-                SqlStatement stmt = CharacterDatabase.CreateStatement(updSkills, "UPDATE character_skills SET value = ?, max = ? WHERE guid = ? AND skill = ?");
-                stmt.PExecute(value, max, GetGUIDLow(), itr->first);
-            }
-            break;
-            case SKILL_UNCHANGED:
-            case SKILL_DELETED:
-                MANGOS_ASSERT(false);
-                break;
-        };
-        itr->second.uState = SKILL_UNCHANGED;
-
-        ++itr;
-    }
-
-    // Forgotten weapon skills.
-    static SqlStatementID forSkills;
-
-    for (const auto itr : m_mForgottenSkills)
-    {
-        if (itr.second > 1)
-        {
-            SqlStatement stmt = CharacterDatabase.CreateStatement(forSkills, "REPLACE INTO character_forgotten_skills (guid, skill, value) VALUES (?, ?, ?)");
-            stmt.PExecute(GetGUIDLow(), itr.first, itr.second);
-        }
-    }
-}
-
-void Player::_SaveSpells()
-{
-    static SqlStatementID delSpells ;
-    static SqlStatementID insSpells ;
-
-    SqlStatement stmtDel = CharacterDatabase.CreateStatement(delSpells, "DELETE FROM character_spell WHERE guid = ? and spell = ?");
-    SqlStatement stmtIns = CharacterDatabase.CreateStatement(insSpells, "REPLACE INTO character_spell (guid,spell,active,disabled) VALUES (?, ?, ?, ?)");
-
-    for (PlayerSpellMap::iterator itr = m_spells.begin(); itr != m_spells.end();)
-    {
-        if (itr->second.state == PLAYERSPELL_REMOVED || itr->second.state == PLAYERSPELL_CHANGED)
-            stmtDel.PExecute(GetGUIDLow(), itr->first);
-
-        // add only changed/new not dependent spells
-        if (!itr->second.dependent && (itr->second.state == PLAYERSPELL_NEW || itr->second.state == PLAYERSPELL_CHANGED))
-            stmtIns.PExecute(GetGUIDLow(), itr->first, uint8(itr->second.active ? 1 : 0), uint8(itr->second.disabled ? 1 : 0));
-
-        if (itr->second.state == PLAYERSPELL_REMOVED)
-            m_spells.erase(itr++);
-        else
-        {
-            itr->second.state = PLAYERSPELL_UNCHANGED;
-            ++itr;
-        }
-
-    }
-}
+#include "PlayerCoreSave.inc"
 
 // save player stats -- only for external usage
 // real stats will be recalculated on player login
@@ -24538,21 +24099,35 @@ void Player::MailHardcoreModeRewards(uint32 level)
 
     
     Item* ToMailItem = Item::CreateItem(itr->second, 1, this);
-    ToMailItem->SaveToDB();
+    if (!CharacterDatabase.InOwnedTransaction())
+        ToMailItem->SaveToDB();
 
-    MailDraft(subject.str(), sObjectMgr.CreateItemText(body.str()))
+    MailDraft(subject.str(), body.str())
         .AddItem(ToMailItem)
         .SendMailTo(this, MailSender(MAIL_CREATURE, uint32(16547), MAIL_STATIONERY_DEFAULT), MAIL_CHECK_MASK_COPIED, 0, 30 * DAY);
 
     if (level == 60 /*&& GetSession()->GetSecurity() == SEC_PLAYER*/)
     {
-        LoginDatabase.PExecute("INSERT INTO `shop_coins` (`id`, `coins`) VALUES (%u, 200) ON DUPLICATE KEY UPDATE `coins` = `coins` + 200", GetSession()->GetAccountId()); 
-        ChatHandler(this).SendSysMessage("|cffF58CBASpeedy whispers: Impressive! Your recent achievements on reaching level 60 in Turtle Mode have not gone unnoticed. We've added additional 200 Turtle Tokes to your account balance!|r");
+        uint32 accountId = GetSession()->GetAccountId();
+        ObjectGuid playerGuid = GetObjectGuid();
+        // LoginDatabase is a different atomicity domain. Run this only after a
+        // confirmed character reward; cross-database crash recovery remains separate.
+        AtomicPlayerSaveScope::DeferAfterCommit([accountId, playerGuid]()
+        {
+            LoginDatabase.PExecute("INSERT INTO `shop_coins` (`id`, `coins`) VALUES (%u, 200) ON DUPLICATE KEY UPDATE `coins` = `coins` + 200", accountId);
+            if (Player* player = sObjectAccessor.FindPlayer(playerGuid))
+                if (player->GetSession()->GetAccountId() == accountId)
+                    ChatHandler(player).SendSysMessage("|cffF58CBASpeedy whispers: Impressive! Your recent achievements on reaching level 60 in Turtle Mode have not gone unnoticed. We've added additional 200 Turtle Tokes to your account balance!|r");
+        });
     }
 }
 
 void Player::AnnounceHardcoreModeLevelUp(uint32 level)
 {
+    std::string playerName = GetName();
+    bool wasHC60 = IsHC60();
+    AtomicPlayerSaveScope::DeferAfterCommit([level, playerName, wasHC60]()
+    {
     switch (level)
     {
         case 20:
@@ -24570,20 +24145,22 @@ void Player::AnnounceHardcoreModeLevelUp(uint32 level)
                     return true;
 
                 return false;
-            },GetName(), level);
+            }, playerName.c_str(), level);
             break;
         case 60:
-            !IsHC60() ? sWorld.SendWorldText(50302, GetName(), GetName()) : sWorld.SendGMText(string_format("{} has laughed in the face of death in the Hardcore challenge. {} has begun the Inferno Challenge!", GetName(), GetName()).c_str(), 0);
+            !wasHC60 ? sWorld.SendWorldText(50302, playerName.c_str(), playerName.c_str()) : sWorld.SendGMText(string_format("{} has laughed in the face of death in the Hardcore challenge. {} has begun the Inferno Challenge!", playerName, playerName).c_str(), 0);
             break;
         default:
             return;
     }
+    });
 }
 
 void Player::MailVagrantModeRewards(uint32 level)
 {
     Item* ToMailItem = Item::CreateItem(GetTeam() == ALLIANCE ? 50007 : 51421, 1, this); 
-    ToMailItem->SaveToDB();
+    if (!CharacterDatabase.InOwnedTransaction())
+        ToMailItem->SaveToDB();
 
     MailDraft("A Wanderer's Best Friend!", "Congratulations to you, brave warrior who has reached level 60 in Vagrant Mode! As a gesture of gratitude, we give you a reliable companion, who will carry your belongings on your dangerous adventures. May your travels be successful and your fights triumphant!")
         .AddItem(ToMailItem)
@@ -24593,7 +24170,8 @@ void Player::MailVagrantModeRewards(uint32 level)
 void Player::MailBoaringModeRewards(uint32 level)
 {
     Item* ToMailItem = Item::CreateItem(40998, 1, this);
-    ToMailItem->SaveToDB();
+    if (!CharacterDatabase.InOwnedTransaction())
+        ToMailItem->SaveToDB();
 
     MailDraft("Boar's Honor Pack", "Took you long enough! Here's your boar and sword.")
         .AddItem(ToMailItem)
@@ -24603,7 +24181,8 @@ void Player::MailBoaringModeRewards(uint32 level)
 void Player::MailBrewmasterModeRewards()
 {
     Item* reward = Item::CreateItem(GetTeam() == ALLIANCE ? 81234 : 80455, 1, this);
-    reward->SaveToDB();
+    if (!CharacterDatabase.InOwnedTransaction())
+        reward->SaveToDB();
 
     MailDraft("Master of the Brew", "Congratulations on reaching level 60 while walking the Path of the Brewmaster! Accept this Brewfest mount as a reward for your spirited journey.")
         .AddItem(reward)
@@ -24622,9 +24201,10 @@ void Player::MailCityProtectorMedallion()
     if (!HasItemCount(50056, 1, true))
     {
         Item* ToMailItem = Item::CreateItem(50056, 1, this);
-        ToMailItem->SaveToDB();
+        if (!CharacterDatabase.InOwnedTransaction())
+            ToMailItem->SaveToDB();
 
-        MailDraft(subject, sObjectMgr.CreateItemText(message))
+        MailDraft(subject, message)
             .AddItem(ToMailItem)
             .SendMailTo(this, MailSender(MAIL_CREATURE, uint32(4968), MAIL_STATIONERY_DEFAULT), MAIL_CHECK_MASK_COPIED, 0, 30 * DAY);
     }      
@@ -25673,7 +25253,7 @@ void Player::SendAddonMessage(std::string prefix, std::string message)
         (prefix + "\t" + message).c_str(), Language(LANG_ADDON), GetChatTag(),
         GetObjectGuid(), GetName());
 
-    GetSession()->SendPacket(&data);
+    _SendRewardPacket(std::move(data));
 }
 
 void Player::SendAddonMessage(std::string prefix, std::string message, Player* from)

@@ -20,6 +20,7 @@
  */
 
 #include "MapManager.h"
+#include "AtomicPlayerSave.h"
 #include "MapPersistentStateMgr.h"
 #include "Policies/SingletonImp.h"
 #include "Database/DatabaseEnv.h"
@@ -1066,9 +1067,9 @@ uint32 MapManager::GetContinentInstanceId(uint32 mapId, float x, float y, bool* 
 
 void MapManager::ScheduleFarTeleport(Player *player, ScheduledTeleportData *data)
 {
-    // If we're not in the middle of an async update, it's safe to execute the
-    // teleport immediately.
-    if (!asyncMapUpdating)
+    // A reward must save its pending destination before transfer can detach the
+    // actor or save/unsummon a pet. Reuse the normal end-of-update transfer queue.
+    if (!asyncMapUpdating && !AtomicPlayerSaveScope::Active())
     {
         player->ExecuteTeleportFar(data);
         delete data;

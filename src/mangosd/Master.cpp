@@ -451,6 +451,18 @@ bool StartDB(std::string name, DatabaseType& database)
         return false;
     }
 
+    // Configure before workers start: character saves, reads and direct calls must
+    // share the same FIFO before an owned two-player transaction can be admitted.
+    if (name == "Character" && sConfig.GetBoolDefault("CharacterDatabase.OrderedPersistence", true))
+    {
+        if (!database.ConfigureOrderedPersistence())
+        {
+            sLog.outError("Cannot configure ordered character persistence before database initialization.");
+            return false;
+        }
+        sLog.outString("Character persistence: one ordered executor (configured workers: %d).", nAsyncConnections);
+    }
+
     ///- Initialise the world database
     if (!database.Initialize(name.c_str(), dbstring.c_str(), nConnections, nAsyncConnections))
     {

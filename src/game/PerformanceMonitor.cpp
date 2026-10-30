@@ -10,6 +10,13 @@ PerformanceMonitor::PerformanceMonitor()
 	gPerfMonitorInterface = this;
 }
 
+PerformanceMonitor::~PerformanceMonitor()
+{
+	// Other global objects can release tracked memory after this monitor is destroyed.
+	if (gPerfMonitorInterface == this)
+		gPerfMonitorInterface = nullptr;
+}
+
 void PerformanceMonitor::Initialize()
 {
 	// in seconds
