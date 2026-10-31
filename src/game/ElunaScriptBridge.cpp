@@ -41,7 +41,7 @@
 #include "ElunaTemplate.h"
 #include "ElunaInstanceAI.h"
 #include "ElunaCreatureAI.h"
-#if !defined ELUNA_TW_PATCH_0001 || !defined ELUNA_TW_PATCH_0002 || !defined ELUNA_TW_PATCH_0003 || !defined ELUNA_TW_PATCH_0004 || !defined ELUNA_TW_PATCH_0005 || !defined ELUNA_TW_PATCH_0006
+#if !defined ELUNA_TW_PATCH_0001 || !defined ELUNA_TW_PATCH_0002 || !defined ELUNA_TW_PATCH_0003 || !defined ELUNA_TW_PATCH_0004 || !defined ELUNA_TW_PATCH_0005 || !defined ELUNA_TW_PATCH_0006 || !defined ELUNA_TW_PATCH_0007
 #error "Eluna is compiled without dep/eluna-patches: re-run CMake (cmake/ElunaSources.cmake makes the patched copy)."
 #endif
 

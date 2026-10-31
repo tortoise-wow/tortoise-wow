@@ -1,0 +1,231 @@
+tortoise-wow: ElunaCreatureAI falls back to the native AI when the creature has no Eluna state, instead of calling through a null pointer.
+
+Every hook in ElunaCreatureAI did me->GetEluna()->Hook(...). WorldObject::
+GetEluna returns nullptr when the creature is not in the world, and
+Creature::Update can still reach AI()->UpdateAI for such a creature (the core
+itself notes "can be despawned by update pool"). The result was a SIGSEGV in
+Eluna::UpdateAI on the first member read (this == nullptr):
+
+  Eluna::UpdateAI(Creature*, unsigned int)+0x18
+  ElunaCreatureAI::UpdateAI(unsigned int)+0xba
+  Creature::Update(unsigned int, unsigned int)+0xdd5
+  Map::UpdateCellsAroundObject(...)
+
+Seen on 1181dev 96b87eb with one Lua-scripted creature (entry 14428, hooks
+1/2/5/7/23), spawned by hand with .npc add. Each hook now treats a missing
+state as "not handled", so the creature behaves like one with no script,
+which is what ElunaScriptBridge already does for every other hook
+(if (Eluna* e = x->GetEluna())).
+
+Base: ElunaLuaEngine/Eluna 1b06f28ff3a00054d915d824c725fb4283fee74d (branch
+cmangos-spell-update), the dep/Eluna pin, with patches 0001-0006 applied. Eluna is
+GPL-3.0 (https://github.com/ElunaLuaEngine/Eluna, LICENSE); this change is under
+the same licence. Applied by cmake/ElunaSources.cmake to a copy in the build tree.
+
+--- a/ElunaCreatureAI.h
++++ b/ElunaCreatureAI.h
+@@ -10,6 +10,9 @@
+ // tortoise-wow dep/eluna-patches/0004 is applied (checked by the core).
+ #define ELUNA_TW_PATCH_0004 1
+ 
++// tortoise-wow dep/eluna-patches/0007 is applied (checked by the core).
++#define ELUNA_TW_PATCH_0007 1
++
+ #include "LuaEngine.h"
+ #if defined ELUNA_CMANGOS
+ #include "AI/BaseAI/CreatureAI.h"
+@@ -59,13 +62,13 @@
+         {
+             for (auto& point : movepoints)
+             {
+-                if (!me->GetEluna()->MovementInform(me, point.first, point.second))
++                if (!me->GetEluna() || !me->GetEluna()->MovementInform(me, point.first, point.second))
+                     NativeScriptedAI::MovementInform(point.first, point.second);
+             }
+             movepoints.clear();
+         }
+ 
+-        if (!me->GetEluna()->UpdateAI(me, diff))
++        if (!me->GetEluna() || !me->GetEluna()->UpdateAI(me, diff))
+         {
+ #if !defined ELUNA_MANGOS
+             if (!me->HasFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_IMMUNE_TO_NPC))
+@@ -81,7 +84,7 @@
+     // Called at creature aggro either by MoveInLOS or Attack Start
+     void JustEngagedWith(Unit* target) override
+     {
+-        if (!me->GetEluna()->EnterCombat(me, target))
++        if (!me->GetEluna() || !me->GetEluna()->EnterCombat(me, target))
+             NativeScriptedAI::JustEngagedWith(target);
+     }
+ #else
+@@ -89,7 +92,7 @@
+     //Called at creature aggro either by MoveInLOS or Attack Start
+     void EnterCombat(Unit* target) override
+     {
+-        if (!me->GetEluna()->EnterCombat(me, target))
++        if (!me->GetEluna() || !me->GetEluna()->EnterCombat(me, target))
+             NativeScriptedAI::EnterCombat(target);
+     }
+ #endif
+@@ -103,7 +106,7 @@
+     void DamageTaken(Unit* attacker, uint32& damage) override
+ #endif
+     {
+-        if (!me->GetEluna()->DamageTaken(me, attacker, damage))
++        if (!me->GetEluna() || !me->GetEluna()->DamageTaken(me, attacker, damage))
+         {
+ #if defined ELUNA_TRINITY || defined ELUNA_CMANGOS
+             NativeScriptedAI::DamageTaken(attacker, damage, damageType, spellInfo);
+@@ -118,28 +121,28 @@
+     //Called at creature death
+     void JustDied(Unit* killer) override
+     {
+-        if (!me->GetEluna()->JustDied(me, killer))
++        if (!me->GetEluna() || !me->GetEluna()->JustDied(me, killer))
+             NativeScriptedAI::JustDied(killer);
+     }
+ 
+     //Called at creature killing another unit
+     void KilledUnit(Unit* victim) override
+     {
+-        if (!me->GetEluna()->KilledUnit(me, victim))
++        if (!me->GetEluna() || !me->GetEluna()->KilledUnit(me, victim))
+             NativeScriptedAI::KilledUnit(victim);
+     }
+ 
+     // Called when the creature summon successfully other creature
+     void JustSummoned(Creature* summon) override
+     {
+-        if (!me->GetEluna()->JustSummoned(me, summon))
++        if (!me->GetEluna() || !me->GetEluna()->JustSummoned(me, summon))
+             NativeScriptedAI::JustSummoned(summon);
+     }
+ 
+     // Called when a summoned creature is despawned
+     void SummonedCreatureDespawn(Creature* summon) override
+     {
+-        if (!me->GetEluna()->SummonedCreatureDespawn(me, summon))
++        if (!me->GetEluna() || !me->GetEluna()->SummonedCreatureDespawn(me, summon))
+             NativeScriptedAI::SummonedCreatureDespawn(summon);
+     }
+ 
+@@ -154,7 +157,7 @@
+     // Called before EnterCombat even before the creature is in combat.
+     void AttackStart(Unit* target) override
+     {
+-        if (!me->GetEluna()->AttackStart(me, target))
++        if (!me->GetEluna() || !me->GetEluna()->AttackStart(me, target))
+             NativeScriptedAI::AttackStart(target);
+     }
+ 
+@@ -165,7 +168,7 @@
+     void EnterEvadeMode() override
+ #endif
+     {
+-        if (!me->GetEluna()->EnterEvadeMode(me))
++        if (!me->GetEluna() || !me->GetEluna()->EnterEvadeMode(me))
+             NativeScriptedAI::EnterEvadeMode();
+     }
+ 
+@@ -173,14 +176,14 @@
+     // Called when creature appears in the world (spawn, respawn, grid load etc...)
+     void JustAppeared() override
+     {
+-        if (!me->GetEluna()->JustRespawned(me))
++        if (!me->GetEluna() || !me->GetEluna()->JustRespawned(me))
+             NativeScriptedAI::JustAppeared();
+     }
+ #else
+     // Called when creature is spawned or respawned (for reseting variables)
+     void JustRespawned() override
+     {
+-        if (!me->GetEluna()->JustRespawned(me))
++        if (!me->GetEluna() || !me->GetEluna()->JustRespawned(me))
+             NativeScriptedAI::JustRespawned();
+     }
+ #endif
+@@ -188,21 +191,21 @@
+     // Called at reaching home after evade
+     void JustReachedHome() override
+     {
+-        if (!me->GetEluna()->JustReachedHome(me))
++        if (!me->GetEluna() || !me->GetEluna()->JustReachedHome(me))
+             NativeScriptedAI::JustReachedHome();
+     }
+ 
+     // Called at text emote receive from player
+     void ReceiveEmote(Player* player, uint32 emoteId) override
+     {
+-        if (!me->GetEluna()->ReceiveEmote(me, player, emoteId))
++        if (!me->GetEluna() || !me->GetEluna()->ReceiveEmote(me, player, emoteId))
+             NativeScriptedAI::ReceiveEmote(player, emoteId);
+     }
+ 
+     // called when the corpse of this creature gets removed
+     void CorpseRemoved(uint32& respawnDelay) override
+     {
+-        if (!me->GetEluna()->CorpseRemoved(me, respawnDelay))
++        if (!me->GetEluna() || !me->GetEluna()->CorpseRemoved(me, respawnDelay))
+             NativeScriptedAI::CorpseRemoved(respawnDelay);
+     }
+ 
+@@ -216,7 +219,7 @@
+ 
+     void MoveInLineOfSight(Unit* who) override
+     {
+-        if (!me->GetEluna()->MoveInLineOfSight(me, who))
++        if (!me->GetEluna() || !me->GetEluna()->MoveInLineOfSight(me, who))
+             NativeScriptedAI::MoveInLineOfSight(who);
+     }
+ 
+@@ -229,7 +232,7 @@
+     void SpellHit(Unit* caster, SpellInfo const* spell) override
+ #endif
+     {
+-        if (!me->GetEluna()->SpellHit(me, caster, spell))
++        if (!me->GetEluna() || !me->GetEluna()->SpellHit(me, caster, spell))
+             NativeScriptedAI::SpellHit(caster, spell);
+     }
+ 
+@@ -240,7 +243,7 @@
+     void SpellHitTarget(Unit* target, SpellInfo const* spell) override
+ #endif
+     {
+-        if (!me->GetEluna()->SpellHitTarget(me, target, spell))
++        if (!me->GetEluna() || !me->GetEluna()->SpellHitTarget(me, target, spell))
+             NativeScriptedAI::SpellHitTarget(target, spell);
+     }
+ 
+@@ -248,27 +251,27 @@
+     // Called when the creature is summoned successfully by other creature
+     void IsSummonedBy(WorldObject* summoner) override
+     {
+-        if (!summoner->ToUnit() || !me->GetEluna()->OnSummoned(me, summoner->ToUnit()))
++        if (!summoner->ToUnit() || !me->GetEluna() || !me->GetEluna()->OnSummoned(me, summoner->ToUnit()))
+             NativeScriptedAI::IsSummonedBy(summoner);
+     }
+ 
+     void SummonedCreatureDies(Creature* summon, Unit* killer) override
+     {
+-        if (!me->GetEluna()->SummonedCreatureDies(me, summon, killer))
++        if (!me->GetEluna() || !me->GetEluna()->SummonedCreatureDies(me, summon, killer))
+             NativeScriptedAI::SummonedCreatureDies(summon, killer);
+     }
+ 
+     // Called when owner takes damage
+     void OwnerAttackedBy(Unit* attacker) override
+     {
+-        if (!me->GetEluna()->OwnerAttackedBy(me, attacker))
++        if (!me->GetEluna() || !me->GetEluna()->OwnerAttackedBy(me, attacker))
+             NativeScriptedAI::OwnerAttackedBy(attacker);
+     }
+ 
+     // Called when owner attacks something
+     void OwnerAttacked(Unit* target) override
+     {
+-        if (!me->GetEluna()->OwnerAttacked(me, target))
++        if (!me->GetEluna() || !me->GetEluna()->OwnerAttacked(me, target))
+             NativeScriptedAI::OwnerAttacked(target);
+     }
+ #endif
