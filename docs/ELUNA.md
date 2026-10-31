@@ -38,10 +38,11 @@ cmake --build build --target mangosd
   or is missing (after a submodule bump, refresh the patches); the checks run
   on every configure and remake a copy that fails them.
   `src/game/ElunaScriptBridge.cpp` also fails to compile (`#error`) without
-  the seven markers. The copy is remade when a submodule file, a patch or
+  the eight markers. The copy is remade when a submodule file, a patch or
   `ElunaSources.cmake` changes. Each patch names its Eluna base commit; 0001,
-  0003, 0004, 0005, 0006 and 0007 are candidates to upstream to Eluna, 0002 is
-  VMaNGOS-specific (other cores get the check from trackable pointers).
+  0003, 0004, 0005, 0006 and 0007 are candidates to upstream to Eluna, 0002 and
+  0008 are VMaNGOS-specific (other cores get the check from trackable pointers,
+  and track their spell targets).
 
   | Patch | Fixes |
   | --- | --- |
@@ -52,6 +53,7 @@ cmake --build build --target mangosd
   | `0005-template-name-and-decoding-table-...` | Data race: every Lua state stored the per-type `ElunaTemplate<T>::tname` (one static per type for the whole process) in `Register`, so map states made or reloaded on different map threads wrote it at once while other states read it in `Push`/`Check`; also the lazy build of the base-64 table used for instance data. Both are now set once (`std::call_once`, a function-local static). |
   | `0006-eventmgr-free-lua-references-...` | Lua function references of timers leaked: when an object left its map or was destroyed with a timer pending, its event processor was removed with the events set to `LUAEVENT_STATE_ERASE`, which skips `luaL_unref` (meant for a closed or reloaded state). Each such timer's function, and what its upvalues reach, stayed in the state's registry until the state closed. They are now unreferenced (`LUAEVENT_STATE_ABORT`) on the thread that updates the state. A reload still marks every pending event `LUAEVENT_STATE_ERASE` (its references belong to the closed state), now also those of processors replaced by 0001 and waiting for the next cleanup, which are not in the processor list; otherwise that cleanup would unreference the old state's reference numbers in the new state. |
   | `0007-creature-ai-no-state-falls-back-...` | Crash (null `Eluna*`): every hook of the Lua creature AI called `me->GetEluna()->...`, but `WorldObject::GetEluna` is null while the creature is not in the world, and `Creature::Update` can still run the AI then (seen on `.npc delete` of a scripted creature: SIGSEGV in `Eluna::UpdateAI`). A missing state now counts as not handled, so the native AI runs, as for a creature without a script. |
+  | `0008-vmangos-spell-gettarget-by-guid` | `Spell:GetTarget()` returned the target pointers cached in `SpellCastTargets`, which are refreshed only while the spell is casting: a projectile in flight kept the pointer of a target deleted meanwhile (a dead hunter's pet), and Lua read freed memory. The target is now looked up by its guid on the caster's map (`ObjectAccessor::GetUnit`, `Map::GetGameObject`/`GetCorpse`), and an item target the way `SpellCastTargets::Update` finds it: the caster player's item by guid (`TARGET_FLAG_ITEM`), or the trade partner's offered item in slot `0..TRADE_SLOT_COUNT-1` (`TARGET_FLAG_TRADE_ITEM`, a trade enchant). |
 - The backend is `ELUNA_VMANGOS` with `ELUNA_EXPANSION=0`.
 - Lua (5.2 by default; `ELUNA_LUA_VERSION` takes lua51..lua54) is downloaded
   from lua.org at configure time with a pinned SHA-256 and linked statically.
