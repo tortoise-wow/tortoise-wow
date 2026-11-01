@@ -64,6 +64,11 @@ static DumpTable dumpTables[] =
     { "item_loot",                        DTT_ITEM_LOOT  }, //                  <- item guids
     { "item_text",                        DTT_ITEM_TEXT  },
     { "character_transmogs",              DTT_TRANSMOG_COLLECTION },
+    { "character_titles",                 DTT_CHAR_TABLE },
+    { "character_pvp_currency",           DTT_CHAR_TABLE },
+    { "character_spell_dual_spec",        DTT_CHAR_TABLE },
+    { "character_forgotten_skills",       DTT_CHAR_TABLE },
+    { "character_variables",              DTT_CHAR_VARIABLE },
     { NULL,                               DTT_CHAR_TABLE }, // end marker
 };
 
@@ -310,6 +315,9 @@ void PlayerDumpWriter::DumpTableContent(std::string& dump, uint32 guid, char con
         case DTT_TRANSMOG_COLLECTION:
             fieldname = "guid";
             break;
+        case DTT_CHAR_VARIABLE:
+            fieldname = "lowGuid";
+            break;
         default:
             fieldname = "guid";
             break;
@@ -553,6 +561,7 @@ DumpReturn PlayerDumpReader::LoadStringDump(std::string const& data, uint32 acco
         switch (type)
         {
         case DTT_CHAR_TABLE:
+        case DTT_CHAR_VARIABLE:
             if (!changenth(line, 1, newguid))           // character_*.guid update
                 ROLLBACK_STR(DUMP_FILE_BROKEN);
             break;
@@ -842,6 +851,7 @@ DumpReturn PlayerDumpReader::LoadDump(std::string const& file, uint32 account, s
         switch (type)
         {
             case DTT_CHAR_TABLE:
+            case DTT_CHAR_VARIABLE:
                 if (!changenth(line, 1, newguid))           // character_*.guid update
                     ROLLBACK(DUMP_FILE_BROKEN);
                 break;
