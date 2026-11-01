@@ -18487,15 +18487,12 @@ bool Player::SaveToDB(bool online, bool force, bool direct)
     uberInsert.addUInt8(HasXPGainEnabled());
     uberInsert.addUInt32(m_extraBonusTalentCount);
     
-    if (direct)
+    // The character row belongs to the same transaction as inventory/quest state.
+    // Direct mode controls the final commit, not an out-of-transaction first write.
+    if (!uberInsert.Execute())
     {
-        if (!uberInsert.DirectExecute())
-            return false;
-    }
-    else
-    {
-        if (!uberInsert.Execute())
-            return false;
+        CharacterDatabase.RollbackTransaction();
+        return false;
     }
 
     _SaveBGData();
@@ -18567,8 +18564,11 @@ bool Player::SaveToDB(bool online, bool force, bool direct)
 void Player::SaveInventoryAndGoldToDB()
 {
     bool haveTransaction = CharacterDatabase.InTransaction();
-    if (!haveTransaction)
-        CharacterDatabase.BeginTransaction(GetGUIDLow());
+    if (!haveTransaction && !CharacterDatabase.BeginTransaction(GetGUIDLow()))
+    {
+        sLog.outError("[PLAYER SAVE] Cannot begin inventory save for %s.", GetGuidStr().c_str());
+        return;
+    }
     else if (CharacterDatabase.GetTransactionSerialId() != GetGUIDLow())
         sLog.outError("[PLAYER SAVE] Player %s items are being saved in a transaction that is not serialized with its own GUID... potential dupe avenue", GetGuidStr().c_str());
 

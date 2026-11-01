@@ -25,6 +25,7 @@
 
 #include "World.h"
 #include "Database/DatabaseEnv.h"
+#include "Database/CharacterStorage.h"
 #include "Config/Config.h"
 #include "CustomMerchantMgr.h"
 #include "Platform/Define.h"
@@ -1993,6 +1994,23 @@ void LoadPlayerEggLoot();
         Log::WaitBeforeContinueIfNeed();
         exit(1);
     }
+
+#ifndef DO_POSTGRESQL
+    if (sConfig.GetBoolDefault("CharacterDatabase.RequireTransactionalTables", true))
+    {
+        // Check after schema updates, before players and runtime writers are admitted.
+        if (!HasTransactionalCharacterStorage(CharacterDatabase))
+        {
+            sLog.outError("Character storage is not transactional/durable. Active tables must be InnoDB, "
+                "innodb_flush_log_at_trx_commit must be 1, and innodb_force_recovery must be 0. "
+                "Back up and migrate the character database while writers are stopped before starting the realm.");
+            Log::WaitBeforeContinueIfNeed();
+            exit(1);
+        }
+        sLog.outString("Character storage: active tables use InnoDB with durable commit settings.");
+        CharacterDatabase.EnableKnownAbortRetries(3);
+    }
+#endif
 
     sLog.outString("Loading module strings...");
     if (!sObjectMgr.LoadModuleStrings())
