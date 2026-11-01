@@ -6,6 +6,12 @@
 #define HONORMGR_H
 
 #include <unordered_map>
+#include <list>
+#include <vector>
+
+class Player;
+class Unit;
+class QueryResult;
 
 struct WeeklyScore
 {
@@ -113,6 +119,24 @@ class HonorMgr
         ~HonorMgr() {}
 
         void Save();
+        class SaveBatch
+        {
+            friend class HonorMgr;
+            HonorMgr* owner = nullptr;
+            uint32 guid = 0;
+            std::vector<HonorCP> entries;
+            float rankPoints = 0, lastWeekCP = 0;
+            uint32 standing = 0, lastWeekHK = 0, storedHK = 0, storedDK = 0;
+            uint8 highestRank = 0;
+            uint32 honor = 0, conquest = 0, weeklyHonor = 0, weekBegin = 0;
+            bool prepared = false;
+        public:
+            SaveBatch() = default;
+            SaveBatch(SaveBatch const&) = delete;
+            SaveBatch& operator=(SaveBatch const&) = delete;
+        };
+        bool AppendSaveToDB(SaveBatch& batch);
+        bool CompleteSaveToDB(SaveBatch& batch);
         void SaveStoredData();
         void Load(QueryResult* result);
         void LoadCurrency(QueryResult* result);
@@ -185,6 +209,9 @@ class HonorMgr
 
     private:
         void ResetCurrencyWeekIfNeeded();
+        bool AppendHonorCP(HonorCP const& entry);
+        bool SaveCurrencyChecked();
+        bool SaveStoredDataChecked();
 
         HonorCPMap m_honorCP;
         float m_lastWeekCP;

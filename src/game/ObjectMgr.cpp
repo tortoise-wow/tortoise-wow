@@ -4590,7 +4590,7 @@ void ObjectMgr::LoadItemTexts()
     do
     {
         Field* fields = result->Fetch();
-        m_ItemTextsMap[ fields[0].GetUInt32() ] = fields[1].GetCppString();
+        AddItemText(fields[0].GetUInt32(), fields[1].GetCppString());
     }
     while (result->NextRow());
 }
@@ -5744,7 +5744,7 @@ uint32 ObjectMgr::CreateItemText(std::string text)
 {
     uint32 newItemTextId = GenerateItemTextID();
     //insert new itempage to container
-    m_ItemTextsMap[ newItemTextId ] = text;
+    AddItemText(newItemTextId, text);
     //save new itempage
     CharacterDatabase.escape_string(text);
     //any Delete query needed, itemTextId is maximum of all ids
@@ -9811,7 +9811,7 @@ uint32 ObjectMgr::CreateItemTransmogrifyTemplate(uint32 destItemId, uint32 sourc
     return destId;
 }
 
-void ObjectMgr::DeleteItemTransmogrifyTemplate(uint32 transmogrifyId)
+void ObjectMgr::DeleteItemTransmogrifyTemplate(uint32 transmogrifyId, bool saveToDB)
 {
     auto itr = m_itemTransmogs.find(transmogrifyId);
     if (itr == m_itemTransmogs.end())
@@ -9819,7 +9819,8 @@ void ObjectMgr::DeleteItemTransmogrifyTemplate(uint32 transmogrifyId)
 
     m_itemTransmogs.erase(transmogrifyId);
     sWorld.SendSingleItemInvalidate(transmogrifyId);
-    CharacterDatabase.PExecuteLog("DELETE FROM `item_transmogs` WHERE `ID`=%u", transmogrifyId);
+    if (saveToDB)
+        CharacterDatabase.PExecuteLog("DELETE FROM `item_transmogs` WHERE `ID`=%u", transmogrifyId);
 }
 
 bool ObjectMgr::IsItemTypeTransmoggable(uint32 invType)

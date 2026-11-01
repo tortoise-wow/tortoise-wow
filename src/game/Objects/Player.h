@@ -1515,7 +1515,7 @@ class Player final: public Unit
         void RemoveQuest(uint32 quest_id);
         void RemoveQuestAtSlot(uint32 slot);
         void IncompleteQuest(uint32 quest_id);
-        void RewardQuest(Quest const* pQuest, uint32 reward, WorldObject* questGiver, bool announce = true);
+        bool RewardQuest(Quest const* pQuest, uint32 reward, WorldObject* questGiver, bool announce = true);
         void FailQuest(uint32 quest_id);
 
         bool SatisfyQuestChallenges(Quest const* quest, bool msg) const;
@@ -1637,12 +1637,55 @@ class Player final: public Unit
         /***                   SAVE SYSTEM                     ***/
         /*********************************************************/
         
+    public:
+        // Stack-only capture; completion runs on the same actor after synchronous COMMIT.
+        class InventorySaveBatch
+        {
+            friend class Player;
+        public:
+            InventorySaveBatch() = default;
+            InventorySaveBatch(InventorySaveBatch const&) = delete;
+            InventorySaveBatch& operator=(InventorySaveBatch const&) = delete;
+        private:
+            Player* owner = nullptr;
+            std::vector<Item*> queue;
+            bool prepared = false;
+        };
+
+        // Core reward snapshot. No actor mutation is permitted from seal through ACK.
+        class PlayerSaveBatch
+        {
+            friend class Player;
+        public:
+            PlayerSaveBatch() = default;
+            PlayerSaveBatch(PlayerSaveBatch const&) = delete;
+            PlayerSaveBatch& operator=(PlayerSaveBatch const&) = delete;
+        private:
+            Player* owner = nullptr;
+            InventorySaveBatch inventory;
+            std::vector<std::pair<uint32, QuestUpdateState>> quests;
+            std::vector<std::pair<uint32, SkillUpdateState>> skills;
+            std::vector<std::pair<uint32, PlayerSpellState>> spells;
+            ReputationMgr::SaveBatch reputation;
+            HonorMgr::SaveBatch honor;
+            size_t itemLogCount = 0;
+            bool prepared = false;
+        };
+
     private:
-        void _SaveAuras();
+        bool _SaveAuras();
         void _SaveInventory();
-        void _SaveQuestStatus();
-        void _SaveSkills();
-        void _SaveSpells();
+        bool _SaveInventory(InventorySaveBatch* batch);
+        bool _AppendCharacterRowToDB(bool online);
+        bool _ApplyNativeQuestRewards(Quest const* quest, WorldObject* ender, bool& worldSpell);
+        void _FinishQuestReward(uint32 questId, uint32 xp, ObjectGuid enderGuid, bool announce, bool worldSpell);
+        friend class HonorMgr;
+        void _SendRewardPacket(WorldPacket packet, bool broadcast = false) const;
+        void _ScheduleAutoQuestRewardRetry(uint32 questId);
+        std::set<uint32> m_pendingAutoQuestRewards;
+        bool _SaveQuestStatus(PlayerSaveBatch* batch = nullptr);
+        bool _SaveSkills(PlayerSaveBatch* batch = nullptr);
+        bool _SaveSpells(PlayerSaveBatch* batch = nullptr);
         void _SaveBGData();
         void _SaveStats();
 
@@ -1650,6 +1693,11 @@ class Player final: public Unit
         void _SetUpdateBits(UpdateMask* updateMask, Player* target) const override;
         uint32 m_nextSave;
     public:
+        bool AppendInventoryAndGoldToDB(InventorySaveBatch& batch);
+        bool CompleteInventoryAndGoldSave(InventorySaveBatch& batch);
+        bool AppendFullPlayerSave(PlayerSaveBatch& batch);
+        bool CompleteFullPlayerSave(PlayerSaveBatch& batch);
+        bool IsInventorySaveEnabled() const { return !m_DbSaveDisabled && !m_itemUpdateQueueBlocked; }
         bool SaveToDB(bool online = true, bool force = false, bool direct = false);
         void SaveInventoryAndGoldToDB();                    // fast save function for item/money cheating preventing
         void SaveGoldToDB();
