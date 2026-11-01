@@ -1,0 +1,81 @@
+tortoise-wow: LuaSpell::GetTarget looks its target up by guid: the cached target of a
+projectile that is still in flight (SPELL_STATE_DELAYED) was refreshed only while
+casting, so a target deleted meanwhile (a dead hunter's pet) was freed memory in Lua
+(crash in GetUInt64Value).
+
+Base: ElunaLuaEngine/Eluna 1b06f28ff3a00054d915d824c725fb4283fee74d (branch
+cmangos-spell-update), the dep/Eluna pin, with patches 0001-0007 applied. Eluna is
+GPL-3.0 (https://github.com/ElunaLuaEngine/Eluna, LICENSE); this change is under
+the same licence. Applied by cmake/ElunaSources.cmake to a copy in the build tree.
+VMaNGOS-specific (its SpellCastTargets keeps raw target pointers; other cores
+track them); upstream would need it as a VMaNGOS fix. The item target is looked up
+as SpellCastTargets::Update does it, both the item guid (TARGET_FLAG_ITEM) and the
+trade slot in the trade partner's offer (TARGET_FLAG_TRADE_ITEM, trade enchant).
+diff --git a/ElunaIncludes.h b/ElunaIncludes.h
+index 9aa0ce3..8ba5e06 100644
+--- a/ElunaIncludes.h
++++ b/ElunaIncludes.h
+@@ -7,6 +7,9 @@
+ #ifndef _ELUNA_INCLUDES_H
+ #define _ELUNA_INCLUDES_H
+ 
++// tortoise-wow dep/eluna-patches/0008 is applied (checked by the core).
++#define ELUNA_TW_PATCH_0008 1
++
+ // Required
+ #if !defined ELUNA_CMANGOS
+ #include "AccountMgr.h"
+diff --git a/methods/VMangos/SpellMethods.h b/methods/VMangos/SpellMethods.h
+index 7657e91..697c974 100644
+--- a/methods/VMangos/SpellMethods.h
++++ b/methods/VMangos/SpellMethods.h
+@@ -113,14 +113,43 @@ namespace LuaSpell
+      */
+     int GetTarget(Eluna* E, Spell* spell)
+     {
+-        if (GameObject* target = spell->m_targets.getGOTarget())
++        // The caster is a WorldObject: a game object can cast too.
++        WorldObject* caster = spell->GetCaster();
++        Map* map = caster ? caster->GetMap() : nullptr;
++
++        // The target pointers kept in m_targets are refreshed only by
++        // SpellCastTargets::Update in Spell::update while the spell is casting.
++        // A projectile that went to SPELL_STATE_DELAYED stays in the caster's
++        // spell list until it lands, and if its target is deleted meanwhile the
++        // cached pointers are freed memory. The guids stay valid, so the
++        // targets are looked up again, as SpellCastTargets::Update does.
++        //
++        // The item target is the caster player's item, found the way
++        // SpellCastTargets::Update finds it: TARGET_FLAG_ITEM carries the item
++        // guid, TARGET_FLAG_TRADE_ITEM a slot (0..TRADE_SLOT_COUNT-1) in the
++        // trade partner's offer, which is how a trade enchant reaches Lua.
++        Item* item = nullptr;
++        if (Player* player = caster ? caster->ToPlayer() : nullptr)
++        {
++            if (spell->m_targets.m_targetMask & TARGET_FLAG_ITEM)
++                item = player->GetItemByGuid(spell->m_targets.getItemTargetGuid());
++            else if (spell->m_targets.m_targetMask & TARGET_FLAG_TRADE_ITEM)
++            {
++                ObjectGuid itemGuid = spell->m_targets.getItemTargetGuid();
++                if (TradeData* trade = player->GetTradeData())
++                    if (itemGuid.GetRawValue() < TRADE_SLOT_COUNT)
++                        item = trade->GetTraderData()->GetItem(TradeSlots(itemGuid.GetRawValue()));
++            }
++        }
++
++        if (GameObject* target = map ? map->GetGameObject(spell->m_targets.getGOTargetGuid()) : nullptr)
+             E->Push(target);
+-        else if (Item* target = spell->m_targets.getItemTarget())
+-            E->Push(target);
+-        else if (Corpse* target = spell->GetCaster()->GetMap()->GetCorpse(spell->m_targets.getCorpseTargetGuid()))
+-            E->Push(target);
+-        else if (Unit* target = spell->m_targets.getUnitTarget())
++        else if (item)
++            E->Push(item);
++        else if (Corpse* target = map ? map->GetCorpse(spell->m_targets.getCorpseTargetGuid()) : nullptr)
+             E->Push(target);
++        else
++            E->Push(caster ? ObjectAccessor::GetUnit(*caster, spell->m_targets.getUnitTargetGuid()) : nullptr);
+         return 1;
+     }
+ 
