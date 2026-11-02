@@ -172,7 +172,7 @@ bool ADTFile::init(uint32 map_num, uint32 tileX, uint32 tileY, StringSet& failed
                     fixnamen(s, strlen(s));
                     fixname2(s, strlen(s));
                     p = p + strlen(p) + 1;
-                    WmoInstansName[q++] = s;
+                    WmoInstansName[q++] = AddCollisionSuffix(s, path);
                 }
                 delete[] buf;
             }

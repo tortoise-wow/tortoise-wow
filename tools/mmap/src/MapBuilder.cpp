@@ -761,11 +761,40 @@ namespace MMAP
             }
         }
     }
+    // The model file a gameobject display id uses, read from the list vmap_assembler
+    // writes (vmaps/temp_gameobject_models, the same one the server loads).
+    // The vmap extractor renames models whose file name is shared by different
+    // models (Transport_Zeppelin.wmo -> Transport_Zeppelin_hef60ff39.wmo), so a
+    // hard-coded name can miss. Falls back to the given name if the list lacks it.
+    static std::string GameObjectModelName(uint32 displayId, std::string const& fallback)
+    {
+        FILE* list = fopen("vmaps/temp_gameobject_models", "rb");
+        if (!list)
+            return fallback;
+
+        std::string found = fallback;
+        uint32 id, nameLength;
+        char name[500];
+        while (fread(&id, sizeof(uint32), 1, list) == 1 && fread(&nameLength, sizeof(uint32), 1, list) == 1)
+        {
+            if (nameLength >= sizeof(name) || fread(name, 1, nameLength, list) != nameLength)
+                break;
+            fseek(list, 2 * 3 * sizeof(float), SEEK_CUR);  // skip the bounding box (2 Vector3)
+            if (id == displayId)
+            {
+                found.assign(name, nameLength);
+                break;
+            }
+        }
+        fclose(list);
+        return found;
+    }
+
     void MapBuilder::buildTransports()
     {
         // List here Transport gameobjects you want to extract.
-        buildGameObject("Transportship.wmo.vmo", 3015);
-        buildGameObject("Transport_Zeppelin.wmo.vmo", 3031);
+        buildGameObject(GameObjectModelName(3015, "Transportship.wmo") + ".vmo", 3015);
+        buildGameObject(GameObjectModelName(3031, "Transport_Zeppelin.wmo") + ".vmo", 3031);
     }
 
 	void MapBuilder::StartupAsyncBuilders()
