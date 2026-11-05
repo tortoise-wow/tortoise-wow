@@ -2047,10 +2047,22 @@ void Spell::EffectSummonChangeItem(SpellEffectIndex eff_idx)
     if (!pNewItem)
         return;
 
-    for (uint8 j = PERM_ENCHANTMENT_SLOT; j <= TEMP_ENCHANTMENT_SLOT; ++j)
+    InventoryResult useResult = player->CanUseItem(pNewItem);
+    if (useResult == EQUIP_ERR_NO_REQUIRED_PROFICIENCY || useResult == EQUIP_ERR_YOU_CAN_NEVER_USE_THAT_ITEM)
     {
-        if (m_CastItem->GetEnchantmentId(EnchantmentSlot(j)))
-            pNewItem->SetEnchantment(EnchantmentSlot(j), m_CastItem->GetEnchantmentId(EnchantmentSlot(j)), m_CastItem->GetEnchantmentDuration(EnchantmentSlot(j)), m_CastItem->GetEnchantmentCharges(EnchantmentSlot(j)));
+        player->SendEquipError(useResult, m_CastItem, nullptr);
+        delete pNewItem;
+        return;
+    }
+    
+    bool const STRIP_ENHANCEMENTS = m_spellInfo->EffectMiscValue[eff_idx];
+    if (!STRIP_ENHANCEMENTS)
+    {
+        for (uint8 j = PERM_ENCHANTMENT_SLOT; j <= TEMP_ENCHANTMENT_SLOT; ++j)
+        {
+            if (m_CastItem->GetEnchantmentId(EnchantmentSlot(j)))
+                pNewItem->SetEnchantment(EnchantmentSlot(j), m_CastItem->GetEnchantmentId(EnchantmentSlot(j)), m_CastItem->GetEnchantmentDuration(EnchantmentSlot(j)), m_CastItem->GetEnchantmentCharges(EnchantmentSlot(j)));
+        }
     }
 
     if (m_CastItem->GetUInt32Value(ITEM_FIELD_DURABILITY) < m_CastItem->GetUInt32Value(ITEM_FIELD_MAXDURABILITY))
@@ -2092,7 +2104,12 @@ void Spell::EffectSummonChangeItem(SpellEffectIndex eff_idx)
     else if (player->IsEquipmentPos(pos))
     {
         uint16 dest;
-        uint8 msg = player->CanEquipItem(m_CastItem->GetSlot(), dest, pNewItem, true, false);
+        InventoryResult msg = player->CanEquipItem(m_CastItem->GetSlot(), dest, pNewItem, true, false);
+        if (msg != EQUIP_ERR_OK)
+        {
+            msg = player->CanEquipItem(NULL_SLOT, dest, pNewItem, false);
+        }
+
         if (msg == EQUIP_ERR_OK)
         {
             player->DestroyItem(m_CastItem->GetBagSlot(), m_CastItem->GetSlot(), true);
@@ -2104,6 +2121,19 @@ void Spell::EffectSummonChangeItem(SpellEffectIndex eff_idx)
             player->AutoUnequipOffhandIfNeed();
             return;
         }
+
+        ItemPosCountVec storeDest;
+        msg = player->CanStoreItem(NULL_BAG, NULL_SLOT, storeDest, pNewItem, false);
+        if (msg == EQUIP_ERR_OK)
+        {
+            player->DestroyItem(m_CastItem->GetBagSlot(), m_CastItem->GetSlot(), true);
+            ClearCastItem();
+
+            player->StoreItem(storeDest, pNewItem, true);
+            return;
+        }
+
+        player->SendEquipError(msg, m_CastItem, nullptr);
     }
 
     // fail

@@ -324,6 +324,7 @@ int Master::Run()
     ///- Clean account database before leaving
     sLog.outString("Cleaning character database...");
     clearOnlineAccounts();
+    markRealmOffline();
 
     // send all still queued mass mails (before DB connections shutdown)
     sLog.outString("Sending queued mail...");
@@ -486,7 +487,16 @@ bool Master::_StartDB()
 
     ///- Clean the database before starting
     clearOnlineAccounts();
+    markRealmOffline();
     return true;
+}
+
+/// Flag this realm offline in realmd's list until StartNetwork clears it again.
+/// Runs before loading and on shutdown, so a crash leaves the realm offline
+/// on the next start instead of listed online with nothing listening.
+void Master::markRealmOffline()
+{
+    LoginDatabase.PExecute("UPDATE realmlist SET realmflags = realmflags | %u WHERE id = '%u'", REALM_FLAG_OFFLINE, realmID);
 }
 
 /// Clear 'online' status for all accounts with characters in this realm
