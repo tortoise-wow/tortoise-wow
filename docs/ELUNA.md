@@ -54,8 +54,8 @@ cmake --build build --target mangosd
   | `0006-eventmgr-free-lua-references-...` | Lua function references of timers leaked: when an object left its map or was destroyed with a timer pending, its event processor was removed with the events set to `LUAEVENT_STATE_ERASE`, which skips `luaL_unref` (meant for a closed or reloaded state). Each such timer's function, and what its upvalues reach, stayed in the state's registry until the state closed. They are now unreferenced (`LUAEVENT_STATE_ABORT`) on the thread that updates the state. A reload still marks every pending event `LUAEVENT_STATE_ERASE` (its references belong to the closed state), now also those of processors replaced by 0001 and waiting for the next cleanup, which are not in the processor list; otherwise that cleanup would unreference the old state's reference numbers in the new state. |
   | `0007-creature-ai-no-state-falls-back-...` | Crash (null `Eluna*`): every hook of the Lua creature AI called `me->GetEluna()->...`, but `WorldObject::GetEluna` is null while the creature is not in the world, and `Creature::Update` can still run the AI then (seen on `.npc delete` of a scripted creature: SIGSEGV in `Eluna::UpdateAI`). A missing state now counts as not handled, so the native AI runs, as for a creature without a script. |
   | `0008-vmangos-spell-gettarget-by-guid` | `Spell:GetTarget()` returned the target pointers cached in `SpellCastTargets`, which are refreshed only while the spell is casting: a projectile in flight kept the pointer of a target deleted meanwhile (a dead hunter's pet), and Lua read freed memory. The target is now looked up by its guid on the caster's map (`ObjectAccessor::GetUnit`, `Map::GetGameObject`/`GetCorpse`), and an item target the way `SpellCastTargets::Update` finds it: the caster player's item by guid (`TARGET_FLAG_ITEM`), or the trade partner's offered item in slot `0..TRADE_SLOT_COUNT-1` (`TARGET_FLAG_TRADE_ITEM`, a trade enchant). |
-  | `0009-vmangos-world-only-global-methods` | Server-wide functions ran in map states too: `PerformIngameSpawn`, `SendMail`, `SaveAllPlayers`, `StartGameEvent`, `StopGameEvent`, `AddVendorItem`, `VendorRemoveItem`, `VendorRemoveAllItems`, `AddTaxiPath`, `Kick`, `Ban` and `Player:LogoutPlayer` write other maps, sessions, accounts or the core's vendor/taxi tables, or delete a player synchronously, and a map state runs on that map's thread next to other maps. They are now flagged `METHOD_REG_WORLD`, the mechanism the backend already uses for the Group and Guild methods: a map state gets a closure that raises "attempt to call method '...' that does not exist for state: N" (see Threading rules and Known limits). |
-  | `0010-vmangos-null-safe-method-chains` | Null dereferences in methods: `Aura:GetCasterLevel` read `aura->GetCaster()->GetLevel()`; the caster is a guid lookup that returns null once it despawned or logged out (a DoT from a dead add), and a player caster is found on any map (now `nil` when the caster is gone or on another map than the state's). `Item:GetItemLink` read `item->GetOwner()->GetLevel()`; an ownerless item (dropped, in a chest, in the mail) has no level (the link's level field is 0). The Lua instance AI's hooks and data methods (`Update`, `IsEncounterInProgress`, `OnPlayerEnter`, `OnObjectCreate`, `OnCreatureCreate`, `Initialize`, `Load`, `Save`, `GetData`/`SetData`, `GetData64`/`SetData64`) called `instance->GetEluna()->...` unchecked; a missing state now counts as "no script" (as the creature AI does since 0007), because `Map::GetEluna` refuses the state to a thread that does not update the map. |
+  | `0009-vmangos-world-only-global-methods` | Server-wide functions ran in map states too: `PerformIngameSpawn`, `SendMail`, `SaveAllPlayers`, `StartGameEvent`, `StopGameEvent`, `AddVendorItem`, `VendorRemoveItem`, `VendorRemoveAllItems`, `AddTaxiPath`, `Kick`, `Ban`, `Player:KickPlayer` and `Player:LogoutPlayer` write other maps, sessions, accounts or the core's vendor/taxi tables, close a session's socket or delete a player synchronously, and a map state runs on that map's thread next to other maps. They are now flagged `METHOD_REG_WORLD`, the mechanism the backend already uses for the Group and Guild methods: a map state gets a closure that raises "attempt to call method '...' that does not exist for state: N" (see Threading rules and Known limits). |
+  | `0010-vmangos-null-safe-method-chains` | Null dereferences in methods: `Aura:GetCasterLevel` read `aura->GetCaster()->GetLevel()`; the caster is a guid lookup that returns null once it despawned or logged out (a DoT from a dead add), and a player caster is found on any map (now `nil` when the caster is gone or on another map than the state's). `Item:GetItemLink` read `item->GetOwner()->GetLevel()`; an ownerless item (dropped, in a chest, in the mail) has no level (the link's level field is 0). The Lua instance AI's hooks and data methods (`Update`, `IsEncounterInProgress`, `OnPlayerEnter`, `OnObjectCreate`, `OnCreatureCreate`, `Initialize`, `Load`, `Save`, `GetData`/`SetData`, `GetData64`/`SetData64`) called `instance->GetEluna()->...` unchecked; a missing state now counts as "no script" (as the creature AI does since 0007), because `Map::GetEluna` refuses the state to a thread that does not update the map; `Save` returns the data that last passed through it when the state is missing (the core's `SaveToDB` writes an empty `data` column for a NULL, which dropped the saved data), and `Load` keeps its data before the state check, so the map's next update reloads it. |
 - The backend is `ELUNA_VMANGOS` with `ELUNA_EXPANSION=0`.
 - Lua (5.2 by default; `ELUNA_LUA_VERSION` takes lua51..lua54) is downloaded
   from lua.org at configure time with a pinned SHA-256 and linked statically.
@@ -177,7 +177,10 @@ What the core does to keep to that, only while `Eluna.Enabled = 1`:
    command and world-update events, never creature, map, instance, player or
    item events. Since `dep/eluna-patches/0009` a map state is refused
    ("attempt to call method '...' that does not exist for state: N").
-4. Never call `Player:LogoutPlayer`; use `Player:KickPlayer`. Treat
+4. Kick and log out only from the world state: `Player:KickPlayer` and
+   `Player:LogoutPlayer` are both world-only since `dep/eluna-patches/0009`
+   (a map state is refused), and `LogoutPlayer` deletes the player
+   synchronously even there, so save or kick instead. Treat
    `Aura:GetCasterLevel` as possibly nil (it is nil once the caster is gone,
    `dep/eluna-patches/0010`) and check `Aura:GetCaster()`.
 5. Read `Spell:GetTarget()` only in the cast hook (`dep/eluna-patches/0008`
@@ -247,16 +250,16 @@ destroyed, after its objects are unloaded.
 - **Global functions that change server-wide data are world-only**
   (`dep/eluna-patches/0009`): `PerformIngameSpawn`, `SendMail`,
   `SaveAllPlayers`, `StartGameEvent`, `StopGameEvent`, `AddVendorItem`,
-  `VendorRemoveItem`, `VendorRemoveAllItems`, `AddTaxiPath`, `Kick`, `Ban` and
-  `Player:LogoutPlayer` write other maps, sessions, accounts or the core's
-  vendor/taxi tables, or delete a player synchronously. A map state registers
-  a refusal closure for them instead of the method: the call raises
-  "attempt to call method '...' that does not exist for state: N". Call them
-  from the world state (server, command and world-update events), which only
-  runs on the world thread while no map updates. `Player:KickPlayer` stays
-  available in every state; `Player:LogoutPlayer` is world-only, and even
-  there it deletes the player synchronously inside the calling hook, so
-  scripts should kick or save instead of logging a player out.
+  `VendorRemoveItem`, `VendorRemoveAllItems`, `AddTaxiPath`, `Kick`, `Ban`,
+  `Player:KickPlayer` and `Player:LogoutPlayer` write other maps, sessions,
+  accounts or the core's vendor/taxi tables, close a session's socket or
+  delete a player synchronously. A map state registers a refusal closure for
+  them instead of the method: the call raises "attempt to call method '...'
+  that does not exist for state: N". Call them from the world state (server,
+  command and world-update events), which only runs on the world thread while
+  no map updates. `Player:KickPlayer` and `Player:LogoutPlayer` are both
+  world-only; `LogoutPlayer` deletes the player synchronously inside the
+  calling hook, so scripts should kick or save instead of logging a player out.
 - **`Aura:GetCasterLevel` can be nil** (`dep/eluna-patches/0010`): the caster
   is looked up by its guid, so it is gone once the caster despawned or logged
   out (a DoT from a dead add), and it is nil for a caster on another map than

@@ -92,15 +92,17 @@ a line with "FAIL" is a failed check. What to do and what to expect, per item:
      Every map state, on its first update, calls each function the VMaNGOS
      backend now flags world-only (dep/eluna-patches/0009: PerformIngameSpawn,
      SendMail, SaveAllPlayers, StartGameEvent, StopGameEvent, AddVendorItem,
-     VendorRemoveItem, VendorRemoveAllItems, AddTaxiPath, Ban, Kick) and
-     Player:LogoutPlayer on a player of its own map. Expect one
-     "9 refused=<name>" per function and "9 world-only functions refused:
-     11 of 11"; do not call them in the world state, where they still work.
-     The arguments are deliberately incomplete: before 0009 the call reaches
-     the C++ method instead, which fails on them (logged as FAIL, and it
-     spawns, bans or mails nothing; SaveAllPlayers does save every player).
-     Before 0009: "9 FAIL PerformIngameSpawn failed with an unexpected error:
-     int expected, ...", and Player:LogoutPlayer logs the player out.
+     VendorRemoveItem, VendorRemoveAllItems, AddTaxiPath, Ban, Kick) and the
+     methods Player:LogoutPlayer and Player:KickPlayer on a player of its own
+     map. Expect one "9 refused=<name>" per function and method,
+     "9 world-only functions refused: 11 of 11" and
+     "9 world-only methods refused: 2 of 2"; do not call them in the world
+     state, where they still work. The arguments are deliberately incomplete:
+     before 0009 the call reaches the C++ method instead, which fails on them
+     (logged as FAIL, and it spawns, bans or mails nothing; SaveAllPlayers
+     does save every player). Before 0009: "9 FAIL PerformIngameSpawn failed
+     with an unexpected error: int expected, ...", Player:LogoutPlayer logs
+     the player out, and Player:KickPlayer disconnects it.
 
   10 Aura:GetCasterLevel of a gone caster
      The first player to log in spawns two rabbits (entry 721): one casts
@@ -400,6 +402,17 @@ local function refusedWorldOnly(name, ok, err)
     return false
 end
 
+local function refusedWorldOnlyMethod(name, fn)
+    local ok, err = pcall(fn)
+    -- 0009 flags the entries world-only (not unsafe); the unsafe refusal is
+    -- accepted too, in case an entry is ever flagged that way.
+    if not ok and tostring(err):find("flagged as unsafe", 1, true) then
+        log("9", "refused=" .. name .. " (unsafe method)")
+        return true
+    end
+    return refusedWorldOnly(name, ok, err)
+end
+
 local function checkWorldOnly(player)
     local refused = 0
     for _, name in ipairs(WorldOnlyFunctions) do
@@ -412,20 +425,21 @@ local function checkWorldOnly(player)
     end
     log("9", "world-only functions refused: " .. refused .. " of " .. #WorldOnlyFunctions)
 
-    -- Player:LogoutPlayer is a method: there has to be a player of this map
-    -- state's map for it (one on another map is refused by item 2's check).
+    -- Player:LogoutPlayer and Player:KickPlayer are methods: there has to be
+    -- a player of this map state's map for them (one on another map is
+    -- refused by item 2's check).
     if not player then
-        log("9", "no player on this map; the LogoutPlayer check did not run")
+        log("9", "no player on this map; the LogoutPlayer and KickPlayer checks did not run")
         return
     end
-    local ok, err = pcall(function() player:LogoutPlayer(false) end)
-    -- 0009 flags the entry world-only (not unsafe); the unsafe refusal is
-    -- accepted too, in case the entry is ever flagged that way.
-    if not ok and tostring(err):find("flagged as unsafe", 1, true) then
-        log("9", "refused=LogoutPlayer (unsafe method)")
-    else
-        refusedWorldOnly("LogoutPlayer", ok, err)
+    local refusedMethods = 0
+    if refusedWorldOnlyMethod("LogoutPlayer", function() player:LogoutPlayer(false) end) then
+        refusedMethods = refusedMethods + 1
     end
+    if refusedWorldOnlyMethod("KickPlayer", function() player:KickPlayer() end) then
+        refusedMethods = refusedMethods + 1
+    end
+    log("9", "world-only methods refused: " .. refusedMethods .. " of 2")
 end
 
 local function firstPlayerOnThisMap()
