@@ -31,6 +31,8 @@ enum ShamanSpells
     SPELL_SHAMAN_FLAMETONGUE_DAMAGE_BONUS = 51838,
     SPELL_SHAMAN_ELEMENTAL_SHELL          = 51847,
     SPELL_SHAMAN_ELEMENTAL_SHELL_PASSIVE  = 51848,
+    SPELL_SHAMAN_TIDAL_WAVE_PASSIVE       = 41826, // Totem of Tides (58146) equip aura
+    SPELL_SHAMAN_TIDAL_WAVE               = 41825, // 25-32 frost, enemies within 10 yd
     SPELL_SHAMAN_LIGHTNING_STRIKE_NATURE_R1 = 51386,
     SPELL_SHAMAN_LIGHTNING_STRIKE_NATURE_R2 = 52419,
     SPELL_SHAMAN_LIGHTNING_STRIKE_NATURE_R3 = 52421,
@@ -701,6 +703,18 @@ void TriggerElementalShell(Unit* owner)
     owner->CastSpell(owner, SPELL_SHAMAN_ELEMENTAL_SHELL, true);
 }
 
+void TriggerTidalWave(Unit* owner)
+{
+    if (!owner || !owner->HasAura(SPELL_SHAMAN_TIDAL_WAVE_PASSIVE))
+        return;
+
+    // triggered casts skip the cooldown check in Spell::CheckCast, so honour 41825's 2 s recoveryTime here
+    if (owner->HasSpellCooldown(SPELL_SHAMAN_TIDAL_WAVE))
+        return;
+
+    owner->CastSpell(owner, SPELL_SHAMAN_TIDAL_WAVE, true);
+}
+
 bool TriggerEmpoweredElementalShield(Spell* spell, bool consumeCharge)
 {
     if (!spell || !spell->m_casterUnit)
@@ -900,6 +914,7 @@ struct spell_shaman_water_shield : public AuraScript
         if (!aura || aura->GetEffIndex() != EFFECT_INDEX_0 || !IsWaterShieldSpell(aura->GetSpellProto()))
             return std::nullopt;
 
+        TriggerTidalWave(owner);
         TriggerElementalShell(owner);
         return std::nullopt;
     }
