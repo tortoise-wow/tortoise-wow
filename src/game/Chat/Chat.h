@@ -133,6 +133,21 @@ class ChatHandler
         WorldSession* GetSession() { return m_session; }
         Player* GetPlayer();
 
+#ifdef ENABLE_ELUNA
+        // Public wrappers for the Lua ChatHandler type (Eluna's methods are free functions
+        // and cannot reach the protected members). None of them dereferences a missing
+        // session: a console handler gets nullptr / false.
+        uint32 ElunaAccountId() const { return GetAccountId(); }
+        uint32 ElunaAccessLevel() const { return uint32(GetAccessLevel()); }
+        bool ElunaHasLowerSecurity(Player* target, bool strong) { return HasLowerSecurity(target, ObjectGuid(), strong); }
+        Player* ElunaSelectedPlayer() { return m_session ? GetSelectedPlayer() : nullptr; }
+        Unit* ElunaSelectedUnit() { return m_session ? GetSelectedUnit() : nullptr; }
+        Creature* ElunaSelectedCreature() { return m_session ? GetSelectedCreature() : nullptr; }
+        GameObject* ElunaSelectedGameObject() { return m_session ? getSelectedGameObject() : nullptr; }
+        void ElunaSetSentErrorMessage(bool value) { SetSentErrorMessage(value); }
+        void ElunaSendGlobalSysMessage(char const* text) { SendGlobalSysMessage(text); }
+#endif
+
         void SendBanResult(BanMode mode, BanReturn result, std::string& banTarget, uint32 duration_secs, std::string& reason);
 
         /**

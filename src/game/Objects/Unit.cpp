@@ -8114,6 +8114,23 @@ void Unit::TauntFadeOut(Unit* taunter)
 
 Unit* Unit::GetTauntTarget() const
 {
+#ifdef ENABLE_ELUNA
+    // Lua fixate (Creature:FixateTarget): while the unit is a valid target and still on the threat
+    // list it counts as a taunt that is never replaced; otherwise it is inert (not cleared).
+    if (m_elunaFixateGuid)
+    {
+        if (Unit* fixated = GetMap()->GetUnit(m_elunaFixateGuid))
+        {
+            if (IsValidAttackTarget(fixated))
+            {
+                for (HostileReference const* ref : m_ThreatManager.getThreatList())
+                    if (ref->getUnitGuid() == m_elunaFixateGuid)
+                        return fixated;
+            }
+        }
+    }
+#endif
+
     // taunters are pushed back, last caster will be at the end
     for (auto itr = m_tauntGuids.rbegin(); itr != m_tauntGuids.rend(); ++itr)
     {

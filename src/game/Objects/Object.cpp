@@ -2062,6 +2062,12 @@ void WorldObject::ResetMap()
     // Called by the map the object leaves, while that map (and its Lua state)
     // still exists and on the thread that owns it.
     ReleaseElunaMapEvents();
+
+    // Lua handles of Data() kept by the state of the map we leave must not share the map of values with
+    // the state of the next map (they run on other threads): leave them a detached copy and carry on.
+    if (auto const* data = std::get_if<LuaVal::WrappedMap>(&lua_data.v))
+        if (*data && !(*data)->empty())
+            lua_data = lua_data.deepClone();
 #endif
     m_currMap = nullptr;
     m_zoneScript = nullptr;
