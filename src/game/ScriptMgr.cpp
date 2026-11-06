@@ -1886,6 +1886,19 @@ uint8 ScriptMgr::GetBotRoles(Player* who)
     return roles;
 }
 
+// The first module answer (a trigger id) wins; 0: no answer.
+uint32 ScriptMgr::GetBotRepopEntrance(Player* bot, uint32 mapId, float x, float y, float z)
+{
+    uint32 triggerId = 0;
+    ScriptRegistry<PlayerScript>::ForEachEnabledHookWithReturn(PLAYERHOOK_GET_BOT_REPOP_ENTRANCE,
+        [&](PlayerScript* script)
+        {
+            triggerId = script->GetBotRepopEntrance(bot, mapId, x, y, z);
+            return triggerId != 0;
+        });
+    return triggerId;
+}
+
 bool ScriptMgr::OnAddonMessage(Player* from, std::string const& msg)
 {
     bool consumed = false;
