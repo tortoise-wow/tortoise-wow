@@ -40,6 +40,9 @@
 #include "Chat.h"
 #include "Logging/DatabaseLogger.hpp"
 #include "ScriptObjects.h"
+#ifdef ENABLE_ELUNA
+#include "LuaEngine.h"
+#endif
 
 #include <array>
 
@@ -1214,6 +1217,10 @@ void Group::CountTheRoll(Rolls::iterator& rollI)
                     {
                         CheckSoulboundException(player, *item, newItem, roll->lootedTargetGUID.IsCreature() ? player->GetMap()->GetCreature(roll->lootedTargetGUID) : nullptr, roll->lootedTargetGUID.IsGameObject());
                         player->OnReceivedItem(newItem);
+#ifdef ENABLE_ELUNA
+                        if (Eluna* e = player->GetEluna())
+                            e->OnGroupRollRewardItem(player, newItem, item->count, ROLL_NEED, roll);
+#endif
                     }
                 }
                 else
@@ -1284,6 +1291,10 @@ void Group::CountTheRoll(Rolls::iterator& rollI)
                     {
                         CheckSoulboundException(player, *item, newItem, roll->lootedTargetGUID.IsCreature() ? player->GetMap()->GetCreature(roll->lootedTargetGUID) : nullptr, roll->lootedTargetGUID.IsGameObject());
                         player->OnReceivedItem(newItem);
+#ifdef ENABLE_ELUNA
+                        if (Eluna* e = player->GetEluna())
+                            e->OnGroupRollRewardItem(player, newItem, item->count, ROLL_GREED, roll);
+#endif
                     }
                 }
                 else

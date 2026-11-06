@@ -38,9 +38,10 @@ cmake --build build --target mangosd
   or is missing (after a submodule bump, refresh the patches); the checks run
   on every configure and remake a copy that fails them.
   `src/game/ElunaScriptBridge.cpp` also fails to compile (`#error`) without
-  the ten markers. The copy is remade when a submodule file, a patch or
+  the eleven markers. The copy is remade when a submodule file, a patch or
   `ElunaSources.cmake` changes. Each patch names its Eluna base commit; 0001,
-  0003, 0004, 0005, 0006, 0007, 0009 and 0010 are candidates to upstream to
+  0003, 0004, 0005, 0006, 0007, 0009, 0010 and 0011 (all of it but `Player:IsBot` and
+  the two `Group.cpp` call sites) are candidates to upstream to
   Eluna, 0002 and 0008 are VMaNGOS-specific (other cores get the check from
   trackable pointers, and track their spell targets).
 
@@ -56,6 +57,7 @@ cmake --build build --target mangosd
   | `0008-vmangos-spell-gettarget-by-guid` | `Spell:GetTarget()` returned the target pointers cached in `SpellCastTargets`, which are refreshed only while the spell is casting: a projectile in flight kept the pointer of a target deleted meanwhile (a dead hunter's pet), and Lua read freed memory. The target is now looked up by its guid on the caster's map (`ObjectAccessor::GetUnit`, `Map::GetGameObject`/`GetCorpse`), and an item target the way `SpellCastTargets::Update` finds it: the caster player's item by guid (`TARGET_FLAG_ITEM`), or the trade partner's offered item (`TARGET_FLAG_TRADE_ITEM`, a trade enchant), found by slot `0..TRADE_SLOT_COUNT-1` before `Spell::cast` and by the item's guid (`TradeData::GetTradeSlotForItem`) after it, because `Spell::cast` runs `updateTradeSlotItem` before the cast hook and replaces the slot with the guid. |
   | `0009-vmangos-world-only-global-methods` | Server-wide functions ran in map states too: `PerformIngameSpawn`, `SendMail`, `SaveAllPlayers`, `StartGameEvent`, `StopGameEvent`, `AddVendorItem`, `VendorRemoveItem`, `VendorRemoveAllItems`, `AddTaxiPath`, `Kick`, `Ban`, `Player:KickPlayer` and `Player:LogoutPlayer` write other maps, sessions, accounts or the core's vendor/taxi tables, close a session's socket or delete a player synchronously, and a map state runs on that map's thread next to other maps. They are now flagged `METHOD_REG_WORLD`, the mechanism the backend already uses for the Group and Guild methods: a map state gets a closure that raises "attempt to call method '...' that does not exist for state: N" (see Threading rules and Known limits). |
   | `0010-vmangos-null-safe-method-chains` | Null dereferences in methods: `Aura:GetCasterLevel` read `aura->GetCaster()->GetLevel()`; the caster is a guid lookup that returns null once it despawned or logged out (a DoT from a dead add), and a player caster is found on any map (now `nil` when the caster is gone or on another map than the state's). `Item:GetItemLink` read `item->GetOwner()->GetLevel()`; an ownerless item (dropped, in a chest, in the mail) has no level (the link's level field is 0). The Lua instance AI's hooks and data methods (`Update`, `IsEncounterInProgress`, `OnPlayerEnter`, `OnObjectCreate`, `OnCreatureCreate`, `Initialize`, `Load`, `Save`, `GetData`/`SetData`, `GetData64`/`SetData64`) called `instance->GetEluna()->...` unchecked; a missing state now counts as "no script" (as the creature AI does since 0007), because `Map::GetEluna` refuses the state to a thread that does not update the map; `Save` returns NULL when the state is missing (wrong thread or no Lua instance script) and leaves `lastSaveData` alone: `InstanceData::SaveToDB` skips the write on NULL, so the stored data stays (the `DungeonPersistentState::SaveToDB` that stores an empty column for NULL runs for a new instance only), and `Load` keeps its data before the state check, so the map's next update reloads it. |
+  | `0011-vmangos-loot-itemtemplate-roll` | Missing for loot scripts: no `Loot` type, `GetItemTemplate` pushed nil (this pin registered no `ItemTemplate` type for VMaNGOS), `Unit:GetCritterGUID` was a "not implemented" stub, `Group:GetMembers` is world-only so no map state could list a group, and nothing told a script who won a group loot roll. Adds the `Loot`, `ItemTemplate` and `Roll` types, `PLAYER_EVENT_ON_GROUP_ROLL_REWARD_ITEM` (56) and the methods listed under "Turtle custom methods". |
 - The backend is `ELUNA_VMANGOS` with `ELUNA_EXPANSION=0`.
 - Lua (5.2 by default; `ELUNA_LUA_VERSION` takes lua51..lua54) is downloaded
   from lua.org at configure time with a pinned SHA-256 and linked statically.
@@ -194,6 +196,36 @@ What the core does to keep to that, only while `Eluna.Enabled = 1`:
    stray `tt.bak` once broke a toolkit load, and a copied state file next to
    the scripts is loaded again in every state).
 
+## Turtle custom methods
+
+Added by `dep/eluna-patches/0011` for loot scripts (the methods are in the
+submodule copy; the core side is the two roll call sites in `Group.cpp`).
+
+| Method | What it does |
+| --- | --- |
+| `Creature:GetLoot()` | the corpse's `Loot` |
+| `Creature:AllLootRemovedFromCorpse()` | tells the corpse its loot is gone (stops the sparkle, starts the despawn timer) |
+| `Loot:GetMoney()`, `SetMoney(copper)` | the coin; 0 closes it in open loot windows |
+| `Loot:GetUnlootedCount()`, `SetUnlootedCount(n)` | items not looted yet (0..255); skinning needs 0 |
+| `Loot:GetLootType()` | `LootType` (1 corpse, 6 skinning; `clear()` never resets it) |
+| `Loot:GetItems()`, `GetQuestItems()` | tables of `{ id, index, count, needs_quest, is_looted, is_blocked, freeforall, is_underthreshold, roll_winner_guid }` (`index` is the client slot, quest items follow the normal ones; `roll_winner_guid` is nil unless a roll winner with full bags is waiting) |
+| `Loot:SetItemLooted(itemId, count, looted = true)` | marks the first normal item with that entry (and count, 0 = any) and tells open windows; returns whether one matched |
+| `Loot:Clear()` | empties the loot and cancels running rolls |
+| `Player:IsAtGroupRewardDistance(obj)` | within the group reward distance (a dead player counts by corpse) |
+| `Player:IsAtLootRewardDistance(obj)` | the same, and for a creature also an allowed looter |
+| `Player:IsBot()` | headless session, or `ScriptMgr::IsBotManaged` (a hired TortoiseBots bot) |
+| `Unit:GetCritterGUID()` | guid of the mini pet (companion), or nil |
+| `Group:GetMembersOnMap()` | members in the world and on the state's map; works in a map state, where `Group:GetMembers` is refused |
+| `GetStateMapId()`, `GetStateInstanceId()` | the calling state's map id (-1 = world state) and instance id |
+| `GetItemTemplate(id)`, `Item:GetItemTemplate()`, `Item:GetTemplate()` | an `ItemTemplate` (`GetItemId`, `GetName([locale])`, `GetQuality`, `GetClass`, `GetSubClass`, `GetFlags`, `GetSellPrice`, `GetBuyPrice`, `GetBuyCount`, `GetInventoryType`, `GetItemLevel`, `GetRequiredLevel`, `GetBonding`, `GetMaxStackSize`, `GetDisplayId`, `GetAllowableClass`, `GetAllowableRace`) |
+| event 56 `PLAYER_EVENT_ON_GROUP_ROLL_REWARD_ITEM` | `(event, player, item, count, voteType, roll)`: a need (1) or greed (2) winner got the item. Not fired when the winner's bags are full, on a single-looter roll or when all pass. `Roll`: `GetItemId`, `GetItemRandomPropId`, `GetItemRandomSuffix` (0), `GetItemCount`, `GetItemSlot`, `GetPlayerVote(guid)`, `GetPlayerVoteGUIDs`, `GetTotalPlayersRolling`, `GetTotalNeed`, `GetTotalGreed`, `GetTotalPass`, `GetRollVoteMask` (7), `GetLootedTargetGUID` |
+
+Lifetime: a `Loot` or `Roll` is only valid during the call that pushed it (the
+`Loot` lives in its creature, the `Roll` is deleted right after the hook). Never
+keep one; call `corpse:GetLoot()` again every time. The roll event goes to the
+winner's map state; a vote counted on the world thread while that map updates
+finds no state and is skipped (see Threading rules).
+
 ## Where the hooks are
 
 - `src/game/ElunaScriptBridge.cpp` registers Eluna with the core's `ScriptObject`
@@ -244,6 +276,9 @@ destroyed, after its objects are unloaded.
   functions in a map state (`refused=<name>`, patch 0009) and
   `Aura:GetCasterLevel` of an aura whose caster despawned (nil, patch 0010).
   The header says what to do and what to expect.
+- `dep/lualib/tests/eluna_lootpet_smoke.lua` logs `ELUNA_LOOT ...` lines for
+  the loot methods of patch 0011 (`.lootsmoke` and the group roll event). The
+  header says what to do and what to expect.
 
 ## Known limits
 
@@ -260,6 +295,9 @@ destroyed, after its objects are unloaded.
   no map updates. `Player:KickPlayer` and `Player:LogoutPlayer` are both
   world-only; `LogoutPlayer` deletes the player synchronously inside the
   calling hook, so scripts should kick or save instead of logging a player out.
+- **`Group:GetMembers` is world-only** (it is flagged `METHOD_REG_WORLD`): in a
+  map state use `Group:GetMembersOnMap()` (`dep/eluna-patches/0011`), which lists
+  the members on the state's map.
 - **`Aura:GetCasterLevel` can be nil** (`dep/eluna-patches/0010`): the caster
   is looked up by its guid, so it is gone once the caster despawned or logged
   out (a DoT from a dead add), and it is nil for a caster on another map than

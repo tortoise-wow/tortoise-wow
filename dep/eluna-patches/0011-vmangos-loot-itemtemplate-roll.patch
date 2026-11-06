@@ -1,0 +1,806 @@
+tortoise-wow: VMaNGOS Eluna gets the Loot, ItemTemplate and Roll types and the
+methods a loot script needs.
+
+New userdata types (new files methods/VMangos/LootMethods.h,
+ItemTemplateMethods.h and RollMethods.h, registered in methods/Methods.cpp):
+
+- Loot: GetMoney, SetMoney (zero closes the coin in open loot windows),
+  GetUnlootedCount, SetUnlootedCount, GetLootType, Clear, GetItems,
+  GetQuestItems (tables { id, index, count, needs_quest, is_looted, is_blocked,
+  freeforall, is_underthreshold, roll_winner_guid }) and SetItemLooted. A Loot
+  is a member of its Creature and the userdata is call-scoped like every other:
+  only valid during the call that pushed it, fetch it again with
+  Creature:GetLoot.
+- ItemTemplate: this pin registered no type for VMaNGOS, so the global
+  GetItemTemplate and Item:GetItemTemplate pushed nil ("missing metatable").
+  The type is registered with read-only getters (GetItemId, GetName, GetQuality,
+  GetClass, GetSubClass, GetFlags, GetSellPrice, GetBuyPrice, GetBuyCount,
+  GetInventoryType, GetItemLevel, GetRequiredLevel, GetBonding, GetMaxStackSize,
+  GetDisplayId, GetAllowableClass, GetAllowableRace). Item:GetTemplate is an
+  alias of Item:GetItemTemplate.
+- Roll plus PLAYER_EVENT_ON_GROUP_ROLL_REWARD_ITEM (56, the id ALE uses),
+  called (event, player, item, count, voteType, roll) by the core after a need or
+  greed winner got the item. The Roll is deleted right after the hook.
+
+New methods: Creature:GetLoot, Creature:AllLootRemovedFromCorpse,
+Player:IsAtGroupRewardDistance, Player:IsAtLootRewardDistance,
+Player:IsBot (headless session, or ScriptMgr::IsBotManaged), Unit:GetCritterGUID
+(was a METHOD_REG_NONE stub; the mini pet's guid or nil),
+Group:GetMembersOnMap (Group:GetMembers is world-only; this one lists the
+members in the world and on the calling state's map, so it works in a map
+state), and the globals GetStateMapId (-1 in the world state) and
+GetStateInstanceId.
+
+Upstreamable to Eluna as VMaNGOS additions, except Player:IsBot (it asks the
+core's script manager) and the two call sites in the core's Group.cpp.
+
+Base: ElunaLuaEngine/Eluna 1b06f28ff3a00054d915d824c725fb4283fee74d (branch
+cmangos-spell-update), the dep/Eluna pin, with patches 0001-0010 applied. Eluna is
+GPL-3.0 (https://github.com/ElunaLuaEngine/Eluna, LICENSE); this change is under
+the same licence. Applied by cmake/ElunaSources.cmake to a copy in the build tree.
+diff --git a/ElunaTemplate.h b/ElunaTemplate.h
+index 97da0fb..a69da2c 100644
+--- a/ElunaTemplate.h
++++ b/ElunaTemplate.h
+@@ -13,6 +13,9 @@
+ // tortoise-wow dep/eluna-patches/0005 is applied (checked by the core).
+ #define ELUNA_TW_PATCH_0005 1
+ 
++// tortoise-wow dep/eluna-patches/0011 is applied (checked by the core).
++#define ELUNA_TW_PATCH_0011 1
++
+ extern "C"
+ {
+ #include "lua.h"
+diff --git a/LuaEngine.h b/LuaEngine.h
+index 3d9bb72..8f52e71 100644
+--- a/LuaEngine.h
++++ b/LuaEngine.h
+@@ -51,6 +51,10 @@ class CreatureAI;
+ class ElunaInstanceAI;
+ class GameObject;
+ class Group;
++#if defined ELUNA_VMANGOS
++class Roll;
++struct Loot;
++#endif
+ class Guild;
+ class Item;
+ class Pet;
+@@ -552,6 +556,10 @@ public:
+     void OnUpdateZone(Player* pPlayer, uint32 newZone, uint32 newArea);
+     void OnUpdateArea(Player* pPlayer, uint32 oldArea, uint32 newArea);
+     void OnMapChanged(Player* pPlayer);
++#if defined ELUNA_VMANGOS
++    // tortoise-wow dep/eluna-patches/0011: fires after a group loot roll winner got the item.
++    void OnGroupRollRewardItem(Player* pPlayer, Item* pItem, uint32 count, uint32 voteType, Roll* pRoll);
++#endif
+     void HandleGossipSelectOption(Player* pPlayer, uint32 menuId, uint32 sender, uint32 action, const std::string& code);
+     void OnAchievementComplete(Player* pPlayer, uint32 achievementId);
+ 
+diff --git a/hooks/Hooks.h b/hooks/Hooks.h
+index af59b50..79a6389 100644
+--- a/hooks/Hooks.h
++++ b/hooks/Hooks.h
+@@ -187,7 +187,8 @@ namespace Hooks
+         X(PLAYER_EVENT_ON_TRADE_INIT,              48, "on_trade_init")            \
+         X(PLAYER_EVENT_ON_SEND_MAIL,               49, "on_send_mail")             \
+         /* 50–53 unused */ \
+-        X(PLAYER_EVENT_ON_QUEST_STATUS_CHANGED,    54, "on_quest_status_changed")
++        X(PLAYER_EVENT_ON_QUEST_STATUS_CHANGED,    54, "on_quest_status_changed")  \
++        X(PLAYER_EVENT_ON_GROUP_ROLL_REWARD_ITEM,  56, "on_group_roll_reward_item")
+ 
+     enum PlayerEvents
+     {
+diff --git a/hooks/PlayerHooks.cpp b/hooks/PlayerHooks.cpp
+index cb11b76..cb4affe 100644
+--- a/hooks/PlayerHooks.cpp
++++ b/hooks/PlayerHooks.cpp
+@@ -677,3 +677,17 @@ bool Eluna::OnChat(Player* pPlayer, uint32 type, uint32 lang, std::string& msg,
+     CleanUpStack(5);
+     return result;
+ }
++
++#if defined ELUNA_VMANGOS
++// tortoise-wow dep/eluna-patches/0011
++void Eluna::OnGroupRollRewardItem(Player* pPlayer, Item* pItem, uint32 count, uint32 voteType, Roll* pRoll)
++{
++    START_HOOK(PLAYER_EVENT_ON_GROUP_ROLL_REWARD_ITEM);
++    HookPush(pPlayer);
++    HookPush(pItem);
++    HookPush(count);
++    HookPush(voteType);
++    HookPush(pRoll);
++    CallAllFunctions(binding, key);
++}
++#endif
+diff --git a/methods/Methods.cpp b/methods/Methods.cpp
+index 8573e25..7d43c3e 100644
+--- a/methods/Methods.cpp
++++ b/methods/Methods.cpp
+@@ -38,6 +38,11 @@
+ #include "BattleGroundMethods.h"
+ #include "BigIntMethods.h"
+ #include "CustomMethodsInterface.h"
++#if defined ELUNA_VMANGOS
++#include "LootMethods.h"
++#include "ItemTemplateMethods.h"
++#include "RollMethods.h"
++#endif
+ 
+ void RegisterMethods(Eluna* E)
+ {
+@@ -86,6 +91,18 @@ void RegisterMethods(Eluna* E)
+     ElunaTemplate<Vehicle>::SetMethods(E, LuaVehicle::VehicleMethods);
+ #endif
+ 
++#if defined ELUNA_VMANGOS
++    // tortoise-wow dep/eluna-patches/0011
++    ElunaTemplate<Loot>::Register(E, "Loot");
++    ElunaTemplate<Loot>::SetMethods(E, LuaLoot::LootMethods);
++
++    ElunaTemplate<ItemTemplate>::Register(E, "ItemTemplate");
++    ElunaTemplate<ItemTemplate>::SetMethods(E, LuaItemTemplate::ItemTemplateMethods);
++
++    ElunaTemplate<Roll>::Register(E, "Roll");
++    ElunaTemplate<Roll>::SetMethods(E, LuaRoll::RollMethods);
++#endif
++
+     ElunaTemplate<Group>::Register(E, "Group");
+     ElunaTemplate<Group>::SetMethods(E, LuaGroup::GroupMethods);
+ 
+diff --git a/methods/VMangos/CreatureMethods.h b/methods/VMangos/CreatureMethods.h
+index 41ee66d..9b74dbc 100644
+--- a/methods/VMangos/CreatureMethods.h
++++ b/methods/VMangos/CreatureMethods.h
+@@ -1120,6 +1120,27 @@ namespace LuaCreature
+         return 1;
+     }
+     
++    /**
++     * Returns the [Loot] of this [Creature]'s corpse. The [Loot] is only valid during
++     * the call: call this again every time, never keep it (tortoise-wow patch 0011).
++     *
++     * @return [Loot] loot
++     */
++    int GetLoot(Eluna* E, Creature* creature)
++    {
++        E->Push(&creature->loot);
++        return 1;
++    }
++
++    /**
++     * Tells the corpse that all its loot is gone (stops the sparkle, starts its despawn timer).
++     */
++    int AllLootRemovedFromCorpse(Eluna* /*E*/, Creature* creature)
++    {
++        creature->AllLootRemovedFromCorpse();
++        return 0;
++    }
++
+     ElunaRegister<Creature> CreatureMethods[] =
+     {
+         // Getters
+@@ -1139,6 +1160,7 @@ namespace LuaCreature
+         { "GetWanderRadius", &LuaCreature::GetWanderRadius },
+         { "GetCurrentWaypointId", &LuaCreature::GetCurrentWaypointId },
+         { "GetLootRecipient", &LuaCreature::GetLootRecipient },
++        { "GetLoot", &LuaCreature::GetLoot },
+         { "GetLootRecipientGroup", &LuaCreature::GetLootRecipientGroup },
+         { "GetNPCFlags", &LuaCreature::GetNPCFlags },
+         { "GetExtraFlags", &LuaCreature::GetExtraFlags },
+@@ -1189,6 +1211,7 @@ namespace LuaCreature
+         { "CanFly", &LuaCreature::CanFly },
+ 
+         // Other
++        { "AllLootRemovedFromCorpse", &LuaCreature::AllLootRemovedFromCorpse },
+         { "FleeToGetAssistance", &LuaCreature::FleeToGetAssistance },
+         { "CallForHelp", &LuaCreature::CallForHelp },
+         { "CallAssistance", &LuaCreature::CallAssistance },
+diff --git a/methods/VMangos/GlobalMethods.h b/methods/VMangos/GlobalMethods.h
+index f22c5a9..5b30752 100644
+--- a/methods/VMangos/GlobalMethods.h
++++ b/methods/VMangos/GlobalMethods.h
+@@ -40,6 +40,29 @@ namespace LuaGlobalFunctions
+         return 1;
+     }
+ 
++    /**
++     * Returns the map id of the calling Lua state, or -1 for the world state
++     * (tortoise-wow patch 0011).
++     *
++     * @return int32 mapId
++     */
++    int GetStateMapId(Eluna* E)
++    {
++        E->Push(E->GetBoundMapId());
++        return 1;
++    }
++
++    /**
++     * Returns the instance id of the calling Lua state (0 for the world state or a continent).
++     *
++     * @return uint32 instanceId
++     */
++    int GetStateInstanceId(Eluna* E)
++    {
++        E->Push(E->GetBoundInstanceId());
++        return 1;
++    }
++
+     /**
+      * Returns emulator .conf RealmID
+      *
+@@ -2941,6 +2964,8 @@ namespace LuaGlobalFunctions
+         // Getters
+         { "GetLuaEngine", &LuaGlobalFunctions::GetLuaEngine },
+         { "GetCoreName", &LuaGlobalFunctions::GetCoreName },
++        { "GetStateMapId", &LuaGlobalFunctions::GetStateMapId },
++        { "GetStateInstanceId", &LuaGlobalFunctions::GetStateInstanceId },
+         { "GetRealmID", &LuaGlobalFunctions::GetRealmID },
+         { "GetCoreVersion", &LuaGlobalFunctions::GetCoreVersion },
+         { "GetCoreExpansion", &LuaGlobalFunctions::GetCoreExpansion },
+diff --git a/methods/VMangos/GroupMethods.h b/methods/VMangos/GroupMethods.h
+index b3b6baa..90bdd24 100644
+--- a/methods/VMangos/GroupMethods.h
++++ b/methods/VMangos/GroupMethods.h
+@@ -170,6 +170,37 @@ namespace LuaGroup
+         return 1;
+     }
+ 
++    /**
++     * Returns a table with the [Player]s of this [Group] that are in the world and on
++     * the map of the calling state (every member in the world state). Unlike
++     * [Group:GetMembers] it works in a map state (tortoise-wow patch 0011).
++     *
++     * @return table groupPlayers : table of [Player]s
++     */
++    int GetMembersOnMap(Eluna* E, Group* group)
++    {
++        lua_newtable(E->L);
++        int tbl = lua_gettop(E->L);
++        uint32 i = 0;
++        Map const* bound = E->GetBoundMap();
++
++        for (GroupReference* itr = group->GetFirstMember(); itr; itr = itr->next())
++        {
++            Player* member = itr->getSource();
++
++            if (!member || !member->GetSession() || !member->IsInWorld())
++                continue;
++            if (bound && member->FindMap() != bound)
++                continue;
++
++            E->Push(member);
++            lua_rawseti(E->L, tbl, ++i);
++        }
++
++        lua_settop(E->L, tbl);
++        return 1;
++    }
++
+     /**
+      * Returns [Group] leader GUID
+      *
+@@ -354,6 +385,7 @@ namespace LuaGroup
+     {
+         // Getters
+         { "GetMembers", &LuaGroup::GetMembers, METHOD_REG_WORLD }, // World state method only in multistate
++        { "GetMembersOnMap", &LuaGroup::GetMembersOnMap },
+         { "GetLeaderGUID", &LuaGroup::GetLeaderGUID },
+         { "GetGUID", &LuaGroup::GetGUID },
+         { "GetMemberGroup", &LuaGroup::GetMemberGroup },
+diff --git a/methods/VMangos/ItemMethods.h b/methods/VMangos/ItemMethods.h
+index f206b35..eeac7dc 100644
+--- a/methods/VMangos/ItemMethods.h
++++ b/methods/VMangos/ItemMethods.h
+@@ -800,6 +800,7 @@ namespace LuaItem
+         { "GetItemSet", &LuaItem::GetItemSet },
+         { "GetBagSize", &LuaItem::GetBagSize },
+         { "GetItemTemplate", &LuaItem::GetItemTemplateEntry },
++        { "GetTemplate", &LuaItem::GetItemTemplateEntry },
+         { "GetStatInfo", &LuaItem::GetStatInfo },
+         { "GetDamageInfo", &LuaItem::GetDamageInfo },
+         { "GetSpeed", &LuaItem::GetSpeed },
+diff --git a/methods/VMangos/ItemTemplateMethods.h b/methods/VMangos/ItemTemplateMethods.h
+new file mode 100644
+index 0000000..8740e45
+--- /dev/null
++++ b/methods/VMangos/ItemTemplateMethods.h
+@@ -0,0 +1,79 @@
++/*
++* Copyright (C) 2010 - 2024 Eluna Lua Engine <https://elunaluaengine.github.io/>
++* This program is free software licensed under GPL version 3
++* Please see the included DOCS/LICENSE.md for more information
++*/
++
++#ifndef ITEMTEMPLATEMETHODS_H
++#define ITEMTEMPLATEMETHODS_H
++
++/***
++ * The static data of an item (tortoise-wow dep/eluna-patches/0011), read from
++ * the core's item_template storage. The userdata is only valid during the call
++ * that pushed it, like every other.
++ */
++namespace LuaItemTemplate
++{
++    /** @return uint32 itemId */
++    int GetItemId(Eluna* E, ItemTemplate* t) { E->Push(uint32(t->ItemId)); return 1; }
++
++    /**
++     * @param uint32 locale = 0 : a LocaleConstant; the default name when that locale has none
++     * @return string name
++     */
++    int GetName(Eluna* E, ItemTemplate* t)
++    {
++        uint32 locale = E->CHECKVAL<uint32>(2, 0);
++        if (locale)
++            if (ItemLocale const* il = eObjectMgr->GetItemLocale(t->ItemId))
++                if (locale < il->Name.size() && !il->Name[locale].empty())
++                {
++                    E->Push(il->Name[locale]);
++                    return 1;
++                }
++        E->Push(t->Name1);
++        return 1;
++    }
++
++    /** @return uint32 quality : 0 (poor) to 6 */
++    int GetQuality(Eluna* E, ItemTemplate* t) { E->Push(uint32(t->Quality)); return 1; }
++    int GetClass(Eluna* E, ItemTemplate* t) { E->Push(uint32(t->Class)); return 1; }
++    int GetSubClass(Eluna* E, ItemTemplate* t) { E->Push(uint32(t->SubClass)); return 1; }
++    /** @return uint32 flags : ITEM_FLAG_PARTY_LOOT is 0x800 */
++    int GetFlags(Eluna* E, ItemTemplate* t) { E->Push(uint32(t->Flags)); return 1; }
++    int GetSellPrice(Eluna* E, ItemTemplate* t) { E->Push(uint32(t->SellPrice)); return 1; }
++    int GetBuyPrice(Eluna* E, ItemTemplate* t) { E->Push(uint32(t->BuyPrice)); return 1; }
++    int GetBuyCount(Eluna* E, ItemTemplate* t) { E->Push(uint32(t->BuyCount)); return 1; }
++    int GetInventoryType(Eluna* E, ItemTemplate* t) { E->Push(uint32(t->InventoryType)); return 1; }
++    int GetItemLevel(Eluna* E, ItemTemplate* t) { E->Push(uint32(t->ItemLevel)); return 1; }
++    int GetRequiredLevel(Eluna* E, ItemTemplate* t) { E->Push(uint32(t->RequiredLevel)); return 1; }
++    /** Not in ALE. @return uint32 bonding */
++    int GetBonding(Eluna* E, ItemTemplate* t) { E->Push(uint32(t->Bonding)); return 1; }
++    /** Not in ALE. @return uint32 stack size */
++    int GetMaxStackSize(Eluna* E, ItemTemplate* t) { E->Push(uint32(t->Stackable)); return 1; }
++    int GetDisplayId(Eluna* E, ItemTemplate* t) { E->Push(uint32(t->DisplayInfoID)); return 1; }
++    int GetAllowableClass(Eluna* E, ItemTemplate* t) { E->Push(uint32(t->AllowableClass)); return 1; }
++    int GetAllowableRace(Eluna* E, ItemTemplate* t) { E->Push(uint32(t->AllowableRace)); return 1; }
++
++    ElunaRegister<ItemTemplate> ItemTemplateMethods[] =
++    {
++        { "GetItemId", &LuaItemTemplate::GetItemId },
++        { "GetName", &LuaItemTemplate::GetName },
++        { "GetQuality", &LuaItemTemplate::GetQuality },
++        { "GetClass", &LuaItemTemplate::GetClass },
++        { "GetSubClass", &LuaItemTemplate::GetSubClass },
++        { "GetFlags", &LuaItemTemplate::GetFlags },
++        { "GetSellPrice", &LuaItemTemplate::GetSellPrice },
++        { "GetBuyPrice", &LuaItemTemplate::GetBuyPrice },
++        { "GetBuyCount", &LuaItemTemplate::GetBuyCount },
++        { "GetInventoryType", &LuaItemTemplate::GetInventoryType },
++        { "GetItemLevel", &LuaItemTemplate::GetItemLevel },
++        { "GetRequiredLevel", &LuaItemTemplate::GetRequiredLevel },
++        { "GetBonding", &LuaItemTemplate::GetBonding },
++        { "GetMaxStackSize", &LuaItemTemplate::GetMaxStackSize },
++        { "GetDisplayId", &LuaItemTemplate::GetDisplayId },
++        { "GetAllowableClass", &LuaItemTemplate::GetAllowableClass },
++        { "GetAllowableRace", &LuaItemTemplate::GetAllowableRace }
++    };
++};
++#endif
+diff --git a/methods/VMangos/LootMethods.h b/methods/VMangos/LootMethods.h
+new file mode 100644
+index 0000000..aa240bf
+--- /dev/null
++++ b/methods/VMangos/LootMethods.h
+@@ -0,0 +1,209 @@
++/*
++* Copyright (C) 2010 - 2024 Eluna Lua Engine <https://elunaluaengine.github.io/>
++* This program is free software licensed under GPL version 3
++* Please see the included DOCS/LICENSE.md for more information
++*/
++
++#ifndef LOOTMETHODS_H
++#define LOOTMETHODS_H
++
++/***
++ * The loot of a [Creature] corpse (tortoise-wow dep/eluna-patches/0011).
++ *
++ * A Loot is a member of its [Creature]: the userdata is only valid during the
++ * call that pushed it. Never keep one; call [Creature:GetLoot] again.
++ */
++namespace LuaLoot
++{
++    // Pushes one loot entry as a table. index is the client slot.
++    static void PushLootItem(Eluna* E, LootItem const& li, uint32 index)
++    {
++        lua_State* L = E->L;
++        lua_newtable(L);
++        int tbl = lua_gettop(L);
++
++        E->Push(uint32(li.itemid));
++        lua_setfield(L, tbl, "id");
++        E->Push(index);
++        lua_setfield(L, tbl, "index");
++        E->Push(uint32(li.count));
++        lua_setfield(L, tbl, "count");
++        E->Push(bool(li.needs_quest));
++        lua_setfield(L, tbl, "needs_quest");
++        E->Push(bool(li.is_looted));
++        lua_setfield(L, tbl, "is_looted");
++        E->Push(bool(li.is_blocked));
++        lua_setfield(L, tbl, "is_blocked");
++        E->Push(bool(li.freeforall));
++        lua_setfield(L, tbl, "freeforall");
++        E->Push(bool(li.is_underthreshold));
++        lua_setfield(L, tbl, "is_underthreshold");
++        // the roll winner whose bags were full (nil when there is none)
++        if (!li.lootOwner.IsEmpty())
++            E->Push(li.lootOwner);
++        else
++            E->Push();
++        lua_setfield(L, tbl, "roll_winner_guid");
++    }
++
++    /**
++     * Returns the gold of this [Loot], in copper.
++     *
++     * @return uint32 money
++     */
++    int GetMoney(Eluna* E, Loot* loot)
++    {
++        E->Push(uint32(loot->gold));
++        return 1;
++    }
++
++    /**
++     * Sets the gold of this [Loot]. Zero closes the coin in open loot windows.
++     *
++     * @param uint32 money : copper
++     */
++    int SetMoney(Eluna* E, Loot* loot)
++    {
++        uint32 gold = E->CHECKVAL<uint32>(2);
++        loot->gold = gold;
++        if (!gold)
++            loot->NotifyMoneyRemoved();
++        return 0;
++    }
++
++    /**
++     * Returns the number of items not looted yet (what keeps the corpse sparkling).
++     *
++     * @return uint32 count
++     */
++    int GetUnlootedCount(Eluna* E, Loot* loot)
++    {
++        E->Push(uint32(loot->unlootedCount));
++        return 1;
++    }
++
++    /**
++     * Sets the number of items not looted yet (0..255).
++     *
++     * @param uint32 count
++     */
++    int SetUnlootedCount(Eluna* E, Loot* loot)
++    {
++        uint32 count = E->CHECKVAL<uint32>(2);
++        loot->unlootedCount = uint8(std::min<uint32>(count, 255));
++        return 0;
++    }
++
++    /**
++     * Returns the LootType of this [Loot] (1 corpse, 2 pickpocketing, 6 skinning, ...).
++     *
++     * @return uint32 lootType
++     */
++    int GetLootType(Eluna* E, Loot* loot)
++    {
++        E->Push(uint32(loot->loot_type));
++        return 1;
++    }
++
++    /**
++     * Empties this [Loot] (items, gold, rolls in progress).
++     */
++    int Clear(Eluna* /*E*/, Loot* loot)
++    {
++        loot->clear();
++        return 0;
++    }
++
++    /**
++     * Returns a table with the normal items of this [Loot]: each entry is a table
++     * { id, index (0-based slot), count, needs_quest, is_looted, is_blocked,
++     * freeforall, is_underthreshold, roll_winner_guid (nil when none) }.
++     *
++     * @return table items
++     */
++    int GetItems(Eluna* E, Loot* loot)
++    {
++        lua_newtable(E->L);
++        int tbl = lua_gettop(E->L);
++        uint32 i = 0;
++        for (LootItem const& li : loot->items)
++        {
++            PushLootItem(E, li, i);
++            lua_rawseti(E->L, tbl, ++i);
++        }
++        lua_settop(E->L, tbl);
++        return 1;
++    }
++
++    /**
++     * Returns a table with the quest items of this [Loot], shaped as [Loot:GetItems];
++     * their index follows the normal slots.
++     *
++     * @return table items
++     */
++    int GetQuestItems(Eluna* E, Loot* loot)
++    {
++        lua_newtable(E->L);
++        int tbl = lua_gettop(E->L);
++        uint32 base = uint32(loot->items.size());
++        uint32 i = 0;
++        for (LootItem const& li : loot->m_questItems)
++        {
++            PushLootItem(E, li, base + i);
++            lua_rawseti(E->L, tbl, ++i);
++        }
++        lua_settop(E->L, tbl);
++        return 1;
++    }
++
++    /**
++     * Marks the first normal item with this entry (and this count, 0 = any) as looted
++     * or not, and tells open loot windows that it is gone.
++     *
++     * @param uint32 itemId
++     * @param uint32 count : 0 matches any count
++     * @param bool looted = true
++     * @return bool matched
++     */
++    int SetItemLooted(Eluna* E, Loot* loot)
++    {
++        uint32 itemId = E->CHECKVAL<uint32>(2);
++        uint32 count = E->CHECKVAL<uint32>(3);
++        bool looted = E->CHECKVAL<bool>(4, true);
++
++        for (size_t i = 0; i < loot->items.size(); ++i)
++        {
++            LootItem& li = loot->items[i];
++            if (li.itemid != itemId || (count && li.count != count))
++                continue;
++
++            li.is_looted = looted;
++            if (looted)
++                loot->NotifyItemRemoved(uint8(i));
++            E->Push(true);
++            return 1;
++        }
++
++        E->Push(false);
++        return 1;
++    }
++
++    ElunaRegister<Loot> LootMethods[] =
++    {
++        // Getters
++        { "GetMoney", &LuaLoot::GetMoney },
++        { "GetUnlootedCount", &LuaLoot::GetUnlootedCount },
++        { "GetLootType", &LuaLoot::GetLootType },
++        { "GetItems", &LuaLoot::GetItems },
++        { "GetQuestItems", &LuaLoot::GetQuestItems },
++
++        // Setters
++        { "SetMoney", &LuaLoot::SetMoney },
++        { "SetUnlootedCount", &LuaLoot::SetUnlootedCount },
++        { "SetItemLooted", &LuaLoot::SetItemLooted },
++
++        // Other
++        { "Clear", &LuaLoot::Clear }
++    };
++};
++#endif
+diff --git a/methods/VMangos/PlayerMethods.h b/methods/VMangos/PlayerMethods.h
+index 5a6199b..9d9ac76 100644
+--- a/methods/VMangos/PlayerMethods.h
++++ b/methods/VMangos/PlayerMethods.h
+@@ -3373,6 +3373,50 @@ namespace LuaPlayer
+     return 0;
+     }*/
+ 
++    /**
++     * Returns true if this [Player] (or the corpse of a dead one) is within the group
++     * reward distance of the [WorldObject].
++     *
++     * @param [WorldObject] object
++     * @return bool atDistance
++     */
++    int IsAtGroupRewardDistance(Eluna* E, Player* player)
++    {
++        WorldObject* obj = E->CHECKOBJ<WorldObject>(2);
++        E->Push(player->IsAtGroupRewardDistance(obj));
++        return 1;
++    }
++
++    /**
++     * Returns true if this [Player] is within the group reward distance of the [WorldObject]
++     * and, for a [Creature], is allowed to loot its corpse.
++     *
++     * @param [WorldObject] object
++     * @return bool canLoot
++     */
++    int IsAtLootRewardDistance(Eluna* E, Player* player)
++    {
++        WorldObject* obj = E->CHECKOBJ<WorldObject>(2);
++        bool ok = player->IsAtGroupRewardDistance(obj);
++        if (ok && obj->GetTypeId() == TYPEID_UNIT)
++            ok = static_cast<Creature*>(obj)->loot.IsAllowedLooter(player->GetObjectGuid());
++        E->Push(ok);
++        return 1;
++    }
++
++    /**
++     * Returns true if this [Player] is a bot: a headless session, or a character a
++     * script (TortoiseBots) manages as a hired bot.
++     *
++     * @return bool isBot
++     */
++    int IsBot(Eluna* E, Player* player)
++    {
++        WorldSession* session = player->GetSession();
++        E->Push((session && session->IsHeadless()) || sScriptMgr.IsBotManaged(player));
++        return 1;
++    }
++
+     ElunaRegister<Player> PlayerMethods[] =
+     {
+         // Getters
+@@ -3469,6 +3513,9 @@ namespace LuaPlayer
+ 
+         // Boolean
+         { "IsInGroup", &LuaPlayer::IsInGroup },
++        { "IsAtGroupRewardDistance", &LuaPlayer::IsAtGroupRewardDistance },
++        { "IsAtLootRewardDistance", &LuaPlayer::IsAtLootRewardDistance },
++        { "IsBot", &LuaPlayer::IsBot },
+         { "IsInGuild", &LuaPlayer::IsInGuild },
+         { "IsGM", &LuaPlayer::IsGM },
+         { "IsImmuneToDamage", &LuaPlayer::IsImmuneToDamage },
+diff --git a/methods/VMangos/RollMethods.h b/methods/VMangos/RollMethods.h
+new file mode 100644
+index 0000000..b265892
+--- /dev/null
++++ b/methods/VMangos/RollMethods.h
+@@ -0,0 +1,93 @@
++/*
++* Copyright (C) 2010 - 2024 Eluna Lua Engine <https://elunaluaengine.github.io/>
++* This program is free software licensed under GPL version 3
++* Please see the included DOCS/LICENSE.md for more information
++*/
++
++#ifndef ROLLMETHODS_H
++#define ROLLMETHODS_H
++
++/***
++ * A group loot roll (tortoise-wow dep/eluna-patches/0011), passed to the
++ * PLAYER_EVENT_ON_GROUP_ROLL_REWARD_ITEM (56) handler
++ * `(event, player, item, count, voteType, roll)`. The Roll is deleted right after
++ * the hook: it is only valid during the call.
++ */
++namespace LuaRoll
++{
++    /** @return uint32 itemId */
++    int GetItemId(Eluna* E, Roll* roll) { E->Push(uint32(roll->itemid)); return 1; }
++    /** @return int32 randomPropertyId */
++    int GetItemRandomPropId(Eluna* E, Roll* roll) { E->Push(int32(roll->itemRandomPropId)); return 1; }
++    /** Always 0: this core has no random suffix. */
++    int GetItemRandomSuffix(Eluna* E, Roll* /*roll*/) { E->Push(uint32(0)); return 1; }
++    /** @return uint32 count : 0 once the loot is gone */
++    int GetItemCount(Eluna* E, Roll* roll)
++    {
++        uint32 count = 0;
++        if (roll->isValid())
++            if (Loot* loot = roll->getLoot())
++                if (roll->itemSlot < loot->items.size())
++                    count = loot->items[roll->itemSlot].count;
++        E->Push(count);
++        return 1;
++    }
++    int GetItemSlot(Eluna* E, Roll* roll) { E->Push(uint32(roll->itemSlot)); return 1; }
++
++    /**
++     * @param ObjectGuid guid : a rolling player
++     * @return uint32 vote : PASS 0, NEED 1, GREED 2, NOT_EMITED_YET 3, NOT_VALID 4; nil when not rolling
++     */
++    int GetPlayerVote(Eluna* E, Roll* roll)
++    {
++        ObjectGuid guid = E->CHECKVAL<ObjectGuid>(2);
++        auto itr = roll->playerVote.find(guid);
++        if (itr == roll->playerVote.end())
++            E->Push();
++        else
++            E->Push(uint32(itr->second));
++        return 1;
++    }
++
++    /** @return table guids : the ObjectGuids of the rolling players */
++    int GetPlayerVoteGUIDs(Eluna* E, Roll* roll)
++    {
++        lua_newtable(E->L);
++        int tbl = lua_gettop(E->L);
++        uint32 i = 0;
++        for (auto const& vote : roll->playerVote)
++        {
++            E->Push(vote.first);
++            lua_rawseti(E->L, tbl, ++i);
++        }
++        lua_settop(E->L, tbl);
++        return 1;
++    }
++
++    int GetTotalPlayersRolling(Eluna* E, Roll* roll) { E->Push(uint32(roll->totalPlayersRolling)); return 1; }
++    int GetTotalNeed(Eluna* E, Roll* roll) { E->Push(uint32(roll->totalNeed)); return 1; }
++    int GetTotalGreed(Eluna* E, Roll* roll) { E->Push(uint32(roll->totalGreed)); return 1; }
++    int GetTotalPass(Eluna* E, Roll* roll) { E->Push(uint32(roll->totalPass)); return 1; }
++    /** Constant 0x07: pass, need and greed (1.12 has no disenchant). */
++    int GetRollVoteMask(Eluna* E, Roll* /*roll*/) { E->Push(uint32(0x07)); return 1; }
++    /** Extension (replaces ALE's GetItemGUID: rolls here have no item guid). @return ObjectGuid guid of the looted corpse or chest */
++    int GetLootedTargetGUID(Eluna* E, Roll* roll) { E->Push(roll->lootedTargetGUID); return 1; }
++
++    ElunaRegister<Roll> RollMethods[] =
++    {
++        { "GetItemId", &LuaRoll::GetItemId },
++        { "GetItemRandomPropId", &LuaRoll::GetItemRandomPropId },
++        { "GetItemRandomSuffix", &LuaRoll::GetItemRandomSuffix },
++        { "GetItemCount", &LuaRoll::GetItemCount },
++        { "GetItemSlot", &LuaRoll::GetItemSlot },
++        { "GetPlayerVote", &LuaRoll::GetPlayerVote },
++        { "GetPlayerVoteGUIDs", &LuaRoll::GetPlayerVoteGUIDs },
++        { "GetTotalPlayersRolling", &LuaRoll::GetTotalPlayersRolling },
++        { "GetTotalNeed", &LuaRoll::GetTotalNeed },
++        { "GetTotalGreed", &LuaRoll::GetTotalGreed },
++        { "GetTotalPass", &LuaRoll::GetTotalPass },
++        { "GetRollVoteMask", &LuaRoll::GetRollVoteMask },
++        { "GetLootedTargetGUID", &LuaRoll::GetLootedTargetGUID }
++    };
++};
++#endif
+diff --git a/methods/VMangos/UnitMethods.h b/methods/VMangos/UnitMethods.h
+index 6680a07..c456602 100644
+--- a/methods/VMangos/UnitMethods.h
++++ b/methods/VMangos/UnitMethods.h
+@@ -2459,10 +2459,25 @@ namespace LuaUnit
+         return 0;
+     }
+ 
++    /**
++     * Returns the guid of this [Unit]'s companion (mini pet), or nil.
++     *
++     * @return ObjectGuid guid
++     */
++    int GetCritterGUID(Eluna* E, Unit* unit)
++    {
++        if (Pet* mini = unit->GetMiniPet())
++            E->Push(mini->GetObjectGuid());
++        else
++            E->Push();
++        return 1;
++    }
++
+     ElunaRegister<Unit> UnitMethods[] =
+     {
+         // Getters
+         { "GetLevel", &LuaUnit::GetLevel },
++        { "GetCritterGUID", &LuaUnit::GetCritterGUID },
+         { "GetHealth", &LuaUnit::GetHealth },
+         { "GetDisplayId", &LuaUnit::GetDisplayId },
+         { "GetNativeDisplayId", &LuaUnit::GetNativeDisplayId },
+@@ -2617,7 +2632,6 @@ namespace LuaUnit
+ 
+         // Not used in VMaNGOS
+         { "GetVehicleKit", METHOD_REG_NONE },
+-        { "GetCritterGUID", METHOD_REG_NONE },
+         { "MoveJump", METHOD_REG_NONE },
+         { "RemoveArenaAuras", METHOD_REG_NONE },
+         { "IsOnVehicle", METHOD_REG_NONE },
