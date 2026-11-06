@@ -18,8 +18,14 @@ the map (core, this PR), so it can be null where the instance AI still runs:
 a missing state is now treated as "no script", as ElunaCreatureAI does since
 0007. Update, IsEncounterInProgress, OnPlayerEnter, OnObjectCreate,
 OnCreatureCreate, Initialize, Load, Save, GetData, SetData, GetData64 and
-SetData64 check the state; Save returns NULL (the core then keeps the last
-data) and the data getters return 0.
+SetData64 check the state. Load copies its data into lastSaveData before that
+check, so data that arrives while the state is missing is kept and reloaded on
+the map's next update (Reload); it used to return before the copy and lose it.
+Save returns the data that last passed through the class (lastSaveData, empty
+only when none was ever loaded or saved) instead of NULL: the core's SaveToDB
+(MapPersistentStateMgr.cpp) writes data='' into the instance row when Save
+returns NULL, which dropped the instance's saved data. The data getters return
+0.
 
 Upstreamable: ALE has the same GetCasterLevel (mod-ale methods/AuraMethods.h),
 and the instance AI checks are harmless on cores whose Map always has a state.
@@ -29,10 +35,10 @@ cmangos-spell-update), the dep/Eluna pin, with patches 0001-0009 applied. Eluna 
 GPL-3.0 (https://github.com/ElunaLuaEngine/Eluna, LICENSE); this change is under
 the same licence. Applied by cmake/ElunaSources.cmake to a copy in the build tree.
 diff --git a/ElunaInstanceAI.cpp b/ElunaInstanceAI.cpp
-index 4775f25..baeff2d 100644
+index 4775f25..d9e2684 100644
 --- a/ElunaInstanceAI.cpp
 +++ b/ElunaInstanceAI.cpp
-@@ -12,19 +12,29 @@
+@@ -12,14 +12,20 @@
  #if !defined ELUNA_TRINITY
  void ElunaInstanceAI::Initialize()
  {
@@ -57,17 +63,17 @@ index 4775f25..baeff2d 100644
  }
  #endif
  
- void ElunaInstanceAI::Load(const char* data)
- {
+@@ -36,23 +42,30 @@ void ElunaInstanceAI::Load(const char* data)
+         lastSaveData.assign(data);
+     }
+ 
++    // The state is needed to load the data into it, but the data is kept
++    // above even when it is missing: a later Update on the map's thread
++    // reloads it from lastSaveData (Reload).
 +    Eluna* E = instance->GetEluna();
 +    if (!E)
 +        return;
 +
-     // If we get passed NULL (i.e. `Reload` was called) then use
-     //   the last known save data (or maybe just an empty string).
-     if (!data)
-@@ -38,21 +48,21 @@ void ElunaInstanceAI::Load(const char* data)
- 
      if (data[0] == '\0')
      {
 -        ASSERT(!instance->GetEluna()->HasInstanceData(instance));
@@ -93,7 +99,7 @@ index 4775f25..baeff2d 100644
  
      if (decodedData)
      {
-@@ -69,9 +79,9 @@ void ElunaInstanceAI::Load(const char* data)
+@@ -69,9 +82,9 @@ void ElunaInstanceAI::Load(const char* data)
              // Only use the data if it's a table.
              if (lua_istable(L, -1))
              {
@@ -105,22 +111,25 @@ index 4775f25..baeff2d 100644
                  // WARNING! lastSaveData might be different after `OnLoad` if the Lua code saved data.
              }
              else
-@@ -111,7 +121,13 @@ void ElunaInstanceAI::Load(const char* data)
+@@ -111,7 +124,16 @@ void ElunaInstanceAI::Load(const char* data)
  
  const char* ElunaInstanceAI::Save() const
  {
 -    lua_State* L = instance->GetEluna()->L;
-+    // No state (the caller is not the thread that updates this map): nothing
-+    // to save, and the core keeps the instance's last data.
++    // No state (the caller is not the thread that updates this map): return
++    // the data that last passed through this class. The core's SaveToDB
++    // writes an empty data column when Save returns NULL, which would drop
++    // the instance's saved data; lastSaveData is empty only if none was ever
++    // loaded or saved.
 +    Eluna* E = instance->GetEluna();
 +    if (!E)
-+        return NULL;
++        return lastSaveData.c_str();
 +
 +    lua_State* L = E->L;
      // Stack: (empty)
  
      /*
-@@ -124,7 +140,7 @@ const char* ElunaInstanceAI::Save() const
+@@ -124,7 +146,7 @@ const char* ElunaInstanceAI::Save() const
      ElunaInstanceAI* self = const_cast<ElunaInstanceAI*>(this);
  
      lua_pushcfunction(L, mar_encode);
@@ -129,7 +138,7 @@ index 4775f25..baeff2d 100644
      // Stack: mar_encode, instance_data
  
      if (lua_pcall(L, 1, 1, 0) != 0)
-@@ -149,6 +165,9 @@ const char* ElunaInstanceAI::Save() const
+@@ -149,6 +171,9 @@ const char* ElunaInstanceAI::Save() const
  uint32 ElunaInstanceAI::GetData(uint32 key) const
  {
      Eluna* E = instance->GetEluna();
@@ -139,7 +148,7 @@ index 4775f25..baeff2d 100644
      lua_State* L = E->L;
      // Stack: (empty)
  
-@@ -171,6 +190,9 @@ uint32 ElunaInstanceAI::GetData(uint32 key) const
+@@ -171,6 +196,9 @@ uint32 ElunaInstanceAI::GetData(uint32 key) const
  void ElunaInstanceAI::SetData(uint32 key, uint32 value)
  {
      Eluna* E = instance->GetEluna();
@@ -149,7 +158,7 @@ index 4775f25..baeff2d 100644
      lua_State* L = E->L;
      // Stack: (empty)
  
-@@ -191,6 +213,9 @@ void ElunaInstanceAI::SetData(uint32 key, uint32 value)
+@@ -191,6 +219,9 @@ void ElunaInstanceAI::SetData(uint32 key, uint32 value)
  uint64 ElunaInstanceAI::GetData64(uint32 key) const
  {
      Eluna* E = instance->GetEluna();
@@ -159,7 +168,7 @@ index 4775f25..baeff2d 100644
      lua_State* L = E->L;
      // Stack: (empty)
  
-@@ -213,6 +238,9 @@ uint64 ElunaInstanceAI::GetData64(uint32 key) const
+@@ -213,6 +244,9 @@ uint64 ElunaInstanceAI::GetData64(uint32 key) const
  void ElunaInstanceAI::SetData64(uint32 key, uint64 value)
  {
      Eluna* E = instance->GetEluna();
