@@ -38,11 +38,12 @@ cmake --build build --target mangosd
   or is missing (after a submodule bump, refresh the patches); the checks run
   on every configure and remake a copy that fails them.
   `src/game/ElunaScriptBridge.cpp` also fails to compile (`#error`) without
-  the eleven markers. The copy is remade when a submodule file, a patch or
+  the markers of all patches. The copy is remade when a submodule file, a patch or
   `ElunaSources.cmake` changes. Each patch names its Eluna base commit; 0001,
   0003, 0004, 0005, 0006, 0007, 0009, 0010 and 0011 (all of it but `Player:IsBot` and
   the two `Group.cpp` call sites) are candidates to upstream to
-  Eluna, 0002 and 0008 are VMaNGOS-specific (other cores get the check from
+  Eluna, 0012 partly (the `LuaVal` value semantics and `RegisterSpellEvent` are not
+  VMaNGOS-specific; the hit unit argument and the `ChatHandler` are), 0002 and 0008 are VMaNGOS-specific (other cores get the check from
   trackable pointers, and track their spell targets).
 
   | Patch | Fixes |
@@ -58,6 +59,7 @@ cmake --build build --target mangosd
   | `0009-vmangos-world-only-global-methods` | Server-wide functions ran in map states too: `PerformIngameSpawn`, `SendMail`, `SaveAllPlayers`, `StartGameEvent`, `StopGameEvent`, `AddVendorItem`, `VendorRemoveItem`, `VendorRemoveAllItems`, `AddTaxiPath`, `Kick`, `Ban`, `Player:KickPlayer` and `Player:LogoutPlayer` write other maps, sessions, accounts or the core's vendor/taxi tables, close a session's socket or delete a player synchronously, and a map state runs on that map's thread next to other maps. They are now flagged `METHOD_REG_WORLD`, the mechanism the backend already uses for the Group and Guild methods: a map state gets a closure that raises "attempt to call method '...' that does not exist for state: N" (see Threading rules and Known limits). |
   | `0010-vmangos-null-safe-method-chains` | Null dereferences in methods: `Aura:GetCasterLevel` read `aura->GetCaster()->GetLevel()`; the caster is a guid lookup that returns null once it despawned or logged out (a DoT from a dead add), and a player caster is found on any map (now `nil` when the caster is gone or on another map than the state's). `Item:GetItemLink` read `item->GetOwner()->GetLevel()`; an ownerless item (dropped, in a chest, in the mail) has no level (the link's level field is 0). The Lua instance AI's hooks and data methods (`Update`, `IsEncounterInProgress`, `OnPlayerEnter`, `OnObjectCreate`, `OnCreatureCreate`, `Initialize`, `Load`, `Save`, `GetData`/`SetData`, `GetData64`/`SetData64`) called `instance->GetEluna()->...` unchecked; a missing state now counts as "no script" (as the creature AI does since 0007), because `Map::GetEluna` refuses the state to a thread that does not update the map; `Save` returns NULL when the state is missing (wrong thread or no Lua instance script) and leaves `lastSaveData` alone: `InstanceData::SaveToDB` skips the write on NULL, so the stored data stays (the `DungeonPersistentState::SaveToDB` that stores an empty column for NULL runs for a new instance only), and `Load` keeps its data before the state check, so the map's next update reloads it. |
   | `0011-vmangos-loot-itemtemplate-roll` | Missing for loot scripts: no `Loot` type, `GetItemTemplate` pushed nil (this pin registered no `ItemTemplate` type for VMaNGOS), `Unit:GetCritterGUID` was a "not implemented" stub, `Group:GetMembers` is world-only so no map state could list a group, and nothing told a script who won a group loot roll. Adds the `Loot`, `ItemTemplate` and `Roll` types, `PLAYER_EVENT_ON_GROUP_ROLL_REWARD_ITEM` (56) and the methods listed under "Turtle custom methods". |
+  | `0012-vmangos-trinitycore-parity` | The TrinityCore script API that scripts port with. Globals `GetStateMap` (map states) and `GetPlayersOnMap` (map states; `GetStateMapId` and `GetStateInstanceId` come with 0011). `RegisterSpellEvent` for the spell events the core fires, called from `Spell.cpp`: 1 cast (after the cast hooks), 10 check cast (end of `CheckCast`; a `SPELL_FAILED_*` return cancels the cast, any other value counts as OK), 11 before cast and 12 after cast (`Spell::cast`), 20 before hit, 22 hit and 23 after hit (`DoAllEffectOnTarget`; they get the hit unit as last argument), 19 effect hit and 21 effect hit target (`HandleEffects`; `true` prevents the default effect, the hit unit is the last argument); any other event number is an argument error. `Creature:GetThreat`, `ClearThreat`, `ResetAllThreat`, `FixateTarget` and `ClearFixate` (the fixate is a field of the unit that `GetTauntTarget` checks first, cleared when the creature leaves combat or dies). `Spell:IsTriggered`, `GetOriginalCaster`, `IsPositive`, `GetState`, `IsInterruptable`, `IsChannelActive`, `CalculateDamage`. `WorldObject:Data()` and `Map:Data()`: the `LuaVal` the core keeps with the object, with value semantics (a `LuaVal` stored into another is deep-copied) and a detached copy left behind when the object leaves its map (`WorldObject::ResetMap`). The `ChatHandler` type: the third argument of `PLAYER_EVENT_ON_COMMAND` (`World::OnElunaCommand(ChatHandler&)`), with `SendSysMessage`, `PSendSysMessage`, `IsConsole`, `GetPlayer`, `GetSecurity`, `IsAvailable`, `HasLowerSecurity`, `GetSelected*` and more, world-only. |
 - The backend is `ELUNA_VMANGOS` with `ELUNA_EXPANSION=0`.
 - Lua (5.2 by default; `ELUNA_LUA_VERSION` takes lua51..lua54) is downloaded
   from lua.org at configure time with a pinned SHA-256 and linked statically.
@@ -115,6 +117,14 @@ What the core does to keep to that, only while `Eluna.Enabled = 1`:
 - **World update.** The world state's timers and `OnWorldUpdate` run after the
   `WorldAsync` tasks have finished.
 - **Weather** events go to the weather's map state.
+- **Spell events** (`RegisterSpellEvent`) run in the state of the caster's map, on its
+  thread, and the world state never sees them: register them in a script every map state
+  loads.
+- **`Data()`** is C++ memory of the object, not a Lua table: it survives `.reload eluna`.
+  A handle is not invalidated with the object, so one kept by a map state is detached
+  (the object gets a deep copy when it leaves the map) rather than shared.
+- **`ChatHandler`** exists only in the world state, on the world thread, during the
+  hook. A command parsed on a map thread gets no state and is skipped.
 - **Packet hooks** (`OnPacketSend`, `OnPacketReceive`) are not bridged: they
   would run on network threads.
 - `Map` and `World` cache their `Eluna*`. Eluna's `ElunaMgr` container has no
@@ -196,6 +206,19 @@ What the core does to keep to that, only while `Eluna.Enabled = 1`:
    stray `tt.bak` once broke a toolkit load, and a copied state file next to
    the scripts is loaded again in every state).
 
+9. In spell events (`RegisterSpellEvent`) only read, set data, add threat, or queue
+   work with `RegisterEvent` / `CreateLuaEvent` (delay of 1 ms or more). Do not
+   despawn, kill-and-remove, teleport or remove the caster or the target: the C++
+   frames of the cast still hold them.
+10. Don't keep `Data()` handles: call `obj:Data()` again in every hook and timer. A
+    handle (or a table you got out of it with `Get`) kept in a variable is a detached
+    copy once the object has left the map.
+11. A Lua command handler (`PLAYER_EVENT_ON_COMMAND`, third argument) checks
+    `handler:IsAvailable(level)` first, and answers through the handler
+    (`handler:SendSysMessage`, `handler:PSendSysMessage`), which also reaches the
+    console and SOAP. Only commands the core does not know reach Lua, and players only
+    do when `PlayerCommands` is on.
+
 ## Turtle custom methods
 
 Added by `dep/eluna-patches/0011` for loot scripts (the methods are in the
@@ -241,6 +264,13 @@ finds no state and is skipped (see Threading rules).
   per-object Lua event processors (`Object.h/.cpp`), battleground start/end
   and game events (`GameEventMgr.cpp`; this core's `GameEventScript` registry
   is keyed by script id and also serves spell "send event" scripts).
+- Spell events: `Spell.cpp` calls `OnCheckCast` (end of `CheckCast`), `OnBeforeCast`,
+  `OnSpellCast` and `OnAfterCast` (`Spell::cast`), `OnBeforeSpellHit`, `OnSpellHit` and
+  `OnAfterSpellHit` (`DoAllEffectOnTarget`) and `OnEffectHit` / `OnEffectHitTarget`
+  (`HandleEffects`), on the caster's state.
+- Commands: `ChatHandler::ExecuteCommand` (`Chat.cpp`) passes itself to
+  `World::OnElunaCommand(ChatHandler&)`, which reaches the world state's
+  `PLAYER_EVENT_ON_COMMAND` with the handler as third argument.
 - `src/game/Eluna/CustomMethods.h` registers `SpellInfo` methods backed by
   `spell_template`.
 
@@ -279,6 +309,11 @@ destroyed, after its objects are unloaded.
 - `dep/lualib/tests/eluna_lootpet_smoke.lua` logs `ELUNA_LOOT ...` lines for
   the loot methods of patch 0011 (`.lootsmoke` and the group roll event). The
   header says what to do and what to expect.
+- `dep/lualib/tests/eluna_parity_smoke.lua` logs `ELUNA_0012 <group>` lines for the
+  patch 0012 API: state identity and `GetPlayersOnMap`, spell events and their order,
+  creature threat and fixate (`.elunasmoke threat`), the `Spell` getters, `Data()`
+  across teleports and reloads, and a Lua command with the `ChatHandler`
+  (`.paritysmoke`, in game and from the console). The header says what to do.
 
 ## Known limits
 
@@ -331,8 +366,16 @@ destroyed, after its objects are unloaded.
   movement, melee and spell-list state set by scripts through `AI()`), which is
   not safe without changes to the AI classes. Script the whole creature in Lua,
   or keep it on its database AI.
-- **Spell script events** (`SPELL_EVENT_*`): this Eluna pin has no
-  `RegisterSpellEvent` for VMaNGOS, so they cannot be registered.
+- **Spell script events** (`SPELL_EVENT_*`): `RegisterSpellEvent` accepts 1 (cast),
+  10 (check cast), 11 (before cast), 12 (after cast), 19 (effect hit), 20 (before hit),
+  21 (effect hit target), 22 (hit) and 23 (after hit). The aura events 2-9, target
+  selection 13-15, effect launch 16/17 and calc absorb 18 are not fired on this core
+  (a different aura model, no launch phase, no `DamageInfo`), so registering them is an
+  argument error. Events are keyed by spell id and run in the caster's map state.
+- **`Creature:FixateTarget` is emulated** through the taunt target: the creature
+  attacks the fixated unit while it is a valid target on its threat list, without evading,
+  until `ClearFixate`, or until it leaves combat or dies. A fixated unit that is not valid
+  for a moment is skipped, not forgotten.
 
 ## Not done yet
 
