@@ -2027,7 +2027,11 @@ void Map::CreateInstanceData(bool load)
     if (i_script_id)
         i_data = sScriptMgr.CreateInstanceData(this);
 
-    if (Eluna* eluna = GetEluna())
+    // The member, not GetEluna(): a map created off the world thread would
+    // get nullptr from GetEluna and lose its Lua instance script. As in the
+    // constructor, this state was just made for this map and no other thread
+    // is inside it.
+    if (Eluna* eluna = m_eluna)
     {
         if (!i_data)
             i_data = eluna->GetInstanceData(this);
