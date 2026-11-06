@@ -7,10 +7,13 @@ global method table write data outside their map: PerformIngameSpawn (FindMap of
 any map, map->Add, ObjectMgr::AddCreatureToGrid), SendMail (an online receiver
 on any map), SaveAllPlayers, StartGameEvent/StopGameEvent (spawn and despawn on
 all maps), AddVendorItem/VendorRemoveItem/VendorRemoveAllItems, AddTaxiPath,
-Kick and Ban (session and account layer), and Player:LogoutPlayer
-(WorldSession::LogoutPlayer deletes the player synchronously while the calling
-hook's C++ frames may still hold it). Called from a map state they run on that
-map's thread next to other maps and their sessions.
+Kick and Ban (session and account layer), Player:KickPlayer (the same
+WorldSession::KickPlayer call as the global Kick: it closes the socket of a
+session, which the network threads own, from a map thread), and
+Player:LogoutPlayer (WorldSession::LogoutPlayer deletes the player
+synchronously while the calling hook's C++ frames may still hold it). Called
+from a map state they run on that map's thread next to other maps and their
+sessions.
 
 They are now flagged METHOD_REG_WORLD, the mechanism Eluna's multistate mode
 already uses for the Group and Guild methods (methods/VMangos/GroupMethods.h
@@ -83,14 +86,16 @@ index 38c6500..f22c5a9 100644
  }
  #endif
 diff --git a/methods/VMangos/PlayerMethods.h b/methods/VMangos/PlayerMethods.h
-index 2140436..cb2ce35 100644
+index 2140436..5a6199b 100644
 --- a/methods/VMangos/PlayerMethods.h
 +++ b/methods/VMangos/PlayerMethods.h
-@@ -3567,7 +3567,7 @@ namespace LuaPlayer
+@@ -3566,8 +3566,8 @@ namespace LuaPlayer
+         { "UnbindInstance", &LuaPlayer::UnbindInstance },
          { "UnbindAllInstances", &LuaPlayer::UnbindAllInstances },
          { "RemoveFromBattlegroundRaid", &LuaPlayer::RemoveFromBattlegroundRaid },
-         { "KickPlayer", &LuaPlayer::KickPlayer },
+-        { "KickPlayer", &LuaPlayer::KickPlayer },
 -        { "LogoutPlayer", &LuaPlayer::LogoutPlayer },
++        { "KickPlayer", &LuaPlayer::KickPlayer, METHOD_REG_WORLD }, // World state method only in multistate
 +        { "LogoutPlayer", &LuaPlayer::LogoutPlayer, METHOD_REG_WORLD }, // World state method only in multistate
          { "SendTrainerList", &LuaPlayer::SendTrainerList },
          { "SendListInventory", &LuaPlayer::SendListInventory },
