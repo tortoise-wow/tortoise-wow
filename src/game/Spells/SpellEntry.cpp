@@ -578,6 +578,11 @@ uint32 SpellEntry::GetCastTime(WorldObject* caster, Spell* spell) const
     if (!spellCastTimeEntry)
         return 0;
 
+    // Thorn Gorge objective interaction has a fixed cast time, like a capture
+    // channel: combat haste and class spell modifiers must not shorten it.
+    if (Id == 59011)
+        return uint32(std::max(0, spellCastTimeEntry->CastTime));
+
     int32 spellRank = caster && caster->GetTypeId() != TYPEID_GAMEOBJECT ? static_cast<Unit*>(caster)->GetSpellRank(this) : 0;
     int32 castTime = spellCastTimeEntry->CastTime + spellCastTimeEntry->CastTimePerLevel * (spellRank / 5 - baseLevel);
     castTime = std::max(castTime, spellCastTimeEntry->MinCastTime);

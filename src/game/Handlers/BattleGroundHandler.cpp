@@ -331,6 +331,22 @@ void WorldSession::HandleBattleGroundPlayerPositionsOpcode(WorldPacket & /*recv_
             }
             break;
         }
+        case BATTLEGROUND_TG:
+        {
+            // The neutral flag is an objective for both teams. Resolve its
+            // carrier on this battleground's map, using the native packet form.
+            Player* carrier = bg->GetBgMap()->GetPlayer(bg->GetFlagCarrierGuid());
+            if (carrier && (!carrier->IsInWorld() || carrier->GetBattleGround() != bg))
+                carrier = nullptr;
+            data << uint8(carrier ? 1 : 0);
+            if (carrier)
+            {
+                data << carrier->GetObjectGuid();
+                data << float(carrier->GetPositionX());
+                data << float(carrier->GetPositionY());
+            }
+            break;
+        }
         default:
         {
             // other battlegrounds don't have flag carriers

@@ -207,6 +207,17 @@ vmap.petLOS = 1
 
 mmap.enabled = 1
 
+# Per-map path search budget (2048..65535 nodes per map-owning thread).
+# Unlisted maps keep 2048. Changes require restart or unloading the map.
+# Thorn Gorge's routes exhaust 2048; 16384 resolves all tested objective routes.
+mmap.QueryNodes.821 = 16384
+
+# Restrict native player path requests on this map to player-walkable slopes.
+# Bots use the same filter for objectives, combat and path shortcut checks.
+# Maps without a key retain their existing behavior. Missing nav data fails
+# the request; it does not authorize straight-line travel through obstacles.
+mmap.PlayerWalkable.821 = 1
+
 # Collision.Models.Unload. Free model when no one uses it anymore.
 
 Collision.Models.Unload = 1
@@ -1881,6 +1892,24 @@ WarEffortResourceCompletePeriod = 86400
 # Battleground.CastDeserter. Cast Deserter spell at player who leave battleground in progress.
 
 Battleground.CastDeserter = 1
+
+# Thorn Gorge prototype (requires sql/custom/thorn_gorge_prototype.sql).
+# Restart required. Keep disabled until the test realm has map 821 assets.
+Battleground.ThornGorge.Enabled = 0
+# Provisional central flag position. Z is resolved from terrain/collision.
+Battleground.ThornGorge.FlagX = 2174.469482
+Battleground.ThornGorge.FlagY = 1569.349243
+# Center/dropped flag model scale. Same scale as WSG templates; clamps to 1-5.
+Battleground.ThornGorge.FlagScale = 2.5
+# Capture samples: 25 samples from neutral for one player, 13 for two or more.
+# Interval clamps to 1000-10000ms; net player advantage clamps to 1-5.
+Battleground.ThornGorge.CaptureTickMs = 1200
+Battleground.ThornGorge.CaptureMaxAdvantage = 2
+# Native BgLogFile receives THORN_GORGE events. 0=off, 1=events/team snapshots,
+# 2=also player positions, state, scores and chosen objectives. New matches read
+# these settings. Snapshot interval is clamped to 1000-60000ms; events to 64/s.
+Battleground.ThornGorge.LogLevel = 0
+Battleground.ThornGorge.LogIntervalMs = 5000
 
 # Battleground.QueueAnnouncer.Join. Enable queue announcer posting to chat at join.
 

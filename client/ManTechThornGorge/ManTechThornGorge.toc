@@ -1,0 +1,6 @@
+## Interface: 11200
+## Title: ManTech Thorn Gorge
+## Notes: Thorn Gorge flag status, timer and complete staging-area map bounds.
+## Version: 1
+## OptionalDeps: Turtle_General
+ManTechThornGorge.lua

@@ -28,6 +28,7 @@
 #include "BattleGroundWS.h"
 #include "BattleGroundBR.h"
 #include "BattleGroundSV.h"
+#include "BattleGroundTG.h"
 #include "MapManager.h"
 #include "Map.h"
 #include "ObjectMgr.h"
@@ -1275,6 +1276,9 @@ BattleGround * BattleGroundMgr::CreateNewBattleGround(BattleGroundTypeId bgTypeI
         case BATTLEGROUND_SV:
             bg = new BattleGroundSV(*(BattleGroundSV*)bg_template);
             break;
+        case BATTLEGROUND_TG:
+            bg = new BattleGroundTG(*static_cast<BattleGroundTG*>(bg_template));
+            break;
         default:
             //error, but it is handled few lines above
             return 0;
@@ -1313,6 +1317,9 @@ uint32 BattleGroundMgr::CreateBattleGround(BattleGroundTypeId bgTypeId, uint32 m
             break;
         case BATTLEGROUND_SV:
             bg = new BattleGroundSV;
+            break;
+        case BATTLEGROUND_TG:
+            bg = new BattleGroundTG;
             break;
         default:
             sLog.outError("Could not find BG Template for bgTypeID %u.", static_cast<uint32>(bgTypeId));
@@ -1392,6 +1399,8 @@ void BattleGroundMgr::CreateInitialBattleGrounds()
         uint32 bgTypeID_ = fields[0].GetUInt32();
 
         BattleGroundTypeId bgTypeID = BattleGroundTypeId(bgTypeID_);
+        if (bgTypeID == BATTLEGROUND_TG && !sWorld.getConfig(CONFIG_BOOL_BATTLEGROUND_THORN_GORGE_ENABLED))
+            continue;
 
         uint32 MinPlayersPerTeam = fields[1].GetUInt32();
         uint32 MaxPlayersPerTeam = fields[2].GetUInt32();
@@ -1553,6 +1562,8 @@ BattleGroundQueueTypeId BattleGroundMgr::BGQueueTypeId(BattleGroundTypeId bgType
             return ARENA_QUEUE_BR;
         case BATTLEGROUND_SV:
             return BATTLEGROUND_QUEUE_SV;
+        case BATTLEGROUND_TG:
+            return BATTLEGROUND_QUEUE_TG;
         default:
             return BATTLEGROUND_QUEUE_NONE;
     }
@@ -1572,6 +1583,8 @@ BattleGroundTypeId BattleGroundMgr::BGTemplateId(BattleGroundQueueTypeId bgQueue
             return BATTLEGROUND_BR;
         case BATTLEGROUND_QUEUE_SV:
             return BATTLEGROUND_SV;
+        case BATTLEGROUND_QUEUE_TG:
+            return BATTLEGROUND_TG;
         default:
             return BattleGroundTypeId(0);                   // used for unknown template (it exist and do nothing)
     }
