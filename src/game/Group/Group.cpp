@@ -1126,6 +1126,16 @@ void Group::CountTheRoll(Rolls::iterator& rollI)
         return;
     }
 
+#ifdef ENABLE_ELUNA
+    // The roll event is fired at the very end, after the roll has left RollId: a handler that
+    // changes the group (or anything that walks the rolls) can then no longer count this roll
+    // a second time or free it under this function. The data is kept here meanwhile.
+    Player* elunaRewardPlayer = nullptr;
+    Item* elunaRewardItem = nullptr;
+    uint32 elunaRewardCount = 0;
+    uint32 elunaRewardVote = 0;
+#endif
+
     // Turtle:: Make raid looted items not appear soul bound.
     const auto CheckSoulboundException = [this](Player* player, const LootItem& lootItem, Item* newitem, Creature* creature, bool isGameObjectLoot)
     {
@@ -1218,8 +1228,10 @@ void Group::CountTheRoll(Rolls::iterator& rollI)
                         CheckSoulboundException(player, *item, newItem, roll->lootedTargetGUID.IsCreature() ? player->GetMap()->GetCreature(roll->lootedTargetGUID) : nullptr, roll->lootedTargetGUID.IsGameObject());
                         player->OnReceivedItem(newItem);
 #ifdef ENABLE_ELUNA
-                        if (Eluna* e = player->GetEluna())
-                            e->OnGroupRollRewardItem(player, newItem, item->count, ROLL_NEED, roll);
+                        elunaRewardPlayer = player;
+                        elunaRewardItem = newItem;
+                        elunaRewardCount = item->count;
+                        elunaRewardVote = ROLL_NEED;
 #endif
                     }
                 }
@@ -1292,8 +1304,10 @@ void Group::CountTheRoll(Rolls::iterator& rollI)
                         CheckSoulboundException(player, *item, newItem, roll->lootedTargetGUID.IsCreature() ? player->GetMap()->GetCreature(roll->lootedTargetGUID) : nullptr, roll->lootedTargetGUID.IsGameObject());
                         player->OnReceivedItem(newItem);
 #ifdef ENABLE_ELUNA
-                        if (Eluna* e = player->GetEluna())
-                            e->OnGroupRollRewardItem(player, newItem, item->count, ROLL_GREED, roll);
+                        elunaRewardPlayer = player;
+                        elunaRewardItem = newItem;
+                        elunaRewardCount = item->count;
+                        elunaRewardVote = ROLL_GREED;
 #endif
                     }
                 }
@@ -1313,6 +1327,11 @@ void Group::CountTheRoll(Rolls::iterator& rollI)
         if (item) item->is_blocked = false;
     }
     rollI = RollId.erase(rollI);
+#ifdef ENABLE_ELUNA
+    if (elunaRewardPlayer)
+        if (Eluna* e = elunaRewardPlayer->GetEluna())
+            e->OnGroupRollRewardItem(elunaRewardPlayer, elunaRewardItem, elunaRewardCount, elunaRewardVote, roll);
+#endif
     delete roll;
 }
 
