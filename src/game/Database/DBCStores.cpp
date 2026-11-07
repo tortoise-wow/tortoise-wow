@@ -18,6 +18,7 @@
  */
 
 #include "DBCStores.h"
+#include "Database/DatabaseEnv.h"
 #include "Policies/SingletonImp.h"
 #include "Log.h"
 #include "SharedDefines.h"
@@ -385,35 +386,82 @@ void LoadDBCStores(std::string const& dataPath)
     }
 
     LoadDBC(availableDbcLocales, badDbcFiles, sTaxiPathStore,            dbcPath, "TaxiPath.dbc");
+
     for (uint32 i = 1; i < sTaxiPathStore.GetNumRows(); ++i)
         if (TaxiPathEntry const* entry = sTaxiPathStore.LookupEntry(i))
             sTaxiPathSetBySource[entry->from][entry->to] = TaxiPathBySourceAndDestination(entry->ID, entry->price);
     uint32 pathCount = sTaxiPathStore.GetNumRows();
 
-    //## TaxiPathNode.dbc ## Loaded only for initialization different structures
+    //## TaxiPathNode.dbc ## Used to initialize path nodes
     LoadDBC(availableDbcLocales, badDbcFiles, sTaxiPathNodeStore,        dbcPath, "TaxiPathNode.dbc");
 
-    // Calculate path nodes count
-    std::vector<uint32> pathLength;
-    pathLength.resize(pathCount);                           // 0 and some other indexes not used
+    // Collect DBC path nodes
+    typedef std::pair<uint32, uint32> TaxiNodeKey;
+    std::map<TaxiNodeKey, TaxiPathNodeEntry const*> effectiveNodes;
     for (uint32 i = 1; i < sTaxiPathNodeStore.GetNumRows(); ++i)
     {
         if (TaxiPathNodeEntry const* entry = sTaxiPathNodeStore.LookupEntry(i))
         {
-            if (pathLength[entry->path] < entry->index + 1)
-                pathLength[entry->path] = entry->index + 1;
+            if (!sTaxiPathStore.LookupEntry(entry->path) || entry->index == uint32(-1))
+            {
+                sLog.outError("TaxiPathNode.dbc: invalid path %u or node index %u, skipping node", entry->path, entry->index);
+                continue;
+            }
+            effectiveNodes[{entry->path, entry->index}] = entry;
         }
     }
 
-    // Set path length
-    sTaxiPathNodesByPath.resize(pathCount);                 // 0 and some other indexes not used
-    for (uint32 i = 1; i < sTaxiPathNodesByPath.size(); ++i)
-        sTaxiPathNodesByPath[i].resize(pathLength[i]);
+    static std::map<TaxiNodeKey, TaxiPathNodeEntry> taxiNodeOverrides;
+    std::set<TaxiNodeKey> overriddenSlots;
+    // Load SQL path node overrides
+    std::unique_ptr<QueryResult> nodeResult(WorldDatabase.Query(
+        "SELECT `id`, `pathId`, `nodeIndex`, `mapId`, `x`, `y`, `z`, `flags`, `delay` "
+        "FROM `taxipathnode` ORDER BY `id`"));
+    if (nodeResult)
+    {
+        do
+        {
+            Field* fields = nodeResult->Fetch();
+            TaxiPathNodeEntry entry{};
+            entry.path = fields[1].GetUInt32();
+            entry.index = fields[2].GetUInt32();
+            entry.mapid = fields[3].GetUInt32();
+            entry.x = fields[4].GetFloat();
+            entry.y = fields[5].GetFloat();
+            entry.z = fields[6].GetFloat();
+            entry.actionFlag = fields[7].GetUInt32();
+            entry.delay = fields[8].GetUInt32();
+            if (!entry.path || !sTaxiPathStore.LookupEntry(entry.path) || entry.index == uint32(-1))
+            {
+                sLog.outErrorDb("Table `taxipathnode`: row %u has invalid path %u or node index %u, skipping override",
+                    fields[0].GetUInt32(), entry.path, entry.index);
+                continue;
+            }
+            TaxiNodeKey key(entry.path, entry.index);
+            if (!overriddenSlots.insert(key).second)
+            {
+                sLog.outErrorDb("Table `taxipathnode`: duplicate path %u node %u in row %u, keeping the lowest ID",
+                    entry.path, entry.index, fields[0].GetUInt32());
+                continue;
+            }
+            TaxiPathNodeEntry& stored = taxiNodeOverrides[key];
+            stored = entry;
+            effectiveNodes[key] = &stored;
+        } while (nodeResult->NextRow());
+    }
 
-    // fill data (pointers to sTaxiPathNodeStore elements
-    for (uint32 i = 1; i < sTaxiPathNodeStore.GetNumRows(); ++i)
-        if (TaxiPathNodeEntry const* entry = sTaxiPathNodeStore.LookupEntry(i))
-            sTaxiPathNodesByPath[entry->path].set(entry->index, entry);
+    // Set path lengths and fill pointers to DBC or SQL nodes
+    sTaxiPathNodesByPath.clear();
+    sTaxiPathNodesByPath.resize(pathCount);                 // 0 and some other indexes not used
+    for (auto const& slot : effectiveNodes)
+    {
+        TaxiPathNodeEntry const* entry = slot.second;
+        TaxiPathNodeList& path = sTaxiPathNodesByPath[entry->path];
+        if (path.size() <= entry->index)
+            path.resize(entry->index + 1);
+        path.set(entry->index, entry);
+    }
+    sLog.outString("Loaded %u taxi path node overrides", uint32(overriddenSlots.size()));
 
     // Initialize global taxinodes mask
     // include existing nodes that have at least single not spell base (scripted) path
