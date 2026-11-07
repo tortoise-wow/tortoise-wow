@@ -1407,6 +1407,21 @@ void Spell::DoAllEffectOnTarget(TargetInfo *target)
             m_spellScript->OnBeforeProc(this, unitTarget, missInfo, procAttacker, procVictim, procEx, triggerWeaponProcs);
     };
 
+#ifdef ENABLE_ELUNA
+    // SPELL_EVENT_ON_HIT fires once per successful target hit, whatever the hit did (heal, damage,
+    // proc only, or none of those); the branches below fire it at their usual point, the code after
+    // them fires it for the hits that took no branch.
+    bool elunaSpellHitSent = false;
+    auto elunaSpellHit = [&]()
+    {
+        if (missInfo != SPELL_MISS_NONE || elunaSpellHitSent)
+            return;
+        elunaSpellHitSent = true;
+        if (Eluna* e = m_caster->GetEluna())
+            e->OnSpellHit(this, unitTarget);
+    };
+#endif
+
     // All calculated do it!
     // Do healing and triggers
     if (m_healing && unitTarget->IsAlive())
@@ -1426,9 +1441,7 @@ void Spell::DoAllEffectOnTarget(TargetInfo *target)
             m_spellScript->OnHit(this, missInfo);
 
 #ifdef ENABLE_ELUNA
-        if (missInfo == SPELL_MISS_NONE)
-            if (Eluna* e = m_caster->GetEluna())
-                e->OnSpellHit(this, unitTarget);
+        elunaSpellHit();
 #endif
 
         // Do triggers for unit (reflect triggers passed on hit phase for correct drop charge)
@@ -1526,9 +1539,7 @@ void Spell::DoAllEffectOnTarget(TargetInfo *target)
             m_spellScript->OnHit(this, missInfo);
 
 #ifdef ENABLE_ELUNA
-        if (missInfo == SPELL_MISS_NONE)
-            if (Eluna* e = m_caster->GetEluna())
-                e->OnSpellHit(this, unitTarget);
+        elunaSpellHit();
 #endif
 
         // Send log damage message to client
@@ -1586,9 +1597,7 @@ void Spell::DoAllEffectOnTarget(TargetInfo *target)
             m_spellScript->OnHit(this, missInfo);
 
 #ifdef ENABLE_ELUNA
-        if (missInfo == SPELL_MISS_NONE)
-            if (Eluna* e = m_caster->GetEluna())
-                e->OnSpellHit(this, unitTarget);
+        elunaSpellHit();
 #endif
 
         // TODO: Allow all procs, and explicitly deny some rather than denying all and
@@ -1667,6 +1676,10 @@ void Spell::DoAllEffectOnTarget(TargetInfo *target)
         if (m_damage)
             m_casterUnit->TriggerDamageShields(unitTarget);
     }
+
+#ifdef ENABLE_ELUNA
+    elunaSpellHit();
+#endif
 
     if (missInfo != SPELL_MISS_NONE)
         return;

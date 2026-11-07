@@ -19,7 +19,10 @@ a line with "FAIL" is a failed check. Groups, what to do and what to expect:
            target's guid as hitUnit, and "spell order ok". ".elunasmoke blockcast"
            (world state) makes the next check_cast return SPELL_FAILED_NOT_READY:
            expect the client error and no cast line, then it unblocks itself.
-           RegisterSpellEvent(x, 2, f) logs "spell unsupported refused".
+           RegisterSpellEvent(x, 2, f) logs "spell unsupported refused". It also
+           logs "hit once per target ok" (event 22 fired exactly once). Cast
+           SMOKE_AURA_SPELL (1126, an aura-only spell that took none of the old
+           heal/damage/proc fire sites) on yourself: "aura-only hit once ok".
 
   threat   ".elunasmoke threat" on a selected creature that is in combat with
            you: AddThreat(player, 1000), GetThreat >= 1000, ResetAllThreat -> 0
@@ -51,6 +54,7 @@ a line with "FAIL" is a failed check. Groups, what to do and what to expect:
 ]]
 
 local SMOKE_SPELL = 133 -- Fireball rank 1
+local SMOKE_AURA_SPELL = 1126 -- Mark of the Wild rank 1 (aura only; cast it on a friend or yourself)
 
 local PLAYER_EVENT_ON_LOGIN = 3
 local PLAYER_EVENT_ON_MAP_CHANGE = 28
@@ -100,6 +104,7 @@ end
 
 -- spell --------------------------------------------------------------------
 local order = {}
+local hitCount = 0
 local function step(name, spell, ...)
     order[#order + 1] = name
     log("spell", name .. " " .. table.concat({ ... }, " "))
@@ -136,6 +141,7 @@ if type(mapId) == "number" and mapId >= 0 then
         return false
     end)
     RegisterSpellEvent(SMOKE_SPELL, 22, function(event, spell, hitUnit)
+        hitCount = hitCount + 1
         step("hit", spell, "hit=" .. (hitUnit and hitUnit:GetName() or "nil"))
     end)
     RegisterSpellEvent(SMOKE_SPELL, 23, function(event, spell, hitUnit)
@@ -145,6 +151,17 @@ if type(mapId) == "number" and mapId >= 0 then
         local same = #order == #want
         for i = 1, #want do same = same and order[i] == want[i] end
         log("spell", same and "order ok" or ("FAIL order: " .. table.concat(order, ",")))
+        log("spell", hitCount == 1 and "hit once per target ok" or ("FAIL hit fired " .. hitCount .. " times"))
+        hitCount = 0
+    end)
+    -- an aura-only spell (no damage, no heal, no proc: none of the old fire sites) still fires ON_HIT once
+    local auraHits = 0
+    RegisterSpellEvent(SMOKE_AURA_SPELL, 22, function(event, spell, hitUnit)
+        auraHits = auraHits + 1
+    end)
+    RegisterSpellEvent(SMOKE_AURA_SPELL, 23, function(event, spell, hitUnit)
+        log("spell", auraHits == 1 and "aura-only hit once ok" or ("FAIL aura-only hit fired " .. auraHits .. " times"))
+        auraHits = 0
     end)
     local okReg, err = pcall(RegisterSpellEvent, SMOKE_SPELL, 2, function() end)
     log("spell", okReg and "FAIL event 2 accepted" or ("unsupported refused: " .. tostring(err)))
