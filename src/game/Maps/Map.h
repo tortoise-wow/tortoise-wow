@@ -51,6 +51,8 @@
 #include <set>
 #include <mutex>
 #include <shared_mutex>
+#include <atomic>
+#include <thread>
 
 using Movement::Vector3;
 
@@ -628,7 +630,16 @@ class Map : public GridRefManager<NGridType>
         // Cached when the map is made: the ElunaMgr container is not read from
         // map threads, so one map being made or destroyed never races another
         // map's lookup.
-        Eluna* GetEluna() const { return m_eluna; }
+        //
+        // The state is handed out only to a thread allowed to enter it: the
+        // thread running this map's update (DoUpdate records it in
+        // m_updatingThread), or the world thread while no thread is inside
+        // this map's update (teleports, instance switches, commands and the
+        // Eluna reload run there). Any other thread, and the world thread
+        // while this map updates, get nullptr and a one-time log: entering
+        // the map's lua_State concurrently would corrupt it. Mirrors
+        // World::GetEluna.
+        Eluna* GetEluna() const;
         // Alive exactly as long as this map's Lua state: objects keep a
         // weak_ptr to it instead of a pointer into the state (WorldObject's
         // timed events). Empty when the map has no state.
@@ -1000,6 +1011,12 @@ class Map : public GridRefManager<NGridType>
         ElunaInfo m_elunaInfo;
         Eluna* m_eluna = nullptr;
         std::shared_ptr<void> m_elunaLifetime;
+        // The thread inside DoUpdate right now (empty while the map is idle):
+        // the only map thread Map::GetEluna hands the state to.
+        std::atomic<std::thread::id> m_updatingThread{};
+        // The off-thread refusal is logged once per map, as World::GetEluna
+        // does for the world state.
+        mutable std::atomic<bool> m_elunaOffThreadLogged{false};
 #endif
 };
 

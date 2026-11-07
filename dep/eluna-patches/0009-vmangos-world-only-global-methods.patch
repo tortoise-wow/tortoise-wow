@@ -1,0 +1,102 @@
+tortoise-wow: VMaNGOS Eluna methods that write server-wide state are world-only.
+
+A map's Lua state runs on that map's update thread, next to the other maps'
+updates (one world state + one state per map/instance; World::GetEluna already
+refuses the world state off the world thread). Some methods in the VMaNGOS
+global method table write data outside their map: PerformIngameSpawn (FindMap of
+any map, map->Add, ObjectMgr::AddCreatureToGrid), SendMail (an online receiver
+on any map), SaveAllPlayers, StartGameEvent/StopGameEvent (spawn and despawn on
+all maps), AddVendorItem/VendorRemoveItem/VendorRemoveAllItems, AddTaxiPath,
+Kick and Ban (session and account layer), Player:KickPlayer (the same
+WorldSession::KickPlayer call as the global Kick: it closes the socket of a
+session, which the network threads own, from a map thread), and
+Player:LogoutPlayer (WorldSession::LogoutPlayer deletes the player
+synchronously while the calling hook's C++ frames may still hold it). Called
+from a map state they run on that map's thread next to other maps and their
+sessions.
+
+They are now flagged METHOD_REG_WORLD, the mechanism Eluna's multistate mode
+already uses for the Group and Guild methods (methods/VMangos/GroupMethods.h
+"GetMembers", "SetLeader", "Disband", ...; GuildMethods.h likewise): the state
+registers ElunaTemplate<T>::MethodWrongState instead of the method, and a call
+raises "attempt to call method '...' that does not exist for state: N". The
+world state, which runs on the world thread while no map updates, keeps them.
+
+Upstreamable: the CMangos backend already flags several of its global functions
+world-only and VMaNGOS' table flagged none.
+
+Base: ElunaLuaEngine/Eluna 1b06f28ff3a00054d915d824c725fb4283fee74d (branch
+cmangos-spell-update), the dep/Eluna pin, with patches 0001-0008 applied. Eluna is
+GPL-3.0 (https://github.com/ElunaLuaEngine/Eluna, LICENSE); this change is under
+the same licence. Applied by cmake/ElunaSources.cmake to a copy in the build tree.
+diff --git a/ElunaIncludes.h b/ElunaIncludes.h
+index 8ba5e06..f388ea9 100644
+--- a/ElunaIncludes.h
++++ b/ElunaIncludes.h
+@@ -10,6 +10,9 @@
+ // tortoise-wow dep/eluna-patches/0008 is applied (checked by the core).
+ #define ELUNA_TW_PATCH_0008 1
+ 
++// tortoise-wow dep/eluna-patches/0009 is applied (checked by the core).
++#define ELUNA_TW_PATCH_0009 1
++
+ // Required
+ #if !defined ELUNA_CMANGOS
+ #include "AccountMgr.h"
+diff --git a/methods/VMangos/GlobalMethods.h b/methods/VMangos/GlobalMethods.h
+index 38c6500..f22c5a9 100644
+--- a/methods/VMangos/GlobalMethods.h
++++ b/methods/VMangos/GlobalMethods.h
+@@ -2996,20 +2996,26 @@ namespace LuaGlobalFunctions
+         { "CreateLuaEvent", &LuaGlobalFunctions::CreateLuaEvent },
+         { "RemoveEventById", &LuaGlobalFunctions::RemoveEventById },
+         { "RemoveEvents", &LuaGlobalFunctions::RemoveEvents },
+-        { "PerformIngameSpawn", &LuaGlobalFunctions::PerformIngameSpawn },
++        // World state methods only in multistate: these write data of any map
++        // (spawns, game events, vendors, taxi), of the session or account
++        // layer (mail, kick, ban), save every player, or reach a player on
++        // any map. A map state runs next to other maps' updates, so it only
++        // gets the refusal closure (MethodWrongState), as the Group and Guild
++        // mutators above.
++        { "PerformIngameSpawn", &LuaGlobalFunctions::PerformIngameSpawn, METHOD_REG_WORLD }, // World state method only in multistate
+         { "CreatePacket", &LuaGlobalFunctions::CreatePacket },
+-        { "AddVendorItem", &LuaGlobalFunctions::AddVendorItem },
+-        { "VendorRemoveItem", &LuaGlobalFunctions::VendorRemoveItem },
+-        { "VendorRemoveAllItems", &LuaGlobalFunctions::VendorRemoveAllItems },
+-        { "Kick", &LuaGlobalFunctions::Kick },
+-        { "Ban", &LuaGlobalFunctions::Ban },
+-        { "SaveAllPlayers", &LuaGlobalFunctions::SaveAllPlayers },
+-        { "SendMail", &LuaGlobalFunctions::SendMail },
+-        { "AddTaxiPath", &LuaGlobalFunctions::AddTaxiPath },
++        { "AddVendorItem", &LuaGlobalFunctions::AddVendorItem, METHOD_REG_WORLD }, // World state method only in multistate
++        { "VendorRemoveItem", &LuaGlobalFunctions::VendorRemoveItem, METHOD_REG_WORLD }, // World state method only in multistate
++        { "VendorRemoveAllItems", &LuaGlobalFunctions::VendorRemoveAllItems, METHOD_REG_WORLD }, // World state method only in multistate
++        { "Kick", &LuaGlobalFunctions::Kick, METHOD_REG_WORLD }, // World state method only in multistate
++        { "Ban", &LuaGlobalFunctions::Ban, METHOD_REG_WORLD }, // World state method only in multistate
++        { "SaveAllPlayers", &LuaGlobalFunctions::SaveAllPlayers, METHOD_REG_WORLD }, // World state method only in multistate
++        { "SendMail", &LuaGlobalFunctions::SendMail, METHOD_REG_WORLD }, // World state method only in multistate
++        { "AddTaxiPath", &LuaGlobalFunctions::AddTaxiPath, METHOD_REG_WORLD }, // World state method only in multistate
+         { "CreateInt64", &LuaGlobalFunctions::CreateLongLong },
+         { "CreateUint64", &LuaGlobalFunctions::CreateULongLong },
+-        { "StartGameEvent", &LuaGlobalFunctions::StartGameEvent },
+-        { "StopGameEvent", &LuaGlobalFunctions::StopGameEvent }
++        { "StartGameEvent", &LuaGlobalFunctions::StartGameEvent, METHOD_REG_WORLD }, // World state method only in multistate
++        { "StopGameEvent", &LuaGlobalFunctions::StopGameEvent, METHOD_REG_WORLD } // World state method only in multistate
+     };
+ }
+ #endif
+diff --git a/methods/VMangos/PlayerMethods.h b/methods/VMangos/PlayerMethods.h
+index 2140436..5a6199b 100644
+--- a/methods/VMangos/PlayerMethods.h
++++ b/methods/VMangos/PlayerMethods.h
+@@ -3566,8 +3566,8 @@ namespace LuaPlayer
+         { "UnbindInstance", &LuaPlayer::UnbindInstance },
+         { "UnbindAllInstances", &LuaPlayer::UnbindAllInstances },
+         { "RemoveFromBattlegroundRaid", &LuaPlayer::RemoveFromBattlegroundRaid },
+-        { "KickPlayer", &LuaPlayer::KickPlayer },
+-        { "LogoutPlayer", &LuaPlayer::LogoutPlayer },
++        { "KickPlayer", &LuaPlayer::KickPlayer, METHOD_REG_WORLD }, // World state method only in multistate
++        { "LogoutPlayer", &LuaPlayer::LogoutPlayer, METHOD_REG_WORLD }, // World state method only in multistate
+         { "SendTrainerList", &LuaPlayer::SendTrainerList },
+         { "SendListInventory", &LuaPlayer::SendListInventory },
+         { "SendShowBank", &LuaPlayer::SendShowBank },

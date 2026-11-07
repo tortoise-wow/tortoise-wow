@@ -1,0 +1,313 @@
+tortoise-wow: VMaNGOS Eluna methods and the Lua instance AI survive a gone
+object, and a map state that is not available on the calling thread.
+
+Aura:GetCasterLevel called aura->GetCaster()->GetLevel(). GetCaster is a guid
+lookup (SpellAuras.cpp) that returns null once the caster despawned or logged
+out, which a DoT whose caster died leaves behind; a player caster is also looked
+up on every map. It returned nil's level through a null pointer (SIGSEGV). It
+now pushes nil when the caster is gone, and also when the caster is on another
+map than the state's (this core refuses objects of another map in a map state,
+0002), and keeps pushing the level otherwise.
+
+Item:GetItemLink read item->GetOwner()->GetLevel(). An item without an owner
+(dropped, in a chest, in the mail) has none; the link's level field is 0 then.
+
+ElunaInstanceAI's hooks and data methods called instance->GetEluna()->... with
+no check. Map::GetEluna returns the map's state only to the thread that updates
+the map (core, this PR), so it can be null where the instance AI still runs:
+a missing state is now treated as "no script", as ElunaCreatureAI does since
+0007. Update, IsEncounterInProgress, OnPlayerEnter, OnObjectCreate,
+OnCreatureCreate, Initialize, Load, Save, GetData, SetData, GetData64 and
+SetData64 check the state. Load copies its data into lastSaveData before that
+check, so data that arrives while the state is missing is kept and reloaded on
+the map's next update (Reload); it used to return before the copy and lose it.
+Save returns NULL and does not touch lastSaveData: InstanceData::SaveToDB
+(src/game/Maps/InstanceData.cpp) skips the write when Save returns NULL, so the
+stored data stays; the one caller that stores an empty column for NULL,
+DungeonPersistentState::SaveToDB (MapPersistentStateMgr.cpp), runs for a new
+instance only (AddPersistentState with !load), where empty data is correct.
+Returning lastSaveData there would read it off that thread while the map
+thread rewrites it. The data getters return 0.
+
+Upstreamable: ALE has the same GetCasterLevel (mod-ale methods/AuraMethods.h),
+and the instance AI checks are harmless on cores whose Map always has a state.
+
+Base: ElunaLuaEngine/Eluna 1b06f28ff3a00054d915d824c725fb4283fee74d (branch
+cmangos-spell-update), the dep/Eluna pin, with patches 0001-0009 applied. Eluna is
+GPL-3.0 (https://github.com/ElunaLuaEngine/Eluna, LICENSE); this change is under
+the same licence. Applied by cmake/ElunaSources.cmake to a copy in the build tree.
+diff --git a/ElunaInstanceAI.cpp b/ElunaInstanceAI.cpp
+index 4775f25..220d5bc 100644
+--- a/ElunaInstanceAI.cpp
++++ b/ElunaInstanceAI.cpp
+@@ -12,14 +12,20 @@
+ #if !defined ELUNA_TRINITY
+ void ElunaInstanceAI::Initialize()
+ {
+-    ASSERT(!instance->GetEluna()->HasInstanceData(instance));
++    // Map::GetEluna returns nullptr to a thread that does not update the map;
++    // a missing state means no Lua instance data, as no script.
++    Eluna* E = instance->GetEluna();
++    if (!E)
++        return;
++
++    ASSERT(!E->HasInstanceData(instance));
+ 
+     // Create a new table for instance data.
+-    lua_State* L = instance->GetEluna()->L;
++    lua_State* L = E->L;
+     lua_newtable(L);
+-    instance->GetEluna()->CreateInstanceData(instance);
++    E->CreateInstanceData(instance);
+ 
+-    instance->GetEluna()->OnInitialize(this);
++    E->OnInitialize(this);
+ }
+ #endif
+ 
+@@ -36,23 +42,30 @@ void ElunaInstanceAI::Load(const char* data)
+         lastSaveData.assign(data);
+     }
+ 
++    // The state is needed to load the data into it, but the data is kept
++    // above even when it is missing: a later Update on the map's thread
++    // reloads it from lastSaveData (Reload).
++    Eluna* E = instance->GetEluna();
++    if (!E)
++        return;
++
+     if (data[0] == '\0')
+     {
+-        ASSERT(!instance->GetEluna()->HasInstanceData(instance));
++        ASSERT(!E->HasInstanceData(instance));
+ 
+         // Create a new table for instance data.
+-        lua_State* L = instance->GetEluna()->L;
++        lua_State* L = E->L;
+         lua_newtable(L);
+-        instance->GetEluna()->CreateInstanceData(instance);
++        E->CreateInstanceData(instance);
+ 
+-        instance->GetEluna()->OnLoad(this);
++        E->OnLoad(this);
+         // Stack: (empty)
+         return;
+     }
+ 
+     size_t decodedLength;
+     const unsigned char* decodedData = ElunaUtil::DecodeData(data, &decodedLength);
+-    lua_State* L = instance->GetEluna()->L;
++    lua_State* L = E->L;
+ 
+     if (decodedData)
+     {
+@@ -69,9 +82,9 @@ void ElunaInstanceAI::Load(const char* data)
+             // Only use the data if it's a table.
+             if (lua_istable(L, -1))
+             {
+-                instance->GetEluna()->CreateInstanceData(instance);
++                E->CreateInstanceData(instance);
+                 // Stack: (empty)
+-                instance->GetEluna()->OnLoad(this);
++                E->OnLoad(this);
+                 // WARNING! lastSaveData might be different after `OnLoad` if the Lua code saved data.
+             }
+             else
+@@ -111,7 +124,17 @@ void ElunaInstanceAI::Load(const char* data)
+ 
+ const char* ElunaInstanceAI::Save() const
+ {
+-    lua_State* L = instance->GetEluna()->L;
++    // No state (the wrong thread, or no Lua instance script): NULL.
++    // InstanceData::SaveToDB skips the write on NULL, so the stored data
++    // stays. The one caller that stores an empty column for NULL,
++    // DungeonPersistentState::SaveToDB, runs for a new instance only, where
++    // empty data is correct. lastSaveData is not touched here: the map thread
++    // may be rewriting it.
++    Eluna* E = instance->GetEluna();
++    if (!E)
++        return NULL;
++
++    lua_State* L = E->L;
+     // Stack: (empty)
+ 
+     /*
+@@ -124,7 +147,7 @@ const char* ElunaInstanceAI::Save() const
+     ElunaInstanceAI* self = const_cast<ElunaInstanceAI*>(this);
+ 
+     lua_pushcfunction(L, mar_encode);
+-    instance->GetEluna()->PushInstanceData(self, false);
++    E->PushInstanceData(self, false);
+     // Stack: mar_encode, instance_data
+ 
+     if (lua_pcall(L, 1, 1, 0) != 0)
+@@ -149,6 +172,9 @@ const char* ElunaInstanceAI::Save() const
+ uint32 ElunaInstanceAI::GetData(uint32 key) const
+ {
+     Eluna* E = instance->GetEluna();
++    if (!E)
++        return 0;
++
+     lua_State* L = E->L;
+     // Stack: (empty)
+ 
+@@ -171,6 +197,9 @@ uint32 ElunaInstanceAI::GetData(uint32 key) const
+ void ElunaInstanceAI::SetData(uint32 key, uint32 value)
+ {
+     Eluna* E = instance->GetEluna();
++    if (!E)
++        return;
++
+     lua_State* L = E->L;
+     // Stack: (empty)
+ 
+@@ -191,6 +220,9 @@ void ElunaInstanceAI::SetData(uint32 key, uint32 value)
+ uint64 ElunaInstanceAI::GetData64(uint32 key) const
+ {
+     Eluna* E = instance->GetEluna();
++    if (!E)
++        return 0;
++
+     lua_State* L = E->L;
+     // Stack: (empty)
+ 
+@@ -213,6 +245,9 @@ uint64 ElunaInstanceAI::GetData64(uint32 key) const
+ void ElunaInstanceAI::SetData64(uint32 key, uint64 value)
+ {
+     Eluna* E = instance->GetEluna();
++    if (!E)
++        return;
++
+     lua_State* L = E->L;
+     // Stack: (empty)
+ 
+diff --git a/ElunaInstanceAI.h b/ElunaInstanceAI.h
+index 22160d5..57e9577 100644
+--- a/ElunaInstanceAI.h
++++ b/ElunaInstanceAI.h
+@@ -10,6 +10,9 @@
+ // tortoise-wow dep/eluna-patches/0003 is applied (checked by the core).
+ #define ELUNA_TW_PATCH_0003 1
+ 
++// tortoise-wow dep/eluna-patches/0010 is applied (checked by the core).
++#define ELUNA_TW_PATCH_0010 1
++
+ #include "LuaEngine.h"
+ #if defined ELUNA_TRINITY || defined ELUNA_AZEROTHCORE
+ #include "InstanceScript.h"
+@@ -137,26 +140,40 @@ public:
+ 
+     /*
+      * These methods are just thin wrappers around Eluna.
++     *
++     * The map's state can be nullptr, so each wrapper checks it (as the
++     * creature AI does since dep/eluna-patches/0007) and treats a missing
++     * state as "no script": Map::GetEluna returns the state only to the
++     * thread that updates the map, and nullptr elsewhere.
+      */
+     void Update(uint32 diff) override
+     {
++        Eluna* E = instance->GetEluna();
++        if (!E)
++            return;
++
+         // If Eluna is reloaded, it will be missing our instance data.
+         // Reload here instead of waiting for the next hook call (possibly never).
+         // This avoids having to have an empty Update hook handler just to trigger the reload.
+-        if (!instance->GetEluna()->HasInstanceData(instance))
++        if (!E->HasInstanceData(instance))
+             Reload();
+ 
+-        instance->GetEluna()->OnUpdateInstance(this, diff);
++        E->OnUpdateInstance(this, diff);
+     }
+ 
+     bool IsEncounterInProgress() const override
+     {
+-        return instance->GetEluna()->OnCheckEncounterInProgress(const_cast<ElunaInstanceAI*>(this));
++        Eluna* E = instance->GetEluna();
++        if (!E)
++            return false;
++
++        return E->OnCheckEncounterInProgress(const_cast<ElunaInstanceAI*>(this));
+     }
+ 
+     void OnPlayerEnter(Player* player) override
+     {
+-        instance->GetEluna()->OnPlayerEnterInstance(this, player);
++        if (Eluna* E = instance->GetEluna())
++            E->OnPlayerEnterInstance(this, player);
+     }
+ 
+ #if defined ELUNA_TRINITY || defined ELUNA_AZEROTHCORE
+@@ -165,12 +182,14 @@ public:
+     void OnObjectCreate(GameObject* gameobject) override
+ #endif
+     {
+-        instance->GetEluna()->OnGameObjectCreate(this, gameobject);
++        if (Eluna* E = instance->GetEluna())
++            E->OnGameObjectCreate(this, gameobject);
+     }
+ 
+     void OnCreatureCreate(Creature* creature) override
+     {
+-        instance->GetEluna()->OnCreatureCreate(this, creature);
++        if (Eluna* E = instance->GetEluna())
++            E->OnCreatureCreate(this, creature);
+     }
+ };
+ 
+diff --git a/methods/VMangos/AuraMethods.h b/methods/VMangos/AuraMethods.h
+index df2569e..ec8c315 100644
+--- a/methods/VMangos/AuraMethods.h
++++ b/methods/VMangos/AuraMethods.h
+@@ -46,11 +46,24 @@ namespace LuaAura
+     /**
+      * Returns the level of the [Unit] that casted the [Spell] that caused this [Aura] to be applied.
+      *
+-     * @return uint32 caster_level
++     * The caster is found by its GUID, so it can be gone while the aura is
++     * still on its target (a DoT from a despawned add); nil is returned then.
++     *
++     * @return uint32 caster_level, or nil when the caster is gone
+      */
+     int GetCasterLevel(Eluna* E, Aura* aura)
+     {
+-        E->Push(aura->GetCaster()->GetLevel());
++        Unit* caster = aura->GetCaster();
++        // Also nil for a caster on another map: a map state only reads objects
++        // of its own map (dep/eluna-patches/0002), and a player caster is
++        // looked up on every map.
++        if (!caster || (E->GetBoundMap() && ElunaGetObjectMap(caster) != E->GetBoundMap()))
++        {
++            E->Push();
++            return 1;
++        }
++
++        E->Push(caster->GetLevel());
+         return 1;
+     }
+ 
+diff --git a/methods/VMangos/ItemMethods.h b/methods/VMangos/ItemMethods.h
+index 659e424..f206b35 100644
+--- a/methods/VMangos/ItemMethods.h
++++ b/methods/VMangos/ItemMethods.h
+@@ -193,12 +193,17 @@ namespace LuaItem
+         if (ItemLocale const* il = eObjectMgr->GetItemLocale(temp->ItemId))
+             name = il->Name[locale];
+ 
++        // An item without an owner (dropped, in a chest, in the mail) has no
++        // player level; the link's level field is 0 then, as for an item the
++        // core builds a link for itself.
++        Player* owner = item->GetOwner();
++
+         std::ostringstream oss;
+         oss << "|c" << std::hex << ItemQualityColors[temp->Quality] << std::dec <<
+             "|Hitem:" << temp->ItemId << ":" <<
+             item->GetEnchantmentId(PERM_ENCHANTMENT_SLOT) << ":" <<
+             item->GetItemRandomPropertyId() << ":" << item->GetItemSuffixFactor() << ":" <<
+-            (uint32)item->GetOwner()->GetLevel() << "|h[" << name << "]|h|r";
++            (uint32)(owner ? owner->GetLevel() : 0) << "|h[" << name << "]|h|r";
+ 
+         E->Push(oss.str());
+         return 1;

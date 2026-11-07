@@ -57,6 +57,8 @@ endif()
 # matches exactly) and --force on reverse (never asks; with --batch a patch
 # that is not applied gives "Unreversed patch detected!  Ignoring -R." and
 # exits 0).
+# Both tools run in the C locale (LC_ALL=C, LANGUAGE=C) because the checks below
+# read their English messages (issue #656).
 function(eluna_patch_tool mode dir patch result_var output_var)
   get_filename_component(dir_parent "${dir}" DIRECTORY)
   if(ELUNA_GIT_EXECUTABLE)
@@ -66,7 +68,7 @@ function(eluna_patch_tool mode dir patch result_var output_var)
     endif()
     execute_process(
       COMMAND "${CMAKE_COMMAND}" -E env --unset=GIT_DIR --unset=GIT_WORK_TREE
-              "GIT_CEILING_DIRECTORIES=${dir_parent}"
+              "GIT_CEILING_DIRECTORIES=${dir_parent}" "LC_ALL=C" "LANGUAGE=C"
               "${ELUNA_GIT_EXECUTABLE}" ${git_args} "${patch}"
       WORKING_DIRECTORY "${dir}"
       RESULT_VARIABLE result
@@ -80,7 +82,7 @@ function(eluna_patch_tool mode dir patch result_var output_var)
       list(APPEND patch_args --forward --batch)
     endif()
     execute_process(
-      COMMAND "${ELUNA_PATCH_EXECUTABLE}" ${patch_args}
+      COMMAND "${CMAKE_COMMAND}" -E env "LC_ALL=C" "LANGUAGE=C" "${ELUNA_PATCH_EXECUTABLE}" ${patch_args}
       WORKING_DIRECTORY "${dir}"
       RESULT_VARIABLE result
       OUTPUT_VARIABLE output
