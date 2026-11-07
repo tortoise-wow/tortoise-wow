@@ -236,8 +236,8 @@ submodule copy; the core side is the two roll call sites in `Group.cpp`).
 | `Loot:GetUnlootedCount()`, `SetUnlootedCount(n)` | items not looted yet (0..255); skinning needs 0 |
 | `Loot:GetLootType()` | `LootType` (1 corpse, 6 skinning; `clear()` never resets it) |
 | `Loot:GetItems()`, `GetQuestItems()` | tables of `{ id, index, count, needs_quest, is_looted, is_blocked, freeforall, is_underthreshold, roll_winner_guid }` (`index` is the client slot, quest items follow the normal ones; `roll_winner_guid` is nil unless a roll winner with full bags is waiting) |
-| `Loot:SetItemLooted(itemId, count, looted = true)` | marks the first normal item with that entry (and count, 0 = any) and tells open windows; returns whether one matched |
-| `Loot:Clear()` | empties the loot and cancels running rolls |
+| `Loot:SetItemLooted(itemId, count, looted = true)` | marks the first normal item with that entry (and count, 0 = any) and tells open windows; returns whether one matched. It does not change the unlooted count: keep it in step with `Loot:SetUnlootedCount`, or the corpse is never marked fully looted |
+| `Loot:Clear()` | empties the loot (`Loot::clear()`) and empties the looter list, which cancels the running rolls' link to their loot. It does not close loot windows that are already open: a player who has one open still sees the old slots until they close it. A cancelled roll is not removed from the group at once: it stays in the group's roll list until the next vote on it, its timeout or the group disbanding, and then ends without a winner |
 | `Player:IsAtGroupRewardDistance(obj)` | within the group reward distance (a dead player counts by corpse) |
 | `Player:IsAtLootRewardDistance(obj)` | the same, and for a creature also an allowed looter |
 | `Player:IsBot()` | headless session, or `ScriptMgr::IsBotManaged` (a hired TortoiseBots bot) |
