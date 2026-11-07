@@ -15,8 +15,9 @@ a line with "FAIL" is a failed check. Groups, what to do and what to expect:
            GetStateInstanceId come with patch 0011: without it the load line says so.)
 
   spell    Cast SMOKE_SPELL (default 133, Fireball rank 1) at a creature. Expect,
-           in this order: check_cast, before_cast, cast, after_cast, then
-           before_hit miss=0, effect_hit_target, hit, after_hit, with the
+           in this order: check_cast, before_cast, cast, effect_hit_target
+           (effect 0, handled at launch), after_cast, then before_hit miss=0,
+           effect_hit_target (effect 1), hit, after_hit, with the
            target's guid as hitUnit, and "spell order ok". ".elunasmoke blockcast"
            (world state) makes the next check_cast return SPELL_FAILED_NOT_READY:
            expect the client error and no cast line, then it unblocks itself.
@@ -153,7 +154,11 @@ if type(mapId) == "number" and mapId >= 0 then
     end)
     RegisterSpellEvent(SMOKE_SPELL, 23, function(event, spell, hitUnit)
         step("after_hit", spell, "hit=" .. (hitUnit and hitUnit:GetName() or "nil"))
-        local want = { "before_cast", "cast", "after_cast", "before_hit", "effect_hit_target", "hit", "after_hit" }
+        -- The core's real order for Fireball (a delayed projectile): effect 0 is handled at launch,
+        -- so its effect_hit_target comes before after_cast; before_hit, effect 1, hit, after_hit
+        -- follow when the projectile lands.
+        local want = { "before_cast", "cast", "effect_hit_target", "after_cast",
+                       "before_hit", "effect_hit_target", "hit", "after_hit" }
         -- check_cast comes before before_cast and is dropped from the list by before_cast resetting it
         local same = #order == #want
         for i = 1, #want do same = same and order[i] == want[i] end

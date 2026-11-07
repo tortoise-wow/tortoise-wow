@@ -319,6 +319,14 @@ destroyed, after its objects are unloaded.
   across teleports and reloads, and a Lua command with the `ChatHandler`
   (`.paritysmoke`, in game and from the console). The header says what to do.
 
+Spell event order (Fireball rank 1, a delayed projectile, as the smoke script checks it):
+`check_cast`, `before_cast`, `cast`, `effect_hit_target` (effect 0), `after_cast`, then when the
+projectile lands `before_hit`, `effect_hit_target` (effect 1), `hit`, `after_hit`. An effect the core
+handles at spell launch (`IsEffectHandledOnDelayedSpellLaunch`) fires its effect events before
+`after_cast`; the other effects fire them between `before_hit` and `hit`.
+`GetPlayersOnMap` lists every player on the map including GMs (TrinityCore); `Map:GetPlayerCount`
+skips players in GM mode.
+
 ## Known limits
 
 - **Global functions that change server-wide data are world-only**
