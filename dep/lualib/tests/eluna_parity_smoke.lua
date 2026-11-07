@@ -169,7 +169,7 @@ end
 
 -- data ---------------------------------------------------------------------
 local keptHandle
-local function bump(player)
+local function bump(event, player)
     local d = player:Data()
     d:Set("n", (d:Get("n") or 0) + 1)
     log("data", player:GetName() .. " n=" .. d:Get("n"))
