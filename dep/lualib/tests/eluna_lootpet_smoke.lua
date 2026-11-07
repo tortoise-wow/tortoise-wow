@@ -22,7 +22,7 @@ Copy it into the server's Eluna.ScriptPath (default ./lua_scripts), build with
   critter     ".lootsmoke pet" logs GetCritterGUID of the player
   pet roll    Creature:StartGroupLootRoll(player) (patch 0011, map states only).
               ".lootsmoke startroll" with a dead creature selected, in the world
-              state: the method must not exist there (PASS "refused"). In a
+              state: the call must raise "does not exist for state" (PASS "refused"). In a
               group with group loot or need before greed, kill a creature that
               drops an item at or above the loot threshold: 1 s after the kill
               (PLAYER_EVENT_ON_KILL_CREATURE, 7, in the map state) it is called
@@ -113,7 +113,11 @@ RegisterPlayerEvent(42, function(event, player, command)
             return
         end
         if verb == "startroll" then
-            log("startroll in the world state " .. ((corpse.StartGroupLootRoll == nil) and "PASS refused" or "FAIL method exists"))
+            -- METHOD_REG_MAP: the world state has a stub that raises "does not exist for state: -1"
+            -- (the same refusal as the 0009 world-only methods in a map state), not a missing field.
+            local okCall, errCall = pcall(corpse.StartGroupLootRoll, corpse, player)
+            log("startroll in the world state " .. ((not okCall and tostring(errCall):find("does not exist for state", 1, true))
+                and "PASS refused" or ("FAIL not refused: " .. tostring(errCall))))
             return
         end
         local loot = corpse:GetLoot()
