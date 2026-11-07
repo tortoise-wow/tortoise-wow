@@ -29,7 +29,8 @@ the corpse's lootForBody flag, so a later loot open never starts them twice),
 Player:IsAtGroupRewardDistance, Player:IsAtLootRewardDistance,
 Player:IsBot (headless session, or ScriptMgr::IsBotManaged), Unit:GetCritterGUID
 (was a METHOD_REG_NONE stub; the mini pet's guid or nil),
-Group:GetMembersOnMap (Group:GetMembers is world-only; this one lists the
+Group:GetLootMethod (0 free for all, 1 round robin, 2 master, 3 group loot, 4 need
+before greed), Group:GetMembersOnMap (Group:GetMembers is world-only; this one lists the
 members in the world and on the calling state's map, so it works in a map
 state), and the globals GetStateMapId (-1 in the world state) and
 GetStateInstanceId.
@@ -310,13 +311,25 @@ index f22c5a9..5b30752 100644
          { "GetCoreVersion", &LuaGlobalFunctions::GetCoreVersion },
          { "GetCoreExpansion", &LuaGlobalFunctions::GetCoreExpansion },
 diff --git a/methods/VMangos/GroupMethods.h b/methods/VMangos/GroupMethods.h
-index b3b6baa..90bdd24 100644
+index b3b6baa..1bb5a5b 100644
 --- a/methods/VMangos/GroupMethods.h
 +++ b/methods/VMangos/GroupMethods.h
-@@ -170,6 +170,37 @@ namespace LuaGroup
+@@ -170,6 +170,49 @@ namespace LuaGroup
          return 1;
      }
  
++    /**
++     * Returns the group's loot method: 0 free for all, 1 round robin, 2 master loot,
++     * 3 group loot, 4 need before greed (the core's LootMethod, tortoise-wow patch 0011).
++     *
++     * @return uint32 lootMethod
++     */
++    int GetLootMethod(Eluna* E, Group* group)
++    {
++        E->Push(static_cast<uint32>(group->GetLootMethod()));
++        return 1;
++    }
++
 +    /**
 +     * Returns a table with the [Player]s of this [Group] that are in the world and on
 +     * the map of the calling state (every member in the world state). Unlike
@@ -351,11 +364,12 @@ index b3b6baa..90bdd24 100644
      /**
       * Returns [Group] leader GUID
       *
-@@ -354,6 +385,7 @@ namespace LuaGroup
+@@ -354,6 +397,8 @@ namespace LuaGroup
      {
          // Getters
          { "GetMembers", &LuaGroup::GetMembers, METHOD_REG_WORLD }, // World state method only in multistate
 +        { "GetMembersOnMap", &LuaGroup::GetMembersOnMap },
++        { "GetLootMethod", &LuaGroup::GetLootMethod },
          { "GetLeaderGUID", &LuaGroup::GetLeaderGUID },
          { "GetGUID", &LuaGroup::GetGUID },
          { "GetMemberGroup", &LuaGroup::GetMemberGroup },
