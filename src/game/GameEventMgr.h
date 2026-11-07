@@ -42,7 +42,7 @@ enum SilithusPVPEventState
 
 struct GameEventData
 {
-    GameEventData() : start(1), end(0), occurence(0), length(0), holiday_id(HOLIDAY_NONE), hardcoded(0), disabled(0), leapDays(0)
+    GameEventData() : start(1), end(0), occurence(0), length(0), holiday_id(HOLIDAY_NONE), hardcoded(0), disabled(0)
     {
     }
 
@@ -55,7 +55,6 @@ struct GameEventData
     uint8 hardcoded;
     uint8 disabled;
     uint8 requiredPhase;
-    uint8 leapDays;                                         // Leap days between current and start date
 
     bool isValid() const { return length > 0; }
 };
