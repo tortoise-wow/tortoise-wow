@@ -122,13 +122,17 @@ What the core does to keep to that, only while `Eluna.Enabled = 1`:
   loads.
 - **`Data()`** is C++ memory of the object, not a Lua table: it survives `.reload eluna`.
   A handle is not invalidated with the object, so one kept by a map state is detached
-  (the object gets a deep copy when it leaves the map) rather than shared.
+  (the object gets a deep copy when it leaves the map) rather than shared. Storing a plain table nested deeper than 64 levels, or one that holds itself
+  (`t.self = t`), raises a Lua error.
 - **`ChatHandler`** exists only in the world state, on the world thread, during the
-  hook. A command parsed on a map thread gets no state and is skipped. A handle kept
-  after the hook reads nil: on this backend the userdata is call-scoped like `Loot` and
-  `Roll` (`ElunaObjectImpl` checks `callstackid`, `ElunaTemplate.h:152-161`;
-  `Eluna::InvalidateObjects` bumps it when the outermost call ends, `LuaEngine.cpp:267-269` and
-  `:918-920`; only the Trinity and cMaNGOS builds define `TRACKABLE_PTR_NAMESPACE`, `LuaEngine.h:152-158`).
+  hook. A command parsed on a map thread gets no state and is skipped. A handle is only valid during the call that pushed it, like `Loot` and `Roll`. A handle
+  kept after the hook reads nil once the outermost call has ended; during nested calls (the
+  roll event inside `StartGroupLootRoll`, say) it is not defined. Line numbers are in the
+  Eluna files with patches 0001-0012 applied: `ElunaObjectImpl` stores and checks `callstackid`
+  (`ElunaTemplate.h:155`, `:164`), `ChatHandler` is not one of the value types
+  (`ElunaTemplate.h:214-225`), `Eluna::InvalidateObjects` bumps the id (`LuaEngine.cpp:267-269`)
+  when the outermost call's `CleanUpStack` runs (`LuaEngine.cpp:918-920`), and only the Trinity
+  and cMaNGOS builds define `TRACKABLE_PTR_NAMESPACE` (`LuaEngine.h:157`, `:163`).
 - **Packet hooks** (`OnPacketSend`, `OnPacketReceive`) are not bridged: they
   would run on network threads.
 - `Map` and `World` cache their `Eluna*`. Eluna's `ElunaMgr` container has no
@@ -234,13 +238,13 @@ submodule copy; the core side is the two roll call sites in `Group.cpp`).
 | `Creature:GetLoot()` | the corpse's `Loot` |
 | `Group:GetLootMethod()` | the group's loot method: 0 free for all, 1 round robin, 2 master loot, 3 group loot, 4 need before greed. Works in map states |
 | `Group:GetLootThreshold()` | the group's loot quality threshold (0 poor to 6 artifact); before a roll `is_underthreshold` is false for every item, so compare the item's quality with this |
-| `Creature:StartGroupLootRoll(player)` | map states only. Starts the group's Need/Greed (or Group Loot) rolls for the corpse the way the first loot window a member opens does (`Group::GroupLoot` / `NeedBeforeGreed`: roll popups, `is_blocked`), and sets the corpse's `lootForBody` flag so a later loot open never starts them twice. `player` must be in the group that owns the corpse's loot. Returns `true` when rolls were started (even if bots already ended them); `false`, with `lootForBody` untouched, for a live corpse, `CreatureAI::CanBeLooted()` false (a boss in a fake death), loot disabled on the map, pickpocket loot, rolls already started, another group, master loot / free for all / round robin, or when no item at or above the threshold has a member who can roll. The core then gives the item to the winner as usual |
+| `Creature:StartGroupLootRoll(player)` | map states only. It returns `false` (and logs one line) while the group is inside the roll event (56). The core skips items a script marked looted when it builds rolls. Starts the group's Need/Greed (or Group Loot) rolls for the corpse the way the first loot window a member opens does (`Group::GroupLoot` / `NeedBeforeGreed`: roll popups, `is_blocked`), and sets the corpse's `lootForBody` flag so a later loot open never starts them twice. `player` must be in the group that owns the corpse's loot. Returns `true` when rolls were started (even if bots already ended them); `false`, with `lootForBody` untouched, for a live corpse, `CreatureAI::CanBeLooted()` false (a boss in a fake death), loot disabled on the map, pickpocket loot, rolls already started, another group, master loot / free for all / round robin, or when no item at or above the threshold has a member who can roll. The core then gives the item to the winner as usual |
 | `Creature:AllLootRemovedFromCorpse()` | calls `Creature::AllLootRemovedFromCorpse`: sets the skinning-for-others timer and, for a corpse with body loot that is not waiting to be skinned, shortens the corpse decay timer to the looted delay. It does not clear `UNIT_DYNFLAG_LOOTABLE`: the corpse keeps its sparkle until its loot is emptied or it despawns |
 | `Loot:GetMoney()`, `SetMoney(copper)` | the coin; 0 closes it in open loot windows |
 | `Loot:GetUnlootedCount()`, `SetUnlootedCount(n)` | items not looted yet (0..255); skinning needs 0 |
 | `Loot:GetLootType()` | `LootType` (1 corpse, 6 skinning; `clear()` never resets it) |
 | `Loot:GetItems()`, `GetQuestItems()` | tables of `{ id, index, count, needs_quest, is_looted, is_blocked, freeforall, is_underthreshold, roll_winner_guid }` (`index` is the client slot, quest items follow the normal ones; `roll_winner_guid` is nil unless a roll winner with full bags is waiting) |
-| `Loot:SetItemLooted(itemId, count, looted = true)` | marks the first normal item with that entry (and count, 0 = any) as looted, tells open windows and takes one off the unlooted count itself, so a script does not call `SetUnlootedCount` for it. Returns whether an item changed. It changes nothing and returns `false` for an item under a roll (`is_blocked`), an item waiting for a roll winner (`roll_winner_guid` set), an item already looted, and `looted = false`: a looted item is not given back |
+| `Loot:SetItemLooted(itemId, count, looted = true)` | marks the first eligible normal item with that entry (and count, 0 = any) as looted (eligible: not looted yet, not under a roll, no roll winner waiting), tells open windows and takes one off the unlooted count itself, so a script does not call `SetUnlootedCount` for it. Returns whether an item changed. It changes nothing and returns `false` for an item under a roll (`is_blocked`), an item waiting for a roll winner (`roll_winner_guid` set), an item already looted, and `looted = false`: a looted item is not given back |
 | `Loot:Clear()` | empties the loot (`Loot::clear()`) and empties the looter list, which invalidates the running rolls' link to their loot. It does not tell clients: loot windows that are already open keep showing the old slots until the player closes them. It does not end the rolls in `RollId` either. A cancelled roll is not removed from the group at once: it stays in the group's roll list until the next vote on it, its timeout or the group disbanding, and then ends without a winner |
 | `Player:IsAtGroupRewardDistance(obj)` | within the group reward distance (a dead player counts by corpse) |
 | `Player:IsAtLootRewardDistance(obj)` | within the group reward distance and, for a creature, the core's `Player::IsAllowedToLoot` (a dead creature with loot left, the loot recipient or a member of the recipient group, and the group's loot method). It differs from ALE's method, which only checks the distance |
@@ -253,7 +257,9 @@ submodule copy; the core side is the two roll call sites in `Group.cpp`).
 
 Lifetime: a `Loot` or `Roll` is only valid during the call that pushed it (the
 `Loot` lives in its creature, the `Roll` is deleted right after the hook). Never
-keep one; call `corpse:GetLoot()` again every time. The roll event goes to the
+keep one; call `corpse:GetLoot()` again every time. A kept handle is not defined in nested
+calls (event 56 fires inside the roll count, which can itself run inside a script call) and reads
+nil only after the outermost call ends. The same holds for a `ChatHandler`. The roll event goes to the
 winner's map state. It is dropped (the core logs it once per map) when the vote is counted
 on a thread that may not use that state, for example a vote that a player on another map
 casts while the winner's map updates: `Map::GetEluna` refuses it (see Threading rules).

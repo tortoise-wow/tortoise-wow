@@ -34,6 +34,11 @@ Copy it into the server's Eluna.ScriptPath (default ./lua_scripts), build with
               started: PASS). Solo, master loot or free for all it logs
               started=false for both calls. A boss that fakes its death
               (Thekal) also logs started=false until its real death.
+  marked      Set MARK_LOOTED = true (top of this file) and kill the same kind of
+              creature: before the rolls start, the first item at or above the
+              threshold is marked with SetItemLooted. It must get no roll
+              (is_blocked stays false, "PASS no roll for a looted item"), and
+              with only that item above the threshold started=false.
   roll        PLAYER_EVENT_ON_GROUP_ROLL_REWARD_ITEM (56): in a group of two
               with group loot, a need or greed winner logs the item, count,
               vote type and the Roll getters
@@ -150,6 +155,8 @@ RegisterPlayerEvent(42, function(event, player, command)
     return false
 end)
 
+local MARK_LOOTED = false
+
 -- Map state: kill a creature, then start the group roll twice (second must be false).
 RegisterPlayerEvent(7, function(event, player, killed)
     if not player or not killed or not killed.StartGroupLootRoll then
@@ -162,7 +169,27 @@ RegisterPlayerEvent(7, function(event, player, killed)
             if not p then
                 return
             end
+            local markedId
+            if MARK_LOOTED and p:GetGroup() then
+                local threshold = p:GetGroup():GetLootThreshold()
+                for _, it in ipairs(corpse:GetLoot():GetItems()) do
+                    local tpl = GetItemTemplate(it.id)
+                    if not it.freeforall and tpl and tpl:GetQuality() >= threshold then
+                        markedId = it.id
+                        corpse:GetLoot():SetItemLooted(it.id, it.count)
+                        break
+                    end
+                end
+            end
             local first = corpse:StartGroupLootRoll(p)
+            if markedId then
+                for _, it in ipairs(corpse:GetLoot():GetItems()) do
+                    if it.id == markedId and it.is_looted then
+                        log(("marked item %d blocked=%s %s"):format(markedId, tostring(it.is_blocked),
+                            it.is_blocked and "FAIL rolled a looted item" or "PASS no roll for a looted item"))
+                    end
+                end
+            end
             local second = corpse:StartGroupLootRoll(p)
             log(("startroll %s started=%s again=%s %s"):format(corpse:GetName(), tostring(first), tostring(second),
                 (second == false) and "PASS idempotent" or "FAIL started twice"))

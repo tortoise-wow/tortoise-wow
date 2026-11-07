@@ -45,7 +45,8 @@ a line with "FAIL" is a failed check. Groups, what to do and what to expect:
            kept in a global by the old map state shows the old value after the
            player left it (logs "data detached ok"), the new state's value
            differs. map:Data() has a counter per map. d:Set("me", d) then d:Get("me"):Get("me") is
-           nil (a copy, no cycle) and "data copy ok".
+           nil (a copy, no cycle) and "data copy ok". A plain table that holds itself
+           (t.self = t) given to Set is refused with an error ("selfref refused ok").
 
   cmd      ".paritysmoke" from a GM in game and from the console: IsConsole
            false / true, GetPlayer player / nil, GetSecurity, GetSelectedUnit
@@ -196,6 +197,12 @@ local function bump(event, player)
     local inner = d:Get("me")
     log("data", (inner and inner:Get("me") == nil) and "copy ok" or "FAIL cycle")
     d:Set("me", nil)
+    -- a table that holds itself is refused with a Lua error, not stored and not a crash
+    local selfRef = {}
+    selfRef.self = selfRef
+    local okSet, errSet = pcall(d.Set, d, "selfref", selfRef)
+    log("data", (not okSet and tostring(errSet):find("deeper than 64", 1, true) and d:Get("selfref") == nil)
+        and "selfref refused ok" or ("FAIL selfref ok=" .. tostring(okSet) .. " err=" .. tostring(errSet)))
 end
 RegisterPlayerEvent(PLAYER_EVENT_ON_LOGIN, bump)
 RegisterPlayerEvent(PLAYER_EVENT_ON_MAP_CHANGE, bump)
