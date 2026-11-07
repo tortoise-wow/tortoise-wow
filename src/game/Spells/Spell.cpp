@@ -6849,7 +6849,7 @@ SpellCastResult Spell::CheckCast(bool strict)
     // Lua SPELL_EVENT_ON_CHECK_CAST: a SPELL_FAILED_* result cancels the cast.
     if (Eluna* e = m_caster->GetEluna())
     {
-        uint32 luaResult = e->OnCheckCast(this);
+        uint32 luaResult = e->OnCheckCast(this, strict);
         if (luaResult != SPELL_CAST_OK)
             return SpellCastResult(luaResult);
     }

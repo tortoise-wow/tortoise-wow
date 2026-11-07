@@ -9,7 +9,10 @@ Added to the VMaNGOS backend (methods/VMangos, hooks, LuaValue):
   20 before hit, 21 effect hit target, 22 hit, 23 after hit. Any other event is
   an argument error (it would never fire). The hit unit is passed as a trailing
   argument of the hit events (Spell::unitTarget is protected). A check-cast
-  result that is neither SPELL_CAST_OK nor a SPELL_FAILED_* value counts as OK.
+  result that is a SPELL_FAILED_* value cancels the cast; SPELL_CAST_OK lets it
+  go on, and a value outside both counts as OK. The check-cast handler is called
+  as (event, spell, strict) on every CheckCast: strict is true at prepare and
+  false at the completion check.
 - Creature:GetThreat, ClearThreat, ResetAllThreat, FixateTarget, ClearFixate
   (the fixate is emulated by the core through the taunt target).
 - Spell:IsTriggered, GetOriginalCaster, IsPositive, GetState, IsInterruptable,
@@ -19,7 +22,7 @@ Added to the VMaNGOS backend (methods/VMangos, hooks, LuaValue):
   objects never share one map across threads and a table cannot contain itself; nesting deeper than 64 levels is refused with an error, never cut.
 - ChatHandler type: the third argument of PLAYER_EVENT_ON_COMMAND (new overload
   Eluna::OnCommand(ChatHandler&, text)) with SendSysMessage, PSendSysMessage,
-  IsConsole, GetPlayer, GetAccountId, GetSecurity, IsAvailable/HasPermission,
+  IsConsole, GetPlayer, GetAccountId, GetSecurity, IsAvailable,
   HasLowerSecurity, GetSelected*, SendGlobal(GM)SysMessage and the error flag.
   World-only methods; the new file methods/VMangos/ChatHandlerMethods.h.
 
@@ -45,7 +48,7 @@ index f388ea9..ca60914 100644
  #if !defined ELUNA_CMANGOS
  #include "AccountMgr.h"
 diff --git a/LuaEngine.h b/LuaEngine.h
-index 8f52e71..dbcf843 100644
+index 8f52e71..ee22695 100644
 --- a/LuaEngine.h
 +++ b/LuaEngine.h
 @@ -45,6 +45,7 @@ extern "C"
@@ -67,6 +70,33 @@ index 8f52e71..dbcf843 100644
      void OnWorldUpdate(uint32 diff);
      void OnLootItem(Player* pPlayer, Item* pItem, uint32 count, ObjectGuid guid);
      void OnLootMoney(Player* pPlayer, uint32 amount);
+@@ -659,7 +664,7 @@ public:
+     void OnCalcPeriodic(Aura* aura, AuraEffect const* auraEff, bool& isPeriodic, int32& amplitude);
+     bool OnAuraCanProc(Aura* aura, ProcEventInfo& procInfo);
+     bool OnAuraProc(Aura* aura, ProcEventInfo& procInfo);
+-    uint32 OnCheckCast(Spell* pSpell);
++    uint32 OnCheckCast(Spell* pSpell, bool strict);
+     void OnBeforeCast(Spell* pSpell);
+     void OnAfterCast(Spell* pSpell);
+     void OnObjectAreaTargetSelect(Spell* pSpell, uint8 effIndex, std::list<WorldObject*>& targets);
+@@ -683,7 +688,7 @@ public:
+     void OnCalcPeriodic(Aura* aura, bool& isPeriodic, int32& amplitude);
+     bool OnAuraCanProc(Aura* aura, ProcExecutionData& procInfo);
+     bool OnAuraProc(Aura* aura, ProcExecutionData& procInfo);
+-    uint32 OnCheckCast(Spell* pSpell);
++    uint32 OnCheckCast(Spell* pSpell, bool strict);
+     void OnBeforeCast(Spell* pSpell);
+     void OnAfterCast(Spell* pSpell);
+     void OnObjectAreaTargetSelect(Spell* pSpell, uint8 effIndex, std::list<WorldObject*>& targets);
+@@ -707,7 +712,7 @@ public:
+     void OnCalcPeriodic(Aura* aura, bool& isPeriodic, int32& amplitude);
+     // bool OnAuraCanProc(Aura* aura, ProcExecutionData& procInfo);
+     // bool OnAuraProc(Aura* aura, ProcExecutionData& procInfo);
+-    uint32 OnCheckCast(Spell* pSpell);
++    uint32 OnCheckCast(Spell* pSpell, bool strict);
+     void OnBeforeCast(Spell* pSpell);
+     void OnAfterCast(Spell* pSpell);
+     void OnObjectAreaTargetSelect(Spell* pSpell, uint8 effIndex, std::list<WorldObject*>& targets);
 @@ -715,11 +720,11 @@ public:
      //void OnDestinationTargetSelect(Spell* pSpell, uint8 effIndex, SpellCastTargets& target);
      bool OnEffectLaunch(Spell* pSpell, uint8 effIndex, uint8 mode, bool preventDefault);
@@ -110,7 +140,7 @@ index 39c28f2..72c25f3 100644
      }
      luaL_argerror(L, index, "Trying to use unsupported type");
 diff --git a/LuaValue.h b/LuaValue.h
-index fdb654e..59c84ed 100644
+index fdb654e..b41fa8a 100644
 --- a/LuaValue.h
 +++ b/LuaValue.h
 @@ -148,6 +148,44 @@ public:
@@ -184,16 +214,23 @@ index cb4affe..5f3784c 100644
  {
      START_HOOK(PLAYER_EVENT_ON_LOOT_ITEM);
 diff --git a/hooks/SpellHooks.cpp b/hooks/SpellHooks.cpp
-index c37cccc..3db80a0 100644
+index c37cccc..a344f69 100644
 --- a/hooks/SpellHooks.cpp
 +++ b/hooks/SpellHooks.cpp
-@@ -237,7 +237,16 @@ uint32 Eluna::OnCheckCast(Spell* pSpell)
+@@ -233,11 +233,22 @@ bool Eluna::OnAuraProc(Aura* aura, ProcExecutionData& procInfo)
+ }
+ #endif
+ 
+-uint32 Eluna::OnCheckCast(Spell* pSpell)
++uint32 Eluna::OnCheckCast(Spell* pSpell, bool strict)
  {
      START_HOOK_WITH_RETVAL(SPELL_EVENT_ON_CHECK_CAST, pSpell, SPELL_CAST_OK);
      HookPush(pSpell);
++    HookPush(strict);
 +#if defined ELUNA_VMANGOS
-+    // A value that is neither SPELL_CAST_OK nor a SPELL_FAILED_* result (a script returning 1, -1, 300)
-+    // must not reach the cast code as a result: count it as OK.
++    // A SPELL_FAILED_* result (0 to SPELL_FAILED_UNKNOWN, so 1 too) cancels the cast; only
++    // SPELL_CAST_OK lets it go on. A value outside that range (-1, 300) must not reach the cast
++    // code as a result: count it as OK.
 +    uint32 result = static_cast<uint32>(CallAllFunctionsInt(binding, key, int32(SPELL_CAST_OK)));
 +    if (result != SPELL_CAST_OK && result > SPELL_FAILED_UNKNOWN)
 +        return SPELL_CAST_OK;
@@ -204,7 +241,7 @@ index c37cccc..3db80a0 100644
  }
  
  void Eluna::OnBeforeCast(Spell* pSpell)
-@@ -361,45 +370,80 @@ bool Eluna::OnEffectLaunchTarget(Spell* pSpell, uint8 effIndex, uint8 mode, bool
+@@ -361,45 +372,80 @@ bool Eluna::OnEffectLaunchTarget(Spell* pSpell, uint8 effIndex, uint8 mode, bool
      return preventDefault;
  }
  
@@ -311,10 +348,10 @@ index 7d43c3e..f06f14e 100644
      LuaVal::Register(E->L);
 diff --git a/methods/VMangos/ChatHandlerMethods.h b/methods/VMangos/ChatHandlerMethods.h
 new file mode 100644
-index 0000000..aa7535f
+index 0000000..46a8362
 --- /dev/null
 +++ b/methods/VMangos/ChatHandlerMethods.h
-@@ -0,0 +1,265 @@
+@@ -0,0 +1,264 @@
 +/*
 +* Copyright (C) 2010 - 2024 Eluna Lua Engine <https://elunaluaengine.github.io/>
 +* This program is free software licensed under GPL version 3
@@ -566,7 +603,6 @@ index 0000000..aa7535f
 +        { "GetAccountId", &LuaChatHandler::GetAccountId, METHOD_REG_WORLD },
 +        { "GetSecurity", &LuaChatHandler::GetSecurity, METHOD_REG_WORLD },
 +        { "IsAvailable", &LuaChatHandler::IsAvailable, METHOD_REG_WORLD },
-+        { "HasPermission", &LuaChatHandler::IsAvailable, METHOD_REG_WORLD },
 +        { "HasLowerSecurity", &LuaChatHandler::HasLowerSecurity, METHOD_REG_WORLD },
 +        { "GetSelectedPlayer", &LuaChatHandler::GetSelectedPlayer, METHOD_REG_WORLD },
 +        { "GetSelectedPlayerOrSelf", &LuaChatHandler::GetSelectedPlayerOrSelf, METHOD_REG_WORLD },
@@ -581,10 +617,10 @@ index 0000000..aa7535f
 +}
 +#endif
 diff --git a/methods/VMangos/CreatureMethods.h b/methods/VMangos/CreatureMethods.h
-index d1f5902..5aa1b20 100644
+index ffa8fd9..541168d 100644
 --- a/methods/VMangos/CreatureMethods.h
 +++ b/methods/VMangos/CreatureMethods.h
-@@ -1239,8 +1239,92 @@ namespace LuaCreature
+@@ -1242,8 +1242,92 @@ namespace LuaCreature
          return 0;
      }
  
@@ -678,7 +714,7 @@ index d1f5902..5aa1b20 100644
          { "GetAITarget", &LuaCreature::GetAITarget },
          { "GetAITargets", &LuaCreature::GetAITargets },
 diff --git a/methods/VMangos/GlobalMethods.h b/methods/VMangos/GlobalMethods.h
-index 5b30752..26ffb94 100644
+index 5b30752..d65d6ec 100644
 --- a/methods/VMangos/GlobalMethods.h
 +++ b/methods/VMangos/GlobalMethods.h
 @@ -105,6 +105,63 @@ namespace LuaGlobalFunctions
@@ -745,7 +781,7 @@ index 5b30752..26ffb94 100644
      /**
       * Returns [Quest] template
       *
-@@ -890,6 +947,60 @@ namespace LuaGlobalFunctions
+@@ -890,6 +947,63 @@ namespace LuaGlobalFunctions
          return RegisterEntryHelper(E, Hooks::REGTYPE_GAMEOBJECT_GOSSIP);
      }
  
@@ -753,6 +789,9 @@ index 5b30752..26ffb94 100644
 +     * Registers a [Spell] event handler, called for the spell with the given Id.
 +     *
 +     * Only the events this core fires are accepted; any other event is an error.
++     * SPELL_EVENT_ON_CHECK_CAST fires on every Spell::CheckCast: once when the cast is
++     * prepared (strict = true) and again when a spell with a cast time completes
++     * (strict = false), as TrinityCore's check-cast handlers do. A `shots` limit counts each call.
 +     * The state is the one of the map of the caster, so register spell events in a script every map
 +     * state loads. In these events only read, set data, add threat or queue work with
 +     * [Global:CreateLuaEvent]: do not despawn, teleport or remove the caster or the target.
@@ -761,7 +800,7 @@ index 5b30752..26ffb94 100644
 +     * enum SpellEvents
 +     * {
 +     *     SPELL_EVENT_ON_CAST              = 1,    // (event, spell, skipCheck)
-+     *     SPELL_EVENT_ON_CHECK_CAST        = 10,   // (event, spell) - Can return a SPELL_FAILED_* value to cancel the cast
++     *     SPELL_EVENT_ON_CHECK_CAST        = 10,   // (event, spell, strict) - Can return a SPELL_FAILED_* value to cancel the cast; strict is true at prepare, false at the completion check
 +     *     SPELL_EVENT_ON_BEFORE_CAST       = 11,   // (event, spell)
 +     *     SPELL_EVENT_ON_AFTER_CAST        = 12,   // (event, spell)
 +     *     SPELL_EVENT_ON_EFFECT_HIT        = 19,   // (event, spell, effIndex, mode, hitUnit) - Can return true to prevent the default effect
@@ -806,7 +845,7 @@ index 5b30752..26ffb94 100644
      /**
       * Registers an [Item] event handler.
       *
-@@ -2937,6 +3048,7 @@ namespace LuaGlobalFunctions
+@@ -2937,6 +3051,7 @@ namespace LuaGlobalFunctions
          { "RegisterCreatureGossipEvent", &LuaGlobalFunctions::RegisterCreatureGossipEvent },
          { "RegisterGameObjectEvent", &LuaGlobalFunctions::RegisterGameObjectEvent },
          { "RegisterGameObjectGossipEvent", &LuaGlobalFunctions::RegisterGameObjectGossipEvent },
@@ -814,7 +853,7 @@ index 5b30752..26ffb94 100644
          { "RegisterItemEvent", &LuaGlobalFunctions::RegisterItemEvent },
          { "RegisterItemGossipEvent", &LuaGlobalFunctions::RegisterItemGossipEvent },
          { "RegisterPlayerGossipEvent", &LuaGlobalFunctions::RegisterPlayerGossipEvent },
-@@ -2974,6 +3086,8 @@ namespace LuaGlobalFunctions
+@@ -2974,6 +3089,8 @@ namespace LuaGlobalFunctions
          { "GetPlayerByName", &LuaGlobalFunctions::GetPlayerByName },
          { "GetGameTime", &LuaGlobalFunctions::GetGameTime },
          { "GetPlayersInWorld", &LuaGlobalFunctions::GetPlayersInWorld },
@@ -854,10 +893,10 @@ index 18a77ae..6b9ca0b 100644
          { "IsArena", METHOD_REG_NONE },
          { "IsHeroic", METHOD_REG_NONE }
 diff --git a/methods/VMangos/SpellMethods.h b/methods/VMangos/SpellMethods.h
-index 697c974..0b590b9 100644
+index 2902115..a8d6f21 100644
 --- a/methods/VMangos/SpellMethods.h
 +++ b/methods/VMangos/SpellMethods.h
-@@ -153,6 +153,125 @@ namespace LuaSpell
+@@ -167,6 +167,125 @@ namespace LuaSpell
          return 1;
      }
  
@@ -983,7 +1022,7 @@ index 697c974..0b590b9 100644
      /**
       * Sets the [Spell] to automatically repeat.
       *
-@@ -205,12 +324,19 @@ namespace LuaSpell
+@@ -219,12 +338,19 @@ namespace LuaSpell
          { "GetPowerCost", &LuaSpell::GetPowerCost },
          { "GetTargetDest", &LuaSpell::GetTargetDest },
          { "GetTarget", &LuaSpell::GetTarget },
