@@ -23,6 +23,9 @@ ItemTemplateMethods.h and RollMethods.h, registered in methods/Methods.cpp):
   greed winner got the item. The Roll is deleted right after the hook.
 
 New methods: Creature:GetLoot, Creature:AllLootRemovedFromCorpse,
+Creature:StartGroupLootRoll(player) (map states only; starts the group's Need/Greed
+rolls for the corpse through the core's Group::GroupLoot / NeedBeforeGreed and sets
+the corpse's lootForBody flag, so a later loot open never starts them twice),
 Player:IsAtGroupRewardDistance, Player:IsAtLootRewardDistance,
 Player:IsBot (headless session, or ScriptMgr::IsBotManaged), Unit:GetCritterGUID
 (was a METHOD_REG_NONE stub; the mini pet's guid or nil),
@@ -150,10 +153,10 @@ index 8573e25..7d43c3e 100644
      ElunaTemplate<Group>::SetMethods(E, LuaGroup::GroupMethods);
  
 diff --git a/methods/VMangos/CreatureMethods.h b/methods/VMangos/CreatureMethods.h
-index 41ee66d..9b74dbc 100644
+index 41ee66d..3d00181 100644
 --- a/methods/VMangos/CreatureMethods.h
 +++ b/methods/VMangos/CreatureMethods.h
-@@ -1120,6 +1120,27 @@ namespace LuaCreature
+@@ -1120,6 +1120,92 @@ namespace LuaCreature
          return 1;
      }
      
@@ -170,6 +173,71 @@ index 41ee66d..9b74dbc 100644
 +    }
 +
 +    /**
++     * Starts the group's Need/Greed (or Group Loot) rolls for this corpse, the way the core
++     * does on the first loot window a group member opens, so the group gets the roll
++     * windows without anyone walking to the corpse (tortoise-wow patch 0011).
++     *
++     * It runs the same core path as [Player]:SendLoot's first open (Group::GroupLoot or
++     * Group::NeedBeforeGreed) and sets the corpse's "rolls started" flag, so a later real
++     * loot open never starts them twice. The core then gives each item to the winner.
++     *
++     * Returns false and does nothing when: the creature is alive, the loot is a
++     * pickpocket loot, rolls were already started (by a loot open or an earlier call),
++     * the player is not in the group that owns the corpse's loot, or the group's loot
++     * method is not Group Loot / Need Before Greed (master loot, free for all, round
++     * robin). Only exists in map states: it is not callable from the world state.
++     *
++     * @param [Player] player : a member of the corpse's loot group, on the same map
++     * @return bool started : true when at least one roll was started
++     */
++    int StartGroupLootRoll(Eluna* E, Creature* creature)
++    {
++        Player* player = E->CHECKOBJ<Player>(2);
++
++        if (!creature->IsInWorld() || !creature->IsDead() || creature->lootForPickPocketed || creature->lootForBody)
++        {
++            E->Push(false);
++            return 1;
++        }
++
++        Group* group = creature->GetGroupLootRecipient();
++        if (!group || !creature->GetLootRecipient() || player->GetGroup() != group)
++        {
++            E->Push(false);
++            return 1;
++        }
++
++        Loot* loot = &creature->loot;
++        auto const blockedCount = [loot]()
++        {
++            uint32 n = 0;
++            for (LootItem const& item : loot->items)
++                if (item.is_blocked)
++                    ++n;
++            return n;
++        };
++
++        uint32 const before = blockedCount();
++        switch (group->GetLootMethod())
++        {
++            case GROUP_LOOT:
++                creature->lootForBody = true;
++                group->GroupLoot(creature, loot);
++                break;
++            case NEED_BEFORE_GREED:
++                creature->lootForBody = true;
++                group->NeedBeforeGreed(creature, loot);
++                break;
++            default:
++                E->Push(false);
++                return 1;
++        }
++
++        E->Push(blockedCount() > before);
++        return 1;
++    }
++
++    /**
 +     * Tells the corpse that all its loot is gone (stops the sparkle, starts its despawn timer).
 +     */
 +    int AllLootRemovedFromCorpse(Eluna* /*E*/, Creature* creature)
@@ -181,7 +249,7 @@ index 41ee66d..9b74dbc 100644
      ElunaRegister<Creature> CreatureMethods[] =
      {
          // Getters
-@@ -1139,6 +1160,7 @@ namespace LuaCreature
+@@ -1139,6 +1225,7 @@ namespace LuaCreature
          { "GetWanderRadius", &LuaCreature::GetWanderRadius },
          { "GetCurrentWaypointId", &LuaCreature::GetCurrentWaypointId },
          { "GetLootRecipient", &LuaCreature::GetLootRecipient },
@@ -189,11 +257,12 @@ index 41ee66d..9b74dbc 100644
          { "GetLootRecipientGroup", &LuaCreature::GetLootRecipientGroup },
          { "GetNPCFlags", &LuaCreature::GetNPCFlags },
          { "GetExtraFlags", &LuaCreature::GetExtraFlags },
-@@ -1189,6 +1211,7 @@ namespace LuaCreature
+@@ -1189,6 +1276,8 @@ namespace LuaCreature
          { "CanFly", &LuaCreature::CanFly },
  
          // Other
 +        { "AllLootRemovedFromCorpse", &LuaCreature::AllLootRemovedFromCorpse },
++        { "StartGroupLootRoll", &LuaCreature::StartGroupLootRoll, METHOD_REG_MAP }, // map states only: starts core rolls
          { "FleeToGetAssistance", &LuaCreature::FleeToGetAssistance },
          { "CallForHelp", &LuaCreature::CallForHelp },
          { "CallAssistance", &LuaCreature::CallAssistance },

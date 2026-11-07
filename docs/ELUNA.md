@@ -227,6 +227,7 @@ submodule copy; the core side is the two roll call sites in `Group.cpp`).
 | Method | What it does |
 | --- | --- |
 | `Creature:GetLoot()` | the corpse's `Loot` |
+| `Creature:StartGroupLootRoll(player)` | map states only. Starts the group's Need/Greed (or Group Loot) rolls for the corpse the way the first loot window a member opens does (`Group::GroupLoot` / `NeedBeforeGreed`, which set `is_blocked` on items at or above the threshold and send the roll popups), and sets the corpse's `lootForBody` flag so a later loot open never starts them twice. `player` must be in the group that owns the corpse's loot. Returns `true` when at least one roll started; `false` and nothing done for a live corpse, pickpocket loot, rolls already started, another group, master loot, free for all or round robin. The core then gives the item to the winner as usual |
 | `Creature:AllLootRemovedFromCorpse()` | tells the corpse its loot is gone (stops the sparkle, starts the despawn timer) |
 | `Loot:GetMoney()`, `SetMoney(copper)` | the coin; 0 closes it in open loot windows |
 | `Loot:GetUnlootedCount()`, `SetUnlootedCount(n)` | items not looted yet (0..255); skinning needs 0 |

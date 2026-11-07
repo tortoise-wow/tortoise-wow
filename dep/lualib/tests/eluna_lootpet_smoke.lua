@@ -20,6 +20,16 @@ Copy it into the server's Eluna.ScriptPath (default ./lua_scripts), build with
               and calls AllLootRemovedFromCorpse. Skinning must start (skin a
               skinnable creature) and the corpse stops sparkling.
   critter     ".lootsmoke pet" logs GetCritterGUID of the player
+  pet roll    Creature:StartGroupLootRoll(player) (patch 0011, map states only).
+              ".lootsmoke startroll" with a dead creature selected, in the world
+              state: the method must not exist there (PASS "refused"). In a
+              group with group loot or need before greed, kill a creature that
+              drops an item at or above the loot threshold: 1 s after the kill
+              (PLAYER_EVENT_ON_KILL_CREATURE, 7, in the map state) it is called
+              twice; the first call logs started=true and the group gets the
+              roll windows, the second logs started=false (rolls already
+              started: PASS). Solo, master loot or free for all it logs
+              started=false for both calls.
   roll        PLAYER_EVENT_ON_GROUP_ROLL_REWARD_ITEM (56): in a group of two
               with group loot, a need or greed winner logs the item, count,
               vote type and the Roll getters
@@ -101,6 +111,10 @@ RegisterPlayerEvent(42, function(event, player, command)
             log("command: select a dead creature first")
             return
         end
+        if verb == "startroll" then
+            log("startroll in the world state " .. ((corpse.StartGroupLootRoll == nil) and "PASS refused" or "FAIL method exists"))
+            return
+        end
         local loot = corpse:GetLoot()
         log(("loot %s money=%d unlooted=%d type=%d items: %s quest: %s reward_distance=%s loot_distance=%s"):format(
             corpse:GetName(), loot:GetMoney(), loot:GetUnlootedCount(), loot:GetLootType(),
@@ -125,6 +139,29 @@ RegisterPlayerEvent(42, function(event, player, command)
     end
     player:SendBroadcastMessage("ELUNA_LOOT command done")
     return false
+end)
+
+-- Map state: kill a creature, then start the group roll twice (second must be false).
+RegisterPlayerEvent(7, function(event, player, killed)
+    if not player or not killed or not killed.StartGroupLootRoll then
+        return
+    end
+    local pguid = player:GetGUID()
+    killed:RegisterEvent(function(eventId, delay, calls, corpse)
+        local ok, err = pcall(function()
+            local p = GetPlayerByGUID(pguid)
+            if not p then
+                return
+            end
+            local first = corpse:StartGroupLootRoll(p)
+            local second = corpse:StartGroupLootRoll(p)
+            log(("startroll %s started=%s again=%s %s"):format(corpse:GetName(), tostring(first), tostring(second),
+                (second == false) and "PASS idempotent" or "FAIL started twice"))
+        end)
+        if not ok then
+            log("startroll FAIL " .. tostring(err))
+        end
+    end, 1000, 1)
 end)
 
 RegisterPlayerEvent(56, function(event, player, item, count, voteType, roll)
