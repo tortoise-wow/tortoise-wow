@@ -153,6 +153,7 @@ enum PlayerHook
     PLAYERHOOK_IS_MANAGED_BOT,
     PLAYERHOOK_GET_BOT_ROLES,
     PLAYERHOOK_ON_ADDON_MESSAGE,
+    PLAYERHOOK_GET_BOT_REPOP_ENTRANCE,
     PLAYERHOOK_END
 };
 
@@ -207,6 +208,9 @@ class PlayerScript : public ScriptObject
         virtual void OnTextEmoteHeard(Player* /*from*/, uint32 /*textEmote*/, ObjectGuid /*target*/) {}
         virtual bool IsManagedBot(Player* /*who*/) { return false; }
         virtual uint8 GetBotRoles(Player* /*who*/) { return 0; }
+        // A managed bot released inside dungeon `mapId` (corpse at x,y,z): a
+        // module may answer the area trigger id of the door to revive at (0: none).
+        virtual uint32 GetBotRepopEntrance(Player* /*bot*/, uint32 /*mapId*/, float /*x*/, float /*y*/, float /*z*/) { return 0; }
 
         // A module may take an addon message as a command of its own. Return true
         // when the text was consumed; the core then does not relay it.

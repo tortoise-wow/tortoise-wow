@@ -6479,7 +6479,22 @@ void Player::RepopAtGraveyard()
 
     if (!IsAlive() && repopAtEntrance && GetMap() && GetMap()->IsDungeon())
     {
-        if (AreaTriggerTeleport const* entrance = sObjectMgr.GetMapEntranceTrigger(GetMapId()))
+        AreaTriggerTeleport const* entrance = sObjectMgr.GetMapEntranceTrigger(GetMapId());
+        // only a registered entrance (a trigger outside this map that teleports
+        // into it) with valid coordinates is taken; the level/phase requirements
+        // are not checked, exactly as for the default door
+        float x = GetPositionX(), y = GetPositionY(), z = GetPositionZ();
+        if (Corpse* corpse = GetCorpse())
+            if (corpse->GetMapId() == GetMapId())
+                corpse->GetPosition(x, y, z);
+        if (uint32 const pickId = sScriptMgr.GetBotRepopEntrance(this, GetMapId(), x, y, z))
+            if (AreaTriggerEntry const* at = sObjectMgr.GetAreaTrigger(pickId))
+                if (at->mapid != GetMapId())
+                    if (AreaTriggerTeleport const* pick = sObjectMgr.GetAreaTriggerTeleport(pickId))
+                        if (pick->destination.mapId == GetMapId() && MaNGOS::IsValidMapCoord(pick->destination.x,
+                                pick->destination.y, pick->destination.z, pick->destination.o))
+                            entrance = pick;
+        if (entrance)
         {
             ResurrectPlayer(1.0f);
             SpawnCorpseBones();
