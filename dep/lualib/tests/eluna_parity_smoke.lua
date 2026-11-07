@@ -8,8 +8,9 @@ a line with "FAIL" is a failed check. Groups, what to do and what to expect:
   state    On load every state logs GetStateMapId(), GetStateInstanceId() and
            pcall(GetStateMap). The world state: mapId -1, GetStateMap refused.
            A map state: its map id, GetStateMap's map has the same id. On
-           MAP_EVENT_ON_UPDATE every 30 s a map state compares #GetPlayersOnMap()
-           with map:GetPlayerCount() ("state players ok"); the world state
+           MAP_EVENT_ON_UPDATE every 30 s a map state compares the players of
+           GetPlayersOnMap() that are not in GM mode with map:GetPlayerCount()
+           (which skips GMs; GetPlayersOnMap lists them, as TrinityCore does) ("state players ok"); the world state
            checks that GetPlayersOnMap is refused. (GetStateMapId and
            GetStateInstanceId come with patch 0011: without it the load line says so.)
 
@@ -86,11 +87,17 @@ RegisterServerEvent(SERVER_EVENT_ON_MAP_UPDATE, function(event, map, diff)
     lastCheck = lastCheck + diff
     if lastCheck < 30000 then return end
     lastCheck = 0
+    -- GetPlayersOnMap lists every player on the map, GMs included (TrinityCore); Map:GetPlayerCount
+    -- is GetPlayersCountExceptGMs, so compare the players that are not in GM mode.
     local players = GetPlayersOnMap()
-    if #players == map:GetPlayerCount() then
-        log("state", "players ok: " .. #players)
+    local notGM = 0
+    for _, p in ipairs(players) do
+        if not p:IsGameMaster() then notGM = notGM + 1 end
+    end
+    if notGM == map:GetPlayerCount() and #GetPlayersOnMap(2, true) == #players - notGM then
+        log("state", "players ok: " .. #players .. " (" .. notGM .. " not in GM mode)")
     else
-        log("state", "FAIL GetPlayersOnMap=" .. #players .. " GetPlayerCount=" .. map:GetPlayerCount())
+        log("state", "FAIL GetPlayersOnMap=" .. #players .. " not-GM=" .. notGM .. " GetPlayerCount=" .. map:GetPlayerCount())
     end
     local d = map:Data()
     d:Set("ticks", (d:Get("ticks") or 0) + 1)
