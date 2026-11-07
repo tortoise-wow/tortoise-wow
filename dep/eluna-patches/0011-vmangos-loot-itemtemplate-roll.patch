@@ -29,7 +29,7 @@ the corpse's lootForBody flag, so a later loot open never starts them twice),
 Player:IsAtGroupRewardDistance, Player:IsAtLootRewardDistance,
 Player:IsBot (headless session, or ScriptMgr::IsBotManaged), Unit:GetCritterGUID
 (was a METHOD_REG_NONE stub; the mini pet's guid or nil),
-Group:GetLootMethod (0 free for all, 1 round robin, 2 master, 3 group loot, 4 need
+Group:GetLootThreshold (quality from which loot rolls), Group:GetLootMethod (0 free for all, 1 round robin, 2 master, 3 group loot, 4 need
 before greed), Group:GetMembersOnMap (Group:GetMembers is world-only; this one lists the
 members in the world and on the calling state's map, so it works in a map
 state), and the globals GetStateMapId (-1 in the world state) and
@@ -154,10 +154,10 @@ index 8573e25..7d43c3e 100644
      ElunaTemplate<Group>::SetMethods(E, LuaGroup::GroupMethods);
  
 diff --git a/methods/VMangos/CreatureMethods.h b/methods/VMangos/CreatureMethods.h
-index 41ee66d..3d00181 100644
+index 41ee66d..d1f5902 100644
 --- a/methods/VMangos/CreatureMethods.h
 +++ b/methods/VMangos/CreatureMethods.h
-@@ -1120,6 +1120,92 @@ namespace LuaCreature
+@@ -1120,6 +1120,125 @@ namespace LuaCreature
          return 1;
      }
      
@@ -182,20 +182,27 @@ index 41ee66d..3d00181 100644
 +     * Group::NeedBeforeGreed) and sets the corpse's "rolls started" flag, so a later real
 +     * loot open never starts them twice. The core then gives each item to the winner.
 +     *
-+     * Returns false and does nothing when: the creature is alive, the loot is a
-+     * pickpocket loot, rolls were already started (by a loot open or an earlier call),
++     * Returns false and does nothing (lootForBody stays unset) when: the creature is
++     * alive, its AI says it cannot be looted yet (CanBeLooted, e.g. a boss in a fake
++     * death), loot is disabled on the map, the loot is a pickpocket loot, rolls were
++     * already started (by a loot open or an earlier call), no item would start a roll
++     * (none at or above the threshold, or no member who can roll),
 +     * the player is not in the group that owns the corpse's loot, or the group's loot
 +     * method is not Group Loot / Need Before Greed (master loot, free for all, round
 +     * robin). Only exists in map states: it is not callable from the world state.
 +     *
 +     * @param [Player] player : a member of the corpse's loot group, on the same map
-+     * @return bool started : true when at least one roll was started
++     * @return bool started : true when rolls were started (even if they already ended)
 +     */
 +    int StartGroupLootRoll(Eluna* E, Creature* creature)
 +    {
 +        Player* player = E->CHECKOBJ<Player>(2);
 +
-+        if (!creature->IsInWorld() || !creature->IsDead() || creature->lootForPickPocketed || creature->lootForBody)
++        // The same refusals as Player::SendLoot before it fills in rolls.
++        Map* map = creature->FindMap();
++        if (!creature->IsInWorld() || !map || sObjectMgr.IsMapLootDisabled(map->GetId()) ||
++            !creature->IsDead() || creature->lootForPickPocketed || creature->lootForBody ||
++            (creature->AI() && !creature->AI()->CanBeLooted()))
 +        {
 +            E->Push(false);
 +            return 1;
@@ -208,33 +215,59 @@ index 41ee66d..3d00181 100644
 +            return 1;
 +        }
 +
-+        Loot* loot = &creature->loot;
-+        auto const blockedCount = [loot]()
++        LootMethod const method = group->GetLootMethod();
++        if (method != GROUP_LOOT && method != NEED_BEFORE_GREED)
 +        {
-+            uint32 n = 0;
-+            for (LootItem const& item : loot->items)
-+                if (item.is_blocked)
-+                    ++n;
-+            return n;
-+        };
-+
-+        uint32 const before = blockedCount();
-+        switch (group->GetLootMethod())
-+        {
-+            case GROUP_LOOT:
-+                creature->lootForBody = true;
-+                group->GroupLoot(creature, loot);
-+                break;
-+            case NEED_BEFORE_GREED:
-+                creature->lootForBody = true;
-+                group->NeedBeforeGreed(creature, loot);
-+                break;
-+            default:
-+                E->Push(false);
-+                return 1;
++            E->Push(false);
++            return 1;
 +        }
 +
-+        E->Push(blockedCount() > before);
++        // Would Group::GroupLoot / NeedBeforeGreed start at least one roll? Same
++        // tests as Group::StartLootRoll: an item at or above the threshold that is
++        // not free for all, not looted and not already blocked, and one member who
++        // can roll for it. If not, return false and leave lootForBody alone, so a
++        // later real loot open still starts whatever rolls it should.
++        Loot* loot = &creature->loot;
++        bool willStart = false;
++        for (LootItem const& li : loot->items)
++        {
++            if (li.freeforall || li.is_looted || li.is_blocked)
++                continue;
++            ItemPrototype const* proto = sObjectMgr.GetItemPrototype(li.itemid);
++            if (!proto || proto->Quality < uint32(group->GetLootThreshold()))
++                continue;
++            for (GroupReference* itr = group->GetFirstMember(); itr != nullptr; itr = itr->next())
++            {
++                Player* member = itr->getSource();
++                if (!member || !member->GetSession() || !member->IsInWorld())
++                    continue;
++                if ((method != NEED_BEFORE_GREED || member->CanUseItem(proto) == EQUIP_ERR_OK) &&
++                    li.AllowedForPlayer(member, creature) &&
++                    loot->IsAllowedLooter(member->GetObjectGuid(), false) &&
++                    member->IsWithinLootXPDist(creature))
++                {
++                    willStart = true;
++                    break;
++                }
++            }
++            if (willStart)
++                break;
++        }
++        if (!willStart)
++        {
++            E->Push(false);
++            return 1;
++        }
++
++        creature->lootForBody = true;
++        if (method == GROUP_LOOT)
++            group->GroupLoot(creature, loot);
++        else
++            group->NeedBeforeGreed(creature, loot);
++
++        // True even when every bot passed inside OnLootRollStarted and the roll
++        // already ended: the rolls were started.
++        E->Push(true);
 +        return 1;
 +    }
 +
@@ -250,7 +283,7 @@ index 41ee66d..3d00181 100644
      ElunaRegister<Creature> CreatureMethods[] =
      {
          // Getters
-@@ -1139,6 +1225,7 @@ namespace LuaCreature
+@@ -1139,6 +1258,7 @@ namespace LuaCreature
          { "GetWanderRadius", &LuaCreature::GetWanderRadius },
          { "GetCurrentWaypointId", &LuaCreature::GetCurrentWaypointId },
          { "GetLootRecipient", &LuaCreature::GetLootRecipient },
@@ -258,7 +291,7 @@ index 41ee66d..3d00181 100644
          { "GetLootRecipientGroup", &LuaCreature::GetLootRecipientGroup },
          { "GetNPCFlags", &LuaCreature::GetNPCFlags },
          { "GetExtraFlags", &LuaCreature::GetExtraFlags },
-@@ -1189,6 +1276,8 @@ namespace LuaCreature
+@@ -1189,6 +1309,8 @@ namespace LuaCreature
          { "CanFly", &LuaCreature::CanFly },
  
          // Other
@@ -311,13 +344,25 @@ index f22c5a9..5b30752 100644
          { "GetCoreVersion", &LuaGlobalFunctions::GetCoreVersion },
          { "GetCoreExpansion", &LuaGlobalFunctions::GetCoreExpansion },
 diff --git a/methods/VMangos/GroupMethods.h b/methods/VMangos/GroupMethods.h
-index b3b6baa..1bb5a5b 100644
+index b3b6baa..efc53f7 100644
 --- a/methods/VMangos/GroupMethods.h
 +++ b/methods/VMangos/GroupMethods.h
-@@ -170,6 +170,49 @@ namespace LuaGroup
+@@ -170,6 +170,61 @@ namespace LuaGroup
          return 1;
      }
  
++    /**
++     * Returns the group's loot threshold: the item quality (0 poor to 6 artifact) from
++     * which group loot and need before greed roll for an item (tortoise-wow patch 0011).
++     *
++     * @return uint32 threshold
++     */
++    int GetLootThreshold(Eluna* E, Group* group)
++    {
++        E->Push(static_cast<uint32>(group->GetLootThreshold()));
++        return 1;
++    }
++
 +    /**
 +     * Returns the group's loot method: 0 free for all, 1 round robin, 2 master loot,
 +     * 3 group loot, 4 need before greed (the core's LootMethod, tortoise-wow patch 0011).
@@ -364,12 +409,13 @@ index b3b6baa..1bb5a5b 100644
      /**
       * Returns [Group] leader GUID
       *
-@@ -354,6 +397,8 @@ namespace LuaGroup
+@@ -354,6 +409,9 @@ namespace LuaGroup
      {
          // Getters
          { "GetMembers", &LuaGroup::GetMembers, METHOD_REG_WORLD }, // World state method only in multistate
 +        { "GetMembersOnMap", &LuaGroup::GetMembersOnMap },
 +        { "GetLootMethod", &LuaGroup::GetLootMethod },
++        { "GetLootThreshold", &LuaGroup::GetLootThreshold },
          { "GetLeaderGUID", &LuaGroup::GetLeaderGUID },
          { "GetGUID", &LuaGroup::GetGUID },
          { "GetMemberGroup", &LuaGroup::GetMemberGroup },

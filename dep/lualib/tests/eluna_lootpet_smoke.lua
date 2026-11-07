@@ -29,7 +29,8 @@ Copy it into the server's Eluna.ScriptPath (default ./lua_scripts), build with
               twice; the first call logs started=true and the group gets the
               roll windows, the second logs started=false (rolls already
               started: PASS). Solo, master loot or free for all it logs
-              started=false for both calls.
+              started=false for both calls. A boss that fakes its death
+              (Thekal) also logs started=false until its real death.
   roll        PLAYER_EVENT_ON_GROUP_ROLL_REWARD_ITEM (56): in a group of two
               with group loot, a need or greed winner logs the item, count,
               vote type and the Roll getters
