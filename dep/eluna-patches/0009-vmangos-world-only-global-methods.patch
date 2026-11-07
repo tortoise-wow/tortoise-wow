@@ -11,7 +11,10 @@ Kick and Ban (session and account layer), Player:KickPlayer (the same
 WorldSession::KickPlayer call as the global Kick: it closes the socket of a
 session, which the network threads own, from a map thread), and
 Player:LogoutPlayer (WorldSession::LogoutPlayer deletes the player
-synchronously while the calling hook's C++ frames may still hold it). Called
+synchronously while the calling hook's C++ frames may still hold it), and
+Player:RemoveFromGroup (a group membership change: Group::RemoveMember also cancels
+the leaver's loot rolls and counts them, which from inside a roll hook counted a roll
+twice and freed it under the caller). Called
 from a map state they run on that map's thread next to other maps and their
 sessions.
 
@@ -86,9 +89,18 @@ index 38c6500..f22c5a9 100644
  }
  #endif
 diff --git a/methods/VMangos/PlayerMethods.h b/methods/VMangos/PlayerMethods.h
-index 2140436..5a6199b 100644
+index 2140436..257f193 100644
 --- a/methods/VMangos/PlayerMethods.h
 +++ b/methods/VMangos/PlayerMethods.h
+@@ -3553,7 +3553,7 @@ namespace LuaPlayer
+         { "RemoveSpell", &LuaPlayer::RemoveSpell },
+         { "ResetTalents", &LuaPlayer::ResetTalents },
+         { "ResetTalentsCost", &LuaPlayer::ResetTalentsCost },
+-        { "RemoveFromGroup", &LuaPlayer::RemoveFromGroup },
++        { "RemoveFromGroup", &LuaPlayer::RemoveFromGroup, METHOD_REG_WORLD }, // World state method only in multistate
+         { "KillPlayer", &LuaPlayer::KillPlayer },
+         { "DurabilityLossAll", &LuaPlayer::DurabilityLossAll },
+         { "DurabilityLoss", &LuaPlayer::DurabilityLoss },
 @@ -3566,8 +3566,8 @@ namespace LuaPlayer
          { "UnbindInstance", &LuaPlayer::UnbindInstance },
          { "UnbindAllInstances", &LuaPlayer::UnbindAllInstances },

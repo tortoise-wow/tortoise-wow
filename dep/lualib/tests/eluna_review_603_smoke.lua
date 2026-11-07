@@ -93,10 +93,10 @@ a line with "FAIL" is a failed check. What to do and what to expect, per item:
      backend now flags world-only (dep/eluna-patches/0009: PerformIngameSpawn,
      SendMail, SaveAllPlayers, StartGameEvent, StopGameEvent, AddVendorItem,
      VendorRemoveItem, VendorRemoveAllItems, AddTaxiPath, Ban, Kick) and the
-     methods Player:LogoutPlayer and Player:KickPlayer on a player of its own
+     methods Player:LogoutPlayer, Player:KickPlayer and Player:RemoveFromGroup on a player of its own
      map. Expect one "9 refused=<name>" per function and method,
      "9 world-only functions refused: 11 of 11" and
-     "9 world-only methods refused: 2 of 2"; do not call them in the world
+     "9 world-only methods refused: 3 of 3"; do not call them in the world
      state, where they still work. The arguments are deliberately incomplete:
      before 0009 the call reaches the C++ method instead, which fails on them
      (logged as FAIL, and it spawns, bans or mails nothing; SaveAllPlayers
@@ -439,7 +439,10 @@ local function checkWorldOnly(player)
     if refusedWorldOnlyMethod("KickPlayer", function() player:KickPlayer() end) then
         refusedMethods = refusedMethods + 1
     end
-    log("9", "world-only methods refused: " .. refusedMethods .. " of 2")
+    if refusedWorldOnlyMethod("RemoveFromGroup", function() player:RemoveFromGroup() end) then
+        refusedMethods = refusedMethods + 1
+    end
+    log("9", "world-only methods refused: " .. refusedMethods .. " of 3")
 end
 
 local function firstPlayerOnThisMap()
