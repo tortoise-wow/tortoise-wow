@@ -10,7 +10,8 @@ the same licence. Applied by cmake/ElunaSources.cmake to a copy in the build tre
 VMaNGOS-specific (its SpellCastTargets keeps raw target pointers; other cores
 track them); upstream would need it as a VMaNGOS fix. The item target is looked up
 as SpellCastTargets::Update does it, both the item guid (TARGET_FLAG_ITEM) and the
-trade slot in the trade partner's offer (TARGET_FLAG_TRADE_ITEM, trade enchant).
+trade partner's offered item (TARGET_FLAG_TRADE_ITEM, trade enchant), by slot before
+Spell::cast and by item guid after it (updateTradeSlotItem rewrites the slot).
 diff --git a/ElunaIncludes.h b/ElunaIncludes.h
 index 9aa0ce3..8ba5e06 100644
 --- a/ElunaIncludes.h
@@ -26,10 +27,10 @@ index 9aa0ce3..8ba5e06 100644
  #if !defined ELUNA_CMANGOS
  #include "AccountMgr.h"
 diff --git a/methods/VMangos/SpellMethods.h b/methods/VMangos/SpellMethods.h
-index 7657e91..697c974 100644
+index 7657e91..2902115 100644
 --- a/methods/VMangos/SpellMethods.h
 +++ b/methods/VMangos/SpellMethods.h
-@@ -113,14 +113,43 @@ namespace LuaSpell
+@@ -113,14 +113,57 @@ namespace LuaSpell
       */
      int GetTarget(Eluna* E, Spell* spell)
      {
@@ -47,8 +48,12 @@ index 7657e91..697c974 100644
 +        //
 +        // The item target is the caster player's item, found the way
 +        // SpellCastTargets::Update finds it: TARGET_FLAG_ITEM carries the item
-+        // guid, TARGET_FLAG_TRADE_ITEM a slot (0..TRADE_SLOT_COUNT-1) in the
-+        // trade partner's offer, which is how a trade enchant reaches Lua.
++        // guid. TARGET_FLAG_TRADE_ITEM is an item in the trade partner's offer,
++        // which is how a trade enchant reaches Lua, and it comes in two forms:
++        // a slot number (0..TRADE_SLOT_COUNT-1) before Spell::cast, and the
++        // item's real guid after it, because Spell::cast calls
++        // SpellCastTargets::updateTradeSlotItem before the cast hook while the
++        // flag stays set.
 +        Item* item = nullptr;
 +        if (Player* player = caster ? caster->ToPlayer() : nullptr)
 +        {
@@ -57,9 +62,19 @@ index 7657e91..697c974 100644
 +            else if (spell->m_targets.m_targetMask & TARGET_FLAG_TRADE_ITEM)
 +            {
 +                ObjectGuid itemGuid = spell->m_targets.getItemTargetGuid();
-+                if (TradeData* trade = player->GetTradeData())
++                TradeData* trade = player->GetTradeData();
++                TradeData* trader = trade ? trade->GetTraderData() : nullptr;
++                if (trader)
++                {
 +                    if (itemGuid.GetRawValue() < TRADE_SLOT_COUNT)
-+                        item = trade->GetTraderData()->GetItem(TradeSlots(itemGuid.GetRawValue()));
++                        item = trader->GetItem(TradeSlots(itemGuid.GetRawValue()));
++                    else
++                    {
++                        TradeSlots slot = trader->GetTradeSlotForItem(itemGuid);
++                        if (slot != TRADE_SLOT_INVALID)
++                            item = trader->GetItem(slot);
++                    }
++                }
 +            }
 +        }
 +
