@@ -35,6 +35,13 @@ members in the world and on the calling state's map, so it works in a map
 state), and the globals GetStateMapId (-1 in the world state) and
 GetStateInstanceId.
 
+Details: Loot:SetItemLooted also takes one off the unlooted count, and changes
+nothing for an item under a roll, an item waiting for a roll winner, or looted =
+false. Player:IsAtLootRewardDistance uses the core's Player::IsAllowedToLoot for a
+creature. ItemTemplate:GetName(locale) and Item:GetItemLink index ItemLocale::Name
+with the core's locale index. Creature:AllLootRemovedFromCorpse does not clear
+UNIT_DYNFLAG_LOOTABLE.
+
 Upstreamable to Eluna as VMaNGOS additions, except Player:IsBot (it asks the
 core's script manager) and the two call sites in the core's Group.cpp.
 
@@ -154,10 +161,10 @@ index 8573e25..7d43c3e 100644
      ElunaTemplate<Group>::SetMethods(E, LuaGroup::GroupMethods);
  
 diff --git a/methods/VMangos/CreatureMethods.h b/methods/VMangos/CreatureMethods.h
-index 41ee66d..d1f5902 100644
+index 41ee66d..ffa8fd9 100644
 --- a/methods/VMangos/CreatureMethods.h
 +++ b/methods/VMangos/CreatureMethods.h
-@@ -1120,6 +1120,125 @@ namespace LuaCreature
+@@ -1120,6 +1120,128 @@ namespace LuaCreature
          return 1;
      }
      
@@ -272,7 +279,10 @@ index 41ee66d..d1f5902 100644
 +    }
 +
 +    /**
-+     * Tells the corpse that all its loot is gone (stops the sparkle, starts its despawn timer).
++     * Calls Creature::AllLootRemovedFromCorpse: it sets the skinning-for-others timer and,
++     * for a corpse that has body loot and is not waiting to be skinned, shortens the corpse
++     * decay timer to the looted delay. It does not clear UNIT_DYNFLAG_LOOTABLE, so the
++     * corpse keeps its loot sparkle until the loot is emptied or the corpse despawns.
 +     */
 +    int AllLootRemovedFromCorpse(Eluna* /*E*/, Creature* creature)
 +    {
@@ -283,7 +293,7 @@ index 41ee66d..d1f5902 100644
      ElunaRegister<Creature> CreatureMethods[] =
      {
          // Getters
-@@ -1139,6 +1258,7 @@ namespace LuaCreature
+@@ -1139,6 +1261,7 @@ namespace LuaCreature
          { "GetWanderRadius", &LuaCreature::GetWanderRadius },
          { "GetCurrentWaypointId", &LuaCreature::GetCurrentWaypointId },
          { "GetLootRecipient", &LuaCreature::GetLootRecipient },
@@ -291,7 +301,7 @@ index 41ee66d..d1f5902 100644
          { "GetLootRecipientGroup", &LuaCreature::GetLootRecipientGroup },
          { "GetNPCFlags", &LuaCreature::GetNPCFlags },
          { "GetExtraFlags", &LuaCreature::GetExtraFlags },
-@@ -1189,6 +1309,8 @@ namespace LuaCreature
+@@ -1189,6 +1312,8 @@ namespace LuaCreature
          { "CanFly", &LuaCreature::CanFly },
  
          // Other
@@ -420,10 +430,24 @@ index b3b6baa..efc53f7 100644
          { "GetGUID", &LuaGroup::GetGUID },
          { "GetMemberGroup", &LuaGroup::GetMemberGroup },
 diff --git a/methods/VMangos/ItemMethods.h b/methods/VMangos/ItemMethods.h
-index f206b35..eeac7dc 100644
+index f206b35..d3f8e89 100644
 --- a/methods/VMangos/ItemMethods.h
 +++ b/methods/VMangos/ItemMethods.h
-@@ -800,6 +800,7 @@ namespace LuaItem
+@@ -190,8 +190,11 @@ namespace LuaItem
+ 
+         const ItemTemplate* temp = item->GetTemplate();
+         std::string name = temp->Name1;
+-        if (ItemLocale const* il = eObjectMgr->GetItemLocale(temp->ItemId))
+-            name = il->Name[locale];
++        int idx = eObjectMgr->GetIndexForLocale(LocaleConstant(locale));
++        if (idx >= 0)
++            if (ItemLocale const* il = eObjectMgr->GetItemLocale(temp->ItemId))
++                if (size_t(idx) < il->Name.size() && !il->Name[idx].empty())
++                    name = il->Name[idx];
+ 
+         // An item without an owner (dropped, in a chest, in the mail) has no
+         // player level; the link's level field is 0 then, as for an item the
+@@ -800,6 +803,7 @@ namespace LuaItem
          { "GetItemSet", &LuaItem::GetItemSet },
          { "GetBagSize", &LuaItem::GetBagSize },
          { "GetItemTemplate", &LuaItem::GetItemTemplateEntry },
@@ -433,10 +457,10 @@ index f206b35..eeac7dc 100644
          { "GetSpeed", &LuaItem::GetSpeed },
 diff --git a/methods/VMangos/ItemTemplateMethods.h b/methods/VMangos/ItemTemplateMethods.h
 new file mode 100644
-index 0000000..8740e45
+index 0000000..414214b
 --- /dev/null
 +++ b/methods/VMangos/ItemTemplateMethods.h
-@@ -0,0 +1,79 @@
+@@ -0,0 +1,83 @@
 +/*
 +* Copyright (C) 2010 - 2024 Eluna Lua Engine <https://elunaluaengine.github.io/>
 +* This program is free software licensed under GPL version 3
@@ -463,11 +487,15 @@ index 0000000..8740e45
 +    int GetName(Eluna* E, ItemTemplate* t)
 +    {
 +        uint32 locale = E->CHECKVAL<uint32>(2, 0);
-+        if (locale)
++        if (locale >= TOTAL_LOCALES)
++            return luaL_argerror(E->L, 2, "valid LocaleConstant expected");
++        // ItemLocale::Name is indexed by the core's locale index, not by the LocaleConstant.
++        int idx = eObjectMgr->GetIndexForLocale(LocaleConstant(locale));
++        if (idx >= 0)
 +            if (ItemLocale const* il = eObjectMgr->GetItemLocale(t->ItemId))
-+                if (locale < il->Name.size() && !il->Name[locale].empty())
++                if (size_t(idx) < il->Name.size() && !il->Name[idx].empty())
 +                {
-+                    E->Push(il->Name[locale]);
++                    E->Push(il->Name[idx]);
 +                    return 1;
 +                }
 +        E->Push(t->Name1);
@@ -518,10 +546,10 @@ index 0000000..8740e45
 +#endif
 diff --git a/methods/VMangos/LootMethods.h b/methods/VMangos/LootMethods.h
 new file mode 100644
-index 0000000..aa240bf
+index 0000000..c248b34
 --- /dev/null
 +++ b/methods/VMangos/LootMethods.h
-@@ -0,0 +1,209 @@
+@@ -0,0 +1,219 @@
 +/*
 +* Copyright (C) 2010 - 2024 Eluna Lua Engine <https://elunaluaengine.github.io/>
 +* This program is free software licensed under GPL version 3
@@ -682,12 +710,16 @@ index 0000000..aa240bf
 +
 +    /**
 +     * Marks the first normal item with this entry (and this count, 0 = any) as looted
-+     * or not, and tells open loot windows that it is gone.
++     * and tells open loot windows that it is gone. It also takes one off the unlooted
++     * count, as a player's loot does, so a script does not have to call SetUnlootedCount.
++     * It changes nothing and returns false when no such item is left, when the item is
++     * under a roll or waits for a roll winner (is_blocked or lootOwner set), and for
++     * looted = false: an item that was looted is not given back.
 +     *
 +     * @param uint32 itemId
 +     * @param uint32 count : 0 matches any count
 +     * @param bool looted = true
-+     * @return bool matched
++     * @return bool changed
 +     */
 +    int SetItemLooted(Eluna* E, Loot* loot)
 +    {
@@ -701,9 +733,15 @@ index 0000000..aa240bf
 +            if (li.itemid != itemId || (count && li.count != count))
 +                continue;
 +
-+            li.is_looted = looted;
-+            if (looted)
-+                loot->NotifyItemRemoved(uint8(i));
++            if (li.is_looted || li.is_blocked || !li.lootOwner.IsEmpty())
++                continue;
++            if (!looted)
++                break;
++
++            li.is_looted = true;
++            if (loot->unlootedCount)
++                --loot->unlootedCount;
++            loot->NotifyItemRemoved(uint8(i));
 +            E->Push(true);
 +            return 1;
 +        }
@@ -732,10 +770,10 @@ index 0000000..aa240bf
 +};
 +#endif
 diff --git a/methods/VMangos/PlayerMethods.h b/methods/VMangos/PlayerMethods.h
-index 5a6199b..9d9ac76 100644
+index 257f193..514ccee 100644
 --- a/methods/VMangos/PlayerMethods.h
 +++ b/methods/VMangos/PlayerMethods.h
-@@ -3373,6 +3373,50 @@ namespace LuaPlayer
+@@ -3373,6 +3373,52 @@ namespace LuaPlayer
      return 0;
      }*/
  
@@ -755,7 +793,9 @@ index 5a6199b..9d9ac76 100644
 +
 +    /**
 +     * Returns true if this [Player] is within the group reward distance of the [WorldObject]
-+     * and, for a [Creature], is allowed to loot its corpse.
++     * and, for a [Creature], the core's Player::IsAllowedToLoot says it may loot the corpse
++     * (a dead creature with loot left, the loot recipient or a member of the recipient group,
++     * and the group's loot method). It is not ALE's distance-only method.
 +     *
 +     * @param [WorldObject] object
 +     * @return bool canLoot
@@ -765,7 +805,7 @@ index 5a6199b..9d9ac76 100644
 +        WorldObject* obj = E->CHECKOBJ<WorldObject>(2);
 +        bool ok = player->IsAtGroupRewardDistance(obj);
 +        if (ok && obj->GetTypeId() == TYPEID_UNIT)
-+            ok = static_cast<Creature*>(obj)->loot.IsAllowedLooter(player->GetObjectGuid());
++            ok = player->IsAllowedToLoot(static_cast<Creature*>(obj));
 +        E->Push(ok);
 +        return 1;
 +    }
@@ -786,7 +826,7 @@ index 5a6199b..9d9ac76 100644
      ElunaRegister<Player> PlayerMethods[] =
      {
          // Getters
-@@ -3469,6 +3513,9 @@ namespace LuaPlayer
+@@ -3469,6 +3515,9 @@ namespace LuaPlayer
  
          // Boolean
          { "IsInGroup", &LuaPlayer::IsInGroup },
