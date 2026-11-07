@@ -17,8 +17,11 @@ Copy it into the server's Eluna.ScriptPath (default ./lua_scripts), build with
               GetLoot money, unlooted count, loot type and the items; then
               ".lootsmoke take" takes the first normal item with SetItemLooted,
               sets coin and unlooted count to 0 (SetMoney, SetUnlootedCount)
-              and calls AllLootRemovedFromCorpse. Skinning must start (skin a
-              skinnable creature) and the corpse stops sparkling.
+              and calls AllLootRemovedFromCorpse. SetItemLooted takes the item off the
+              unlooted count itself, and a second SetItemLooted(.., false) is
+              refused. Skinning must start (skin a skinnable creature); the corpse
+              keeps its sparkle until it is emptied or despawns (the call does not
+              clear UNIT_DYNFLAG_LOOTABLE).
   critter     ".lootsmoke pet" logs GetCritterGUID of the player
   pet roll    Creature:StartGroupLootRoll(player) (patch 0011, map states only).
               ".lootsmoke startroll" with a dead creature selected, in the world
@@ -129,7 +132,8 @@ RegisterPlayerEvent(42, function(event, player, command)
             local first = loot:GetItems()[1]
             if first then
                 local matched = loot:SetItemLooted(first.id, first.count)
-                log("take SetItemLooted(" .. first.id .. ") matched=" .. tostring(matched))
+                log("take SetItemLooted(" .. first.id .. ") changed=" .. tostring(matched))
+                log("take SetItemLooted(.., false) refused=" .. tostring(loot:SetItemLooted(first.id, first.count, false) == false))
             end
             loot:SetMoney(0)
             loot:SetUnlootedCount(0)

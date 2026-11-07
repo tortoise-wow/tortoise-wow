@@ -29,8 +29,9 @@ a line with "FAIL" is a failed check. Groups, what to do and what to expect:
   threat   ".elunasmoke threat" on a selected creature that is in combat with
            you: AddThreat(player, 1000), GetThreat >= 1000, ResetAllThreat -> 0
            with the player still in GetAITargets, FixateTarget(you) true and the
-           creature stays on you for 10 s even if another unit gets threat,
-           ClearFixate, ClearThreat(player) -> GetThreat 0,
+           creature stays on you for 10 s even if another unit gets threat
+           (the script waits 10 s, logs "victim is the player=true", then does
+           ClearFixate), ClearThreat(player) -> GetThreat 0,
            FixateTarget(a unit not on the list) false.
 
   spellget Logged in the cast hook for SMOKE_SPELL: IsTriggered, IsPositive,
@@ -43,8 +44,7 @@ a line with "FAIL" is a failed check. Groups, what to do and what to expect:
            the value keeps counting, after ".reload eluna" it survives. A handle
            kept in a global by the old map state shows the old value after the
            player left it (logs "data detached ok"), the new state's value
-           differs. map:Data() has a counter per map; pcall(Data) of another
-           map's object is refused. d:Set("me", d) then d:Get("me"):Get("me") is
+           differs. map:Data() has a counter per map. d:Set("me", d) then d:Get("me"):Get("me") is
            nil (a copy, no cycle) and "data copy ok".
 
   cmd      ".paritysmoke" from a GM in game and from the console: IsConsole
@@ -217,10 +217,21 @@ if type(mapId) == "number" and mapId == -1 then
             creature:ResetAllThreat()
             log("threat", "after ResetAllThreat GetThreat=" .. creature:GetThreat(player) .. " targets=" .. #creature:GetAITargets())
             log("threat", "FixateTarget(player)=" .. tostring(creature:FixateTarget(player)))
-            creature:ClearFixate()
-            creature:ClearThreat(player)
-            log("threat", "after ClearThreat GetThreat=" .. creature:GetThreat(player))
-            log("threat", "FixateTarget(not on list)=" .. tostring(creature:FixateTarget(creature)))
+            -- Keep the fixate for 10 s, then check the creature still has the player as its
+            -- victim, and only then clear it. The userdata do not outlive this call: use guids.
+            local creatureGuid, playerGuid = creature:GetGUID(), player:GetGUID()
+            CreateLuaEvent(function()
+                local p = GetPlayerByGUID(playerGuid)
+                local o = p and p:GetMap():GetWorldObject(creatureGuid)
+                local c = o and o:ToCreature()
+                if not c then log("threat", "FAIL creature or player gone after 10 s") return end
+                local victim = c:GetVictim()
+                log("threat", "after 10 s victim is the player=" .. tostring(victim ~= nil and victim:GetGUID() == playerGuid))
+                c:ClearFixate()
+                c:ClearThreat(p)
+                log("threat", "after ClearThreat GetThreat=" .. c:GetThreat(p))
+                log("threat", "FixateTarget(not on list)=" .. tostring(c:FixateTarget(c)))
+            end, 10000, 1)
             return false
         elseif command == "paritysmoke" then
             if not handler then log("cmd", "FAIL no handler") return end
