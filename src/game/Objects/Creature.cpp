@@ -327,7 +327,8 @@ void Creature::RemoveCorpse()
                             if (Item* pItem = Item::CreateItem(itr.itemid, itr.count, pPlayer))
                             {
                                 itr.is_looted = true;
-                                --loot.unlootedCount;
+                                if (loot.unlootedCount)
+                                    --loot.unlootedCount;
 
                                 pItem->SaveToDB();
                                 std::string subject = pProto->Name1;

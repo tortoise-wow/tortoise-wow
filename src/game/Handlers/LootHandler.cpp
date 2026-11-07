@@ -248,7 +248,8 @@ void WorldSession::HandleAutostoreLootItemOpcode(WorldPacket & recv_data)
         if (!item->freeforall)
             item->is_looted = true;
 
-        --loot->unlootedCount;
+        if (loot->unlootedCount)
+            --loot->unlootedCount;
 
 
         sLog.out(LOG_LOOTS, "%s loots %ux%u [loot from %s]", _player->GetShortDescription().c_str(), item->count, item->itemid, lguid.GetString().c_str());
@@ -876,5 +877,6 @@ void WorldSession::HandleLootMasterGiveOpcode(WorldPacket & recv_data)
     item.is_looted = true;
 
     pLoot->NotifyItemRemoved(slotid);
-    --pLoot->unlootedCount;
+    if (pLoot->unlootedCount)
+        --pLoot->unlootedCount;
 }

@@ -19,7 +19,7 @@ Added to the VMaNGOS backend (methods/VMangos, hooks, LuaValue):
   IsChannelActive, CalculateDamage.
 - WorldObject:Data() and Map:Data() (the LuaVal the core already stores). A
   LuaVal given to Set/AsLuaVal is now deep-copied (value semantics), so two
-  objects never share one map across threads and a table cannot contain itself; nesting deeper than 64 levels is refused with an error, never cut.
+  objects never share one map across threads and a table cannot contain itself; nesting deeper than 64 levels (a plain table that holds itself too) is refused with an error, never cut.
 - ChatHandler type: the third argument of PLAYER_EVENT_ON_COMMAND (new overload
   Eluna::OnCommand(ChatHandler&, text)) with SendSysMessage, PSendSysMessage,
   IsConsole, GetPlayer, GetAccountId, GetSecurity, IsAvailable,
@@ -115,11 +115,34 @@ index 8f52e71..ee22695 100644
  #endif
  };
 diff --git a/LuaValue.cpp b/LuaValue.cpp
-index 39c28f2..72c25f3 100644
+index 39c28f2..cdad607 100644
 --- a/LuaValue.cpp
 +++ b/LuaValue.cpp
-@@ -250,7 +250,20 @@ LuaVal LuaVal::AsLuaVal(lua_State* L, int index)
-         return FromTable(L, index);
+@@ -231,6 +231,18 @@ int LuaVal::lua_asLua(lua_State* L)
+ }
+ 
+ LuaVal LuaVal::AsLuaVal(lua_State* L, int index)
++{
++    bool tooDeep = false;
++    LuaVal result = AsLuaValImpl(L, index, 0, tooDeep);
++    if (tooDeep)
++    {
++        result = LuaVal();   // nothing to free when luaL_error unwinds this frame
++        luaL_error(L, "Data(): table nested deeper than 64 levels");
++    }
++    return result;
++}
++
++LuaVal LuaVal::AsLuaValImpl(lua_State* L, int index, unsigned int depth, bool& tooDeep)
+ {
+     auto t = lua_type(L, index);
+     switch (t)
+@@ -247,10 +259,23 @@ LuaVal LuaVal::AsLuaVal(lua_State* L, int index)
+         return LuaVal(std::string(str, len));
+     }
+     case LUA_TTABLE:
+-        return FromTable(L, index);
++        return FromTableImpl(L, index, depth, tooDeep);
      case LUA_TUSERDATA:
          if (LuaVal* ptr = GetLuaVal(L, index))
 +#if defined ELUNA_VMANGOS
@@ -139,11 +162,61 @@ index 39c28f2..72c25f3 100644
          break;
      }
      luaL_argerror(L, index, "Trying to use unsupported type");
+@@ -264,13 +289,37 @@ int LuaVal::lua_AsLuaVal(lua_State* L)
+ 
+ LuaVal LuaVal::FromTable(lua_State* L, int index)
+ {
+-    // Assumed we know index is a table already
++    bool tooDeep = false;
++    LuaVal result = FromTableImpl(L, index, 0, tooDeep);
++    if (tooDeep)
++    {
++        result = LuaVal();
++        luaL_error(L, "Data(): table nested deeper than 64 levels");
++    }
++    return result;
++}
++
++LuaVal LuaVal::FromTableImpl(lua_State* L, int index, unsigned int depth, bool& tooDeep)
++{
++    // Assumed we know index is a table already. A table that holds itself (t.self = t) or is
++    // nested past 64 levels is refused: the walk stops and the caller raises the Lua error.
++    if (depth >= 64)
++    {
++        tooDeep = true;
++        return LuaVal();
++    }
+     LuaVal m({});
+     auto& t = std::get<WrappedMap>(m.v);
+     int top = lua_gettop(L);
+     lua_pushnil(L);
+     while (lua_next(L, index) != 0) {
+-        t->emplace(AsLuaVal(L, top + 1), AsLuaVal(L, top + 2));
++        auto key = AsLuaValImpl(L, top + 1, depth + 1, tooDeep);
++        auto value = tooDeep ? LuaVal() : AsLuaValImpl(L, top + 2, depth + 1, tooDeep);
++        if (tooDeep) {
++            lua_settop(L, top);
++            return LuaVal();
++        }
++        t->emplace(std::move(key), std::move(value));
+         lua_pop(L, 1);
+     }
+     return m;
 diff --git a/LuaValue.h b/LuaValue.h
-index fdb654e..b41fa8a 100644
+index fdb654e..cfda356 100644
 --- a/LuaValue.h
 +++ b/LuaValue.h
-@@ -148,6 +148,44 @@ public:
+@@ -72,6 +72,9 @@ public:
+     int asLua(lua_State* L, unsigned int depth) const;
+     static LuaVal AsLuaVal(lua_State* L, int index);
+     static LuaVal FromTable(lua_State* L, int index);
++    // Nesting depth is carried down; tooDeep is set (and the walk stops) at 64 levels of plain tables.
++    static LuaVal AsLuaValImpl(lua_State* L, int index, unsigned int depth, bool& tooDeep);
++    static LuaVal FromTableImpl(lua_State* L, int index, unsigned int depth, bool& tooDeep);
+     static int lua_asLua(lua_State* L);
+     static int lua_AsLuaVal(lua_State* L);
+     static int lua_gc(lua_State* L);
+@@ -148,6 +151,44 @@ public:
      LuaVal reference() const {
          return *this;
      }
@@ -617,10 +690,10 @@ index 0000000..46a8362
 +}
 +#endif
 diff --git a/methods/VMangos/CreatureMethods.h b/methods/VMangos/CreatureMethods.h
-index ffa8fd9..541168d 100644
+index 1dfe9c2..4c6ff9b 100644
 --- a/methods/VMangos/CreatureMethods.h
 +++ b/methods/VMangos/CreatureMethods.h
-@@ -1242,8 +1242,92 @@ namespace LuaCreature
+@@ -1251,8 +1251,92 @@ namespace LuaCreature
          return 0;
      }
  

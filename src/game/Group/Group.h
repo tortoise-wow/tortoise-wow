@@ -213,6 +213,7 @@ class Group
 
         // properties accessories
         uint32 GetId() const { return m_Id; }
+        bool   IsInRollEvent() const { return m_inRollEvent; }
         bool IsFull() const { return (m_groupType==GROUPTYPE_NORMAL) ? (m_memberSlots.size()>=MAX_GROUP_SIZE) : (m_memberSlots.size()>=MAX_RAID_SIZE); }
         bool isRaidGroup() const { return m_groupType==GROUPTYPE_RAID; }
         bool isBGGroup()   const { return m_bgGroup != nullptr; }
@@ -455,6 +456,7 @@ class Group
         ItemQualities       m_lootThreshold;
         ObjectGuid          m_looterGuid;
         Rolls               RollId;
+        bool                m_inRollEvent = false;      // true while CountTheRoll fires the Lua roll event
         BoundInstancesMap   m_boundInstances;
         uint8*              m_subGroupsCounts;
         Team                m_groupTeam; // ALLIANCE / HORDE / TEAM_NONE / TEAM_CROSSFACTION

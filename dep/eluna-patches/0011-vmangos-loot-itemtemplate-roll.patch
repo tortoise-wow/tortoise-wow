@@ -40,7 +40,8 @@ nothing for an item under a roll, an item waiting for a roll winner, or looted =
 false. Player:IsAtLootRewardDistance uses the core's Player::IsAllowedToLoot for a
 creature. ItemTemplate:GetName(locale) and Item:GetItemLink index ItemLocale::Name
 with the core's locale index. Creature:AllLootRemovedFromCorpse does not clear
-UNIT_DYNFLAG_LOOTABLE.
+UNIT_DYNFLAG_LOOTABLE. Creature:StartGroupLootRoll returns false (and logs one
+line) while the group is inside the roll event.
 
 Upstreamable to Eluna as VMaNGOS additions, except Player:IsBot (it asks the
 core's script manager) and the two call sites in the core's Group.cpp.
@@ -161,10 +162,10 @@ index 8573e25..7d43c3e 100644
      ElunaTemplate<Group>::SetMethods(E, LuaGroup::GroupMethods);
  
 diff --git a/methods/VMangos/CreatureMethods.h b/methods/VMangos/CreatureMethods.h
-index 41ee66d..ffa8fd9 100644
+index 41ee66d..1dfe9c2 100644
 --- a/methods/VMangos/CreatureMethods.h
 +++ b/methods/VMangos/CreatureMethods.h
-@@ -1120,6 +1120,128 @@ namespace LuaCreature
+@@ -1120,6 +1120,137 @@ namespace LuaCreature
          return 1;
      }
      
@@ -222,6 +223,15 @@ index 41ee66d..ffa8fd9 100644
 +            return 1;
 +        }
 +
++        // The roll event (56) is fired from inside Group::CountTheRoll: starting rolls from it
++        // would change RollId under the code that is walking it.
++        if (group->IsInRollEvent())
++        {
++            ELUNA_LOG_ERROR("Creature:StartGroupLootRoll refused inside the group roll event.");
++            E->Push(false);
++            return 1;
++        }
++
 +        LootMethod const method = group->GetLootMethod();
 +        if (method != GROUP_LOOT && method != NEED_BEFORE_GREED)
 +        {
@@ -231,7 +241,7 @@ index 41ee66d..ffa8fd9 100644
 +
 +        // Would Group::GroupLoot / NeedBeforeGreed start at least one roll? Same
 +        // tests as Group::StartLootRoll: an item at or above the threshold that is
-+        // not free for all, not looted and not already blocked, and one member who
++        // not free for all, not looted (a script may have marked it with Loot:SetItemLooted; the core skips it too) and not already blocked, and one member who
 +        // can roll for it. If not, return false and leave lootForBody alone, so a
 +        // later real loot open still starts whatever rolls it should.
 +        Loot* loot = &creature->loot;
@@ -293,7 +303,7 @@ index 41ee66d..ffa8fd9 100644
      ElunaRegister<Creature> CreatureMethods[] =
      {
          // Getters
-@@ -1139,6 +1261,7 @@ namespace LuaCreature
+@@ -1139,6 +1270,7 @@ namespace LuaCreature
          { "GetWanderRadius", &LuaCreature::GetWanderRadius },
          { "GetCurrentWaypointId", &LuaCreature::GetCurrentWaypointId },
          { "GetLootRecipient", &LuaCreature::GetLootRecipient },
@@ -301,7 +311,7 @@ index 41ee66d..ffa8fd9 100644
          { "GetLootRecipientGroup", &LuaCreature::GetLootRecipientGroup },
          { "GetNPCFlags", &LuaCreature::GetNPCFlags },
          { "GetExtraFlags", &LuaCreature::GetExtraFlags },
-@@ -1189,6 +1312,8 @@ namespace LuaCreature
+@@ -1189,6 +1321,8 @@ namespace LuaCreature
          { "CanFly", &LuaCreature::CanFly },
  
          // Other

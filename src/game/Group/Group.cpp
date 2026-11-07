@@ -857,7 +857,9 @@ void Group::GroupLoot(Creature *creature, Loot* loot)
     for (uint8 itemSlot = 0; itemSlot < loot->items.size(); ++itemSlot)
     {
         LootItem& lootItem = loot->items[itemSlot];
-        if (lootItem.freeforall)
+        // An item a script marked looted (Loot:SetItemLooted) gets no roll: the winner would
+        // receive it a second time.
+        if (lootItem.freeforall || lootItem.is_looted)
             continue;
 
         ItemPrototype const *itemProto = sObjectMgr.GetItemPrototype(lootItem.itemid);
@@ -880,7 +882,9 @@ void Group::NeedBeforeGreed(Creature *creature, Loot* loot)
     for (uint8 itemSlot = 0; itemSlot < loot->items.size(); ++itemSlot)
     {
         LootItem& lootItem = loot->items[itemSlot];
-        if (lootItem.freeforall)
+        // An item a script marked looted (Loot:SetItemLooted) gets no roll: the winner would
+        // receive it a second time.
+        if (lootItem.freeforall || lootItem.is_looted)
             continue;
 
         ItemPrototype const *itemProto = sObjectMgr.GetItemPrototype(lootItem.itemid);
@@ -1203,7 +1207,8 @@ void Group::CountTheRoll(Rolls::iterator& rollI)
                 {
                     item->is_looted = true;
                     roll->getLoot()->NotifyItemRemoved(roll->itemSlot);
-                    --roll->getLoot()->unlootedCount;
+                    if (roll->getLoot()->unlootedCount)
+                        --roll->getLoot()->unlootedCount;
                     sLog.out(LOG_LOOTS, "%s wins need roll for %ux%u [loot from %s]",
                              player->GetShortDescription().c_str(), item->count, item->itemid, roll->lootedTargetGUID.GetString().c_str());
 
@@ -1280,7 +1285,8 @@ void Group::CountTheRoll(Rolls::iterator& rollI)
                 {
                     item->is_looted = true;
                     roll->getLoot()->NotifyItemRemoved(roll->itemSlot);
-                    --roll->getLoot()->unlootedCount;
+                    if (roll->getLoot()->unlootedCount)
+                        --roll->getLoot()->unlootedCount;
                     sLog.out(LOG_LOOTS, "%s wins greed roll for %ux%u [loot from %s]",
                              player->GetShortDescription().c_str(), item->count, item->itemid, roll->lootedTargetGUID.GetString().c_str());
 
@@ -1330,7 +1336,16 @@ void Group::CountTheRoll(Rolls::iterator& rollI)
 #ifdef ENABLE_ELUNA
     if (elunaRewardPlayer)
         if (Eluna* e = elunaRewardPlayer->GetEluna())
+        {
+            // StartGroupLootRoll refuses while this is set (IsInRollEvent).
+            struct RollEventGuard
+            {
+                bool& flag;
+                explicit RollEventGuard(bool& f) : flag(f) { flag = true; }
+                ~RollEventGuard() { flag = false; }
+            } rollEventGuard(m_inRollEvent);
             e->OnGroupRollRewardItem(elunaRewardPlayer, elunaRewardItem, elunaRewardCount, elunaRewardVote, roll);
+        }
 #endif
     delete roll;
 }
@@ -1830,7 +1845,11 @@ void Group::_removeRolls(ObjectGuid guid)
 
         roll->playerVote.erase(itr2);
 
-        if (!CountRollVote(guid, it, ROLL_NOT_EMITED_YET))
+        // CountRollVote(true) ended the roll and a roll event handler may have changed RollId
+        // (CountTheRoll fires it last): rescan instead of trusting the returned iterator.
+        if (CountRollVote(guid, it, ROLL_NOT_EMITED_YET))
+            it = RollId.begin();
+        else
             ++it;
     }
 }
