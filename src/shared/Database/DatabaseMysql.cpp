@@ -31,6 +31,87 @@
 
 size_t DatabaseMysql::db_count = 0;
 
+namespace
+{
+// Fail closed for SQL that can end/restart a transaction before we can inspect
+// the server status. This is a statement boundary check, not a SQL parser.
+bool IsTransactionalStatement(const char* sql, bool noBackslashEscapes)
+{
+    if (!sql)
+        return false;
+    bool foundKeyword = false;
+    bool ended = false;
+    for (const char* p = sql; *p;)
+    {
+        if (static_cast<unsigned char>(*p) <= ' ') { ++p; continue; }
+        if (*p == '#' || (p[0] == '-' && p[1] == '-' &&
+            static_cast<unsigned char>(p[2]) <= ' '))
+        {
+            while (*p && *p != '\n' && *p != '\r') ++p;
+            continue;
+        }
+        if (p[0] == '/' && p[1] == '*')
+        {
+            // Executable version comments can contain otherwise hidden SQL.
+            if (p[2] == '!' || ((p[2] == 'M' || p[2] == 'm') && p[3] == '!'))
+                return false;
+            p += 2;
+            while (*p && !(p[0] == '*' && p[1] == '/'))
+            {
+                if (p[0] == '/' && p[1] == '*') return false;
+                ++p;
+            }
+            if (!*p) return false;
+            p += 2;
+            continue;
+        }
+        if (ended)
+            return false;
+        if (!foundKeyword)
+        {
+            std::string keyword;
+            while ((*p >= 'a' && *p <= 'z') || (*p >= 'A' && *p <= 'Z') ||
+                (*p >= '0' && *p <= '9') || *p == '_' || *p == '$')
+            {
+                keyword += (*p >= 'a' && *p <= 'z') ? char(*p - 'a' + 'A') : *p;
+                ++p;
+            }
+            if (keyword != "SELECT" && keyword != "INSERT" && keyword != "UPDATE" &&
+                keyword != "DELETE" && keyword != "REPLACE")
+                return false;
+            foundKeyword = true;
+            continue;
+        }
+        if (*p == ';') { ended = true; ++p; continue; }
+        if (*p == '\'' || *p == '"' || *p == '`')
+        {
+            char quote = *p++;
+            bool closed = false;
+            while (*p)
+            {
+                if (*p == quote)
+                {
+                    if (p[1] == quote) { p += 2; continue; }
+                    ++p; closed = true; break;
+                }
+                if (*p == '\\' && quote != '`' && !noBackslashEscapes)
+                {
+                    // Double quotes can denote ANSI identifiers; their escape
+                    // rules are ambiguous without inspecting the SQL mode.
+                    if (quote == '"' || !p[1]) return false;
+                    p += 2;
+                }
+                else ++p;
+            }
+            if (!closed) return false;
+            continue;
+        }
+        ++p;
+    }
+    return foundKeyword;
+}
+}
+
 void DatabaseMysql::ThreadStart()
 {
     mysql_thread_init();
@@ -74,12 +155,25 @@ SqlConnection * DatabaseMysql::CreateConnection()
 
 MySQLConnection::~MySQLConnection()
 {
+    CloseConnection();
+}
+
+void MySQLConnection::CloseConnection()
+{
     FreePreparedStatements();
-    mysql_close(mMysql);
+    if (mMysql)
+        mysql_close(mMysql);
+    mMysql = nullptr;
 }
 
 bool MySQLConnection::OpenConnection(bool reconnect)
 {
+    if (m_transactionActive || m_migrationActive)
+    {
+        RecordError(0);
+        return false;
+    }
+
     MYSQL * mysqlInit = mysql_init(nullptr);
     if (!mysqlInit)
     {
@@ -88,6 +182,14 @@ bool MySQLConnection::OpenConnection(bool reconnect)
     }
 
     mysql_options(mysqlInit, MYSQL_SET_CHARSET_NAME, "utf8");
+    // A library reconnect would silently abandon the current transaction.
+    my_bool automaticReconnect = 0;
+    if (mysql_options(mysqlInit, MYSQL_OPT_RECONNECT, &automaticReconnect))
+    {
+        sLog.outError("Could not disable automatic MySQL reconnection");
+        mysql_close(mysqlInit);
+        return false;
+    }
 
     if (m_use_socket)                                           // socket use option (Unix/Linux)
     {
@@ -106,6 +208,7 @@ bool MySQLConnection::OpenConnection(bool reconnect)
 
     if (mMysql)
     {
+        m_connectionLost = false;
         DETAIL_LOG( "Connected to MySQL database at %s",
             m_host.c_str());
         DETAIL_LOG( "MySQL client library: %s", mysql_get_client_info());
@@ -122,16 +225,23 @@ bool MySQLConnection::OpenConnection(bool reconnect)
         // ---
         // LEAVE 'AUTOCOMMIT' MODE ALWAYS ENABLED!!!
         // W/O IT EVEN 'SELECT' QUERIES WOULD REQUIRE TO BE WRAPPED INTO 'START TRANSACTION'<>'COMMIT' CLAUSES!!!
-        if (!mysql_autocommit(mMysql, 1))
-            DETAIL_LOG("AUTOCOMMIT SUCCESSFULLY SET TO 1");
-        else
-            DETAIL_LOG("AUTOCOMMIT NOT SET TO 1");
+        if (mysql_autocommit(mMysql, 1))
+        {
+            sLog.outError("Could not enable MySQL autocommit: %s", mysql_error(mMysql));
+            CloseConnection();
+            return false;
+        }
+        DETAIL_LOG("AUTOCOMMIT SUCCESSFULLY SET TO 1");
         /*-------------------------------------*/
 
         // set connection properties to UTF8 to properly handle locales for different
         // server configs - core sends data in UTF8, so MySQL must expect UTF8 too
-        Execute("SET NAMES `utf8`");
-        Execute("SET CHARACTER SET `utf8`");
+        // Initialization must not use Execute's normal reconnect/retry path.
+        if (!_TransactionCmd("SET NAMES `utf8`") || !_TransactionCmd("SET CHARACTER SET `utf8`"))
+        {
+            CloseConnection();
+            return false;
+        }
 
         return true;
     }
@@ -146,11 +256,21 @@ bool MySQLConnection::OpenConnection(bool reconnect)
 
 bool MySQLConnection::Reconnect()
 {
+    if (m_transactionActive || m_migrationActive)
+    {
+        RecordError(0);
+        return false;
+    }
+
     sLog.outString("Reconnection attempt to database %s (on %s)", m_database.c_str(), m_host.c_str());
+
+    // mysql_close invalidates statement handles. Destroy their owners first,
+    // and only reconnect between calls (never from a prepared statement).
+    CloseConnection();
+    m_connectionLost = false;
 
     if (OpenConnection(true))
     {
-        FreePreparedStatements(); // We need to prepare everything again!
         sLog.outString("Successfully reconnected to %s @%s:%u.",
             m_database.c_str(), m_host.c_str(), m_port);
 
@@ -162,6 +282,10 @@ bool MySQLConnection::Reconnect()
 
 bool MySQLConnection::HandleMySQLError(uint32 errNo)
 {
+    RecordError(errNo, true);
+    if (m_transactionActive || m_migrationActive)
+        return false;
+
     switch (errNo)
     {
         case CR_SERVER_GONE_ERROR:
@@ -171,7 +295,6 @@ bool MySQLConnection::HandleMySQLError(uint32 errNo)
 #endif
         case CR_SERVER_LOST_EXTENDED:
         {
-            mysql_close(mMysql);
             return Reconnect();
         }
 
@@ -202,9 +325,75 @@ bool MySQLConnection::HandleMySQLError(uint32 errNo)
     }
 }
 
+void MySQLConnection::RecordError(uint32 errNo, bool statementFailure)
+{
+    if (statementFailure && m_transactionActive && errNo == ER_LOCK_DEADLOCK)
+        m_transactionKnownAbort = true;
+    if (m_transactionActive)
+        m_transactionFailed = true;
+    if (m_migrationActive)
+        m_migrationFailed = true;
+
+    switch (errNo)
+    {
+        case CR_SERVER_GONE_ERROR:
+        case CR_SERVER_LOST:
+#if !(MARIADB_VERSION_ID >= 100200)
+        case CR_INVALID_CONN_HANDLE:
+#endif
+        case CR_SERVER_LOST_EXTENDED:
+            m_connectionLost = true;
+            break;
+        default:
+            break;
+    }
+}
+
+bool MySQLConnection::CheckTransaction()
+{
+    if (m_migrationActive && (m_migrationFailed || !mMysql || m_connectionLost ||
+        mysql_thread_id(mMysql) != m_migrationThreadId))
+    {
+        m_migrationFailed = true;
+        return false;
+    }
+    if (!m_transactionActive)
+        return true;
+
+    if (m_transactionFailed || !mMysql || m_connectionLost ||
+        mysql_thread_id(mMysql) != m_transactionThreadId ||
+        !(mMysql->server_status & SERVER_STATUS_IN_TRANS))
+    {
+        m_transactionFailed = true;
+        return false;
+    }
+    return true;
+}
+
+bool MySQLConnection::EnsureConnection()
+{
+    if (!CheckTransaction())
+        return false;
+    return (mMysql && !m_connectionLost) || Reconnect();
+}
+
+bool MySQLConnection::CheckTransactionSql(const char* sql)
+{
+    if (!m_transactionActive)
+        return true;
+    if (!CheckTransaction())
+        return false;
+    if (IsTransactionalStatement(sql, (mMysql->server_status & SERVER_STATUS_NO_BACKSLASH_ESCAPES) != 0))
+        return true;
+
+    m_transactionFailed = true;
+    sLog.outErrorDb("Unsafe or unsupported SQL rejected inside a transaction");
+    return false;
+}
+
 bool MySQLConnection::_Query(const char *sql, MYSQL_RES **pResult, MYSQL_FIELD **pFields, uint64* pRowCount, uint32* pFieldCount)
 {
-    if (!mMysql && !Reconnect())
+    if (!EnsureConnection() || !CheckTransactionSql(sql))
     {
         return false;
     }
@@ -230,6 +419,19 @@ bool MySQLConnection::_Query(const char *sql, MYSQL_RES **pResult, MYSQL_FIELD *
     }
 
     *pResult = mysql_store_result(mMysql);
+    if (mysql_errno(mMysql))
+    {
+        RecordError(mysql_errno(mMysql), true);
+        if (*pResult)
+            mysql_free_result(*pResult);
+        return false;
+    }
+    if (!CheckTransaction())
+    {
+        if (*pResult)
+            mysql_free_result(*pResult);
+        return false;
+    }
     *pRowCount = mysql_affected_rows(mMysql);
     *pFieldCount = mysql_field_count(mMysql);
 
@@ -284,7 +486,15 @@ QueryNamedResult* MySQLConnection::QueryNamed(const char *sql)
 
 bool MySQLConnection::ExecuteMultiline(const char* sql)
 {
-    if (!mMysql)
+    // A deadlock can roll back the transaction while later statements in the
+    // same packet continue in autocommit mode. Queue individual statements.
+    if (m_transactionActive)
+    {
+        m_transactionFailed = true;
+        sLog.outErrorDb("Multiline requests cannot execute inside a transaction");
+        return false;
+    }
+    if (!EnsureConnection())
         return false;
 
     uint32 _s = WorldTimer::getMSTime();
@@ -293,26 +503,13 @@ bool MySQLConnection::ExecuteMultiline(const char* sql)
     {
         uint32 lErrno = mysql_errno(mMysql);
 
-        const char* error = mysql_error(mMysql);
+        std::string error = mysql_error(mMysql);
         sLog.outErrorDb("SQL: %s", sql);
-        sLog.outErrorDb("[%u] %s", lErrno, error);
+        sLog.outErrorDb("[%u] %s", lErrno, error.c_str());
 
-        switch (lErrno)
-        {
-            case CR_SERVER_GONE_ERROR:
-            case CR_SERVER_LOST:
-    #if !(MARIADB_VERSION_ID >= 100200)
-            case CR_INVALID_CONN_HANDLE:
-    #endif
-            case CR_SERVER_LOST_EXTENDED:
-            {
-                mysql_close(mMysql);
-                Reconnect();
-                return Execute(sql);
-            }
-            default:
-                sLog.out(LOG_AUTOUPDATER, "[FAIL] MySQL Error %u, message: %s.\nSQL: %s", lErrno, error, sql);
-        }
+        if (HandleMySQLError(lErrno))
+            return ExecuteMultiline(sql);
+        sLog.out(LOG_AUTOUPDATER, "[FAIL] MySQL Error %u, message: %s.\nSQL: %s", lErrno, error.c_str(), sql);
         return false;
     }
     else
@@ -320,23 +517,33 @@ bool MySQLConnection::ExecuteMultiline(const char* sql)
         DEBUG_FILTER_LOG(LOG_FILTER_SQL_TEXT, "[%u ms] SQL: %s", WorldTimer::getMSTimeDiff(_s, WorldTimer::getMSTime()), sql);
     }
 
-    int status = 0;
-
     //we have to drain the results from multiline queries otherwise the server will not be able to keep up.
-    while (mysql_more_results(mMysql))
+    int status;
+    do
     {
         MYSQL_RES* result = mysql_store_result(mMysql);
         if (result)
             mysql_free_result(result);
-        mysql_next_result(mMysql);
+        else if (mysql_errno(mMysql))
+        {
+            RecordError(mysql_errno(mMysql));
+            return false;
+        }
+        status = mysql_next_result(mMysql);
+    }
+    while (status == 0);
+    if (status > 0)
+    {
+        RecordError(mysql_errno(mMysql));
+        return false;
     }
 
-    return true;
+    return CheckTransaction();
 }
 
 bool MySQLConnection::Execute(const char* sql)
 {
-    if (!mMysql)
+    if (!EnsureConnection() || !CheckTransactionSql(sql))
         return false;
 
     uint32 _s = WorldTimer::getMSTime();
@@ -357,13 +564,23 @@ bool MySQLConnection::Execute(const char* sql)
         BASIC_FILTER_LOG(LOG_FILTER_SQL_TEXT, "[%u ms] SQL: %s", WorldTimer::getMSTimeDiff(_s,WorldTimer::getMSTime()), sql );
     }
 
-    return true;
+    return CheckTransaction();
+}
+
+bool MySQLConnection::ExecuteStmt(int nIndex, const SqlStmtParameters& params)
+{
+    if (!EnsureConnection())
+        return false;
+    return SqlConnection::ExecuteStmt(nIndex, params);
 }
 
 bool MySQLConnection::_TransactionCmd(const char *sql)
 {
+    if (!mMysql || m_connectionLost)
+        return false;
     if (mysql_query(mMysql, sql))
     {
+        RecordError(mysql_errno(mMysql));
         sLog.outError("SQL: %s", sql);
         sLog.outError("SQL ERROR: %s", mysql_error(mMysql));
         return false;
@@ -377,17 +594,120 @@ bool MySQLConnection::_TransactionCmd(const char *sql)
 
 bool MySQLConnection::BeginTransaction()
 {
-    return _TransactionCmd("START TRANSACTION");
+    m_transactionKnownAbort = false;
+    // Nested START TRANSACTION would commit the outer transaction in MySQL.
+    if (m_transactionActive || m_migrationActive)
+    {
+        RecordError(0);
+        return false;
+    }
+    if (!EnsureConnection() || !_TransactionCmd("START TRANSACTION"))
+        return false;
+
+    m_transactionActive = true;
+    m_transactionFailed = false;
+    m_transactionThreadId = mysql_thread_id(mMysql);
+    if (!CheckTransaction())
+    {
+        RollbackTransaction();
+        return false;
+    }
+    return true;
 }
 
 bool MySQLConnection::CommitTransaction()
 {
-    return _TransactionCmd("COMMIT");
+    // A COMMIT failure never proves that it is safe to replay the transaction.
+    m_transactionKnownAbort = false;
+    if (!m_transactionActive)
+        return false;
+    if (!CheckTransaction())
+    {
+        RollbackTransaction();
+        return false;
+    }
+
+    bool committed = _TransactionCmd("COMMIT");
+    if (committed && (mysql_thread_id(mMysql) != m_transactionThreadId ||
+        (mMysql->server_status & SERVER_STATUS_IN_TRANS)))
+        committed = false;
+    // A failed COMMIT has an unknown outcome. Never replay it, and discard
+    // the session before accepting unrelated work.
+    if (!committed)
+        m_connectionLost = true;
+    m_transactionActive = false;
+    m_transactionFailed = false;
+    return committed;
 }
 
 bool MySQLConnection::RollbackTransaction()
 {
-    return _TransactionCmd("ROLLBACK");
+    if (!m_transactionActive)
+        return false;
+    bool rolledBack = _TransactionCmd("ROLLBACK");
+    if (rolledBack && (mysql_thread_id(mMysql) != m_transactionThreadId ||
+        (mMysql->server_status & SERVER_STATUS_IN_TRANS)))
+        rolledBack = false;
+    if (!rolledBack)
+        m_connectionLost = true;
+    m_transactionActive = false;
+    m_transactionFailed = false;
+    m_transactionKnownAbort = false;
+    return rolledBack;
+}
+
+bool MySQLConnection::CanRetryTransaction() const
+{
+    return m_transactionActive && m_transactionKnownAbort && !m_connectionLost &&
+        mMysql && mysql_thread_id(mMysql) == m_transactionThreadId;
+}
+
+bool MySQLConnection::ExecuteMigrationBatch(const std::vector<std::string>& statements)
+{
+    SqlConnection::Lock guard(this);
+    if (m_transactionActive || m_migrationActive)
+    {
+        RecordError(0);
+        return false;
+    }
+    if (statements.empty())
+        return true;
+    if (!EnsureConnection())
+        return false;
+
+    // Startup migrations explicitly allow MySQL DDL's implicit commits. Pin
+    // the session so a failure can never replay a partly applied migration.
+    m_migrationActive = true;
+    m_migrationFailed = false;
+    m_migrationThreadId = mysql_thread_id(mMysql);
+    bool succeeded = _TransactionCmd("START TRANSACTION") && CheckTransaction();
+    for (const std::string& sql : statements)
+    {
+        if (!succeeded)
+            break;
+        // A preceding DDL/control statement may have committed the current
+        // segment. Keep subsequent DML, especially the final ledger INSERT,
+        // pending until an explicit commit rather than silently autocommitting.
+        if (!(mMysql->server_status & SERVER_STATUS_IN_TRANS))
+            succeeded = _TransactionCmd("START TRANSACTION") && CheckTransaction();
+        if (!succeeded)
+            break;
+        succeeded = Execute(sql.c_str());
+    }
+    if (succeeded)
+        succeeded = _TransactionCmd("COMMIT") && CheckTransaction() &&
+            !(mMysql->server_status & SERVER_STATUS_IN_TRANS);
+    if (!succeeded && mMysql && !m_connectionLost &&
+        mysql_thread_id(mMysql) == m_migrationThreadId)
+        _TransactionCmd("ROLLBACK");
+
+    // DDL may already be durable on failure. Always discard session settings
+    // (including SET/autocommit changes) before unrelated runtime work.
+    CloseConnection();
+    m_migrationActive = false;
+    m_migrationFailed = false;
+    m_connectionLost = false;
+    return succeeded;
 }
 
 unsigned long MySQLConnection::escape_string(char *to, const char *from, unsigned long length)
@@ -407,7 +727,7 @@ SqlPreparedStatement * MySQLConnection::CreateStatement( const std::string& fmt 
 
 //////////////////////////////////////////////////////////////////////////
 MySqlPreparedStatement::MySqlPreparedStatement( const std::string& fmt, SqlConnection& conn, MYSQL * mysql ) : SqlPreparedStatement(fmt, conn),
-    m_pMySQLConn(mysql), m_stmt(nullptr), m_pInputArgs(nullptr), m_pResult(nullptr), m_pResultMetadata(nullptr)
+    m_pMySQLConn(mysql), m_stmt(nullptr), m_pInputArgs(nullptr), m_pResult(nullptr), m_pResultMetadata(nullptr), m_bindFailed(false)
 {
 }
 
@@ -418,6 +738,8 @@ MySqlPreparedStatement::~MySqlPreparedStatement()
 
 bool MySqlPreparedStatement::prepare()
 {
+    if (!static_cast<MySQLConnection&>(m_pConn).CheckTransactionSql(m_szFmt.c_str()))
+        return false;
     if(isPrepared())
         return true;
 
@@ -428,6 +750,7 @@ bool MySqlPreparedStatement::prepare()
     m_stmt = mysql_stmt_init(m_pMySQLConn);
     if (!m_stmt)
     {
+        static_cast<MySQLConnection&>(m_pConn).RecordError(mysql_errno(m_pMySQLConn));
         sLog.outError("SQL: mysql_stmt_init()() failed ");
         return false;
     }
@@ -435,6 +758,7 @@ bool MySqlPreparedStatement::prepare()
     //prepare statement
     if (mysql_stmt_prepare(m_stmt, m_szFmt.c_str(), m_szFmt.length()))
     {
+        static_cast<MySQLConnection&>(m_pConn).RecordError(mysql_stmt_errno(m_stmt));
         sLog.outError("SQL: mysql_stmt_prepare() failed for '%s'", m_szFmt.c_str());
         sLog.outError("SQL ERROR: %s", mysql_stmt_error(m_stmt));
         return false;
@@ -448,6 +772,7 @@ bool MySqlPreparedStatement::prepare()
     //if we do not have result metadata
     if (!m_pResultMetadata && strnicmp(m_szFmt.c_str(), "select", 6) == 0)
     {
+        static_cast<MySQLConnection&>(m_pConn).RecordError(mysql_stmt_errno(m_stmt));
         sLog.outError("SQL: no meta information for '%s'", m_szFmt.c_str());
         sLog.outError("SQL ERROR: %s", mysql_stmt_error(m_stmt));
         return false;
@@ -477,6 +802,7 @@ bool MySqlPreparedStatement::prepare()
 
 void MySqlPreparedStatement::bind( const SqlStmtParameters& holder )
 {
+    m_bindFailed = false;
     if(!isPrepared())
     {
         MANGOS_ASSERT(false);
@@ -507,6 +833,8 @@ void MySqlPreparedStatement::bind( const SqlStmtParameters& holder )
     //bind input arguments
     if (mysql_stmt_bind_param(m_stmt, m_pInputArgs))
     {
+        m_bindFailed = true;
+        static_cast<MySQLConnection&>(m_pConn).RecordError(mysql_stmt_errno(m_stmt));
         sLog.outError("SQL ERROR: mysql_stmt_bind_param() failed\n");
         sLog.outError("SQL ERROR: %s", mysql_stmt_error(m_stmt));
     }
@@ -551,17 +879,21 @@ void MySqlPreparedStatement::RemoveBinds()
 
 bool MySqlPreparedStatement::execute()
 {
-    if(!isPrepared())
+    MySQLConnection& conn = static_cast<MySQLConnection&>(m_pConn);
+    if(!isPrepared() || m_bindFailed || !conn.CheckTransactionSql(m_szFmt.c_str()))
         return false;
 
     if(mysql_stmt_execute(m_stmt))
     {
+        // Recovery is deferred to the next connection operation: reconnecting
+        // here would delete this cached statement while it is executing.
+        conn.RecordError(mysql_stmt_errno(m_stmt), true);
         sLog.outError("SQL: cannot execute '%s'", m_szFmt.c_str());
         sLog.outError("SQL ERROR: %s", mysql_stmt_error(m_stmt));
         return false;
     }
 
-    return true;
+    return conn.CheckTransaction();
 }
 
 enum_field_types MySqlPreparedStatement::ToMySQLType( const SqlStmtFieldData &data, my_bool &bUnsigned )

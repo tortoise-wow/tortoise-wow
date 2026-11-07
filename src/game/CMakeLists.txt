@@ -55,6 +55,7 @@ set (game_SRCS
     UnitAuraProcHandler.cpp
     Weather.cpp
     World.cpp
+    AtomicPlayerSave.cpp
     WorldSession.cpp
     AI/AbilityTimer.cpp
     AI/AggressorAI.cpp
@@ -263,6 +264,7 @@ set (game_SRCS
     UnitEvents.h
     Weather.h
     World.h
+    AtomicPlayerSave.h
     WorldSession.h
 	Analysis/AccountAnalyser.hpp
     AI/AbilityTimer.h

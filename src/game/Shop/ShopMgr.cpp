@@ -18,6 +18,7 @@
 
 #include "ShopMgr.h"
 #include "World.h"
+#include "WorldPlayerTasks.h"
 #include "ObjectMgr.h"
 #include "ObjectGuid.h"
 #include "Creature.h"
@@ -286,7 +287,7 @@ void ShopMgr::BuyItem(uint32 accountId, uint32 guidLow, uint32 itemId)
             sObjectMgr.GetShopLogEntries(accountId).push_back(entry);
             sObjectMgr.AddShopLogEntry(shopId, entry);
 
-            sWorld.AddAsyncTask({ ShopSendItemTask(accountId, guidLow, itemId, shopId, price) });
+        WorldPlayerTasks::Add(ShopSendItemTask(accountId, guidLow, itemId, shopId, price));
             return;
         }
         else

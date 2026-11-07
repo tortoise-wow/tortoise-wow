@@ -40,11 +40,24 @@
 #include "Common.h"
 #include "ObjectGuid.h"
 #include <map>
+#include <memory>
+#include <set>
 
 struct AuctionEntry;
 class Item;
 class Object;
 class Player;
+class PreparedMail;
+
+// Actor-local publication staging. Implemented by the outer game save scope,
+// never installed on or invoked by a database worker.
+class MailPublicationCollector
+{
+public:
+    virtual ~MailPublicationCollector() = default;
+    virtual bool Collect(std::unique_ptr<PreparedMail> mail) = 0;
+    virtual void Fail() = 0;
+};
 
 #define MAIL_BODY_ITEM_TEMPLATE 8383                        // - plain letter, A Dusty Unsent Letter: 889
 /// The maximal amount of items a mail can contain.
@@ -182,12 +195,15 @@ class MailReceiver
  */
 class MailDraft
 {
+        friend class PreparedMail;
+        friend struct Mail;
         /**
          * Holds a Map of GUIDs of items and pointers to the items.
          */
         typedef std::map<uint32, Item*> MailItemMap;
 
     public:                                                 // Constructors
+        ~MailDraft();
        /**
         * Creates a new blank MailDraft object
         *
@@ -251,6 +267,8 @@ class MailDraft
 
         void CloneFrom(MailDraft const& draft);
     public:                                                 // finishers
+        static MailPublicationCollector* GetPublicationCollector();
+        static MailPublicationCollector* SetPublicationCollector(MailPublicationCollector* collector);
         void SendReturnToSender(uint32 sender_acc, ObjectGuid sender_guid, ObjectGuid receiver_guid);
         void SendMailTo(MailReceiver const& receiver, MailSender const& sender, MailCheckMask checked = MAIL_CHECK_MASK_NONE, uint32 deliver_delay = 0, uint32 expire_delay = 0, bool direct = false);
     private:
@@ -259,6 +277,9 @@ class MailDraft
 
         void deleteIncludedItems(bool inDB = false);
         bool prepareItems(Player* receiver);                ///< called from SendMailTo for generate mailTemplateBase items
+        std::unique_ptr<PreparedMail> Prepare(MailReceiver const& receiver, MailSender const& sender,
+            MailCheckMask checked, uint32 deliver_delay, uint32 expire_delay);
+        static bool DispatchPrepared(std::unique_ptr<PreparedMail> mail, bool ownsLegacyTransaction, bool direct);
 
         /// The ID of the template associated with this MailDraft.
         uint16      m_mailTemplateId;
@@ -268,6 +289,10 @@ class MailDraft
         std::string m_subject;
         /// The ID of the body of the MailDraft.
         uint32      m_bodyId;
+        std::string m_bodyText;
+        std::set<uint32> m_createdItems;
+        bool m_preparationFailed = false;
+        bool m_returnToSender = false;
         /// A map of items in this MailDraft.
         MailItemMap m_items;                                ///< Keep the items in a map to avoid duplicate guids (which can happen), store only low part of guid
 
@@ -382,6 +407,34 @@ struct Mail
      *
      */
     void prepareTemplateItems(Player* receiver);            ///< called from _LoadMails for generate mailTemplateBase items not generated for offline player
+};
+
+// Owns detached attachment objects on the actor until publication. SQL requests
+// contain copied values only; no Player, MasterPlayer, Mail or Item pointer is
+// handed to a database worker. Destruction never deletes database records.
+class PreparedMail
+{
+    friend class MailDraft;
+    friend struct Mail;
+    std::unique_ptr<Mail> m_mail;
+    std::map<uint32, Item*> m_items;
+    std::set<uint32> m_deleteOnAbort;
+    std::string m_bodyText;
+    bool m_existingMail = false;
+    bool m_returnToSender = false;
+    bool m_appended = false;
+    bool m_published = false;
+
+    PreparedMail();
+    bool AppendToDB();
+public:
+    ~PreparedMail();
+    PreparedMail(const PreparedMail&) = delete;
+    PreparedMail& operator=(const PreparedMail&) = delete;
+    ObjectGuid GetReceiverGuid() const;
+    uint32 GetMailId() const;
+    // The owning actor calls this only after its outer COMMIT acknowledgement.
+    bool Publish();
 };
 
 #endif
