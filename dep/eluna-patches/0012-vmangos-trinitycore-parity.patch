@@ -15,6 +15,8 @@ Added to the VMaNGOS backend (methods/VMangos, hooks, LuaValue):
   false at the completion check.
 - Creature:GetThreat, ClearThreat, ResetAllThreat, FixateTarget, ClearFixate
   (the fixate is emulated by the core through the taunt target).
+  ClearThreat removes the unit's reference through the target's HostileRefManager, so it
+  leaves the online and the offline container.
 - Spell:IsTriggered, GetOriginalCaster, IsPositive, GetState, IsInterruptable,
   IsChannelActive, CalculateDamage.
 - WorldObject:Data() and Map:Data() (the LuaVal the core already stores). A
@@ -690,10 +692,10 @@ index 0000000..46a8362
 +}
 +#endif
 diff --git a/methods/VMangos/CreatureMethods.h b/methods/VMangos/CreatureMethods.h
-index 1dfe9c2..4c6ff9b 100644
+index 1dfe9c2..2a29353 100644
 --- a/methods/VMangos/CreatureMethods.h
 +++ b/methods/VMangos/CreatureMethods.h
-@@ -1251,8 +1251,92 @@ namespace LuaCreature
+@@ -1251,8 +1251,97 @@ namespace LuaCreature
          return 0;
      }
  
@@ -721,7 +723,12 @@ index 1dfe9c2..4c6ff9b 100644
 +    {
 +        Unit* target = E->CHECKOBJ<Unit>(2);
 +
-+        creature->GetThreatManager().modifyThreatPercent(target, -101);
++        // The target's HostileRefManager holds one reference per creature that has it on its threat
++        // list, online or offline. deleteReference removes that reference, which takes it out of
++        // the owner's online or offline container (UEV_THREAT_REF_REMOVE_FROM_LIST) and drops the
++        // current victim if it was that one. ThreatManager::modifyThreatPercent only looks at the
++        // online container.
++        target->GetHostileRefManager().deleteReference(creature);
 +        return 0;
 +    }
 +

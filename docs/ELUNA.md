@@ -1,10 +1,15 @@
 # Eluna Lua engine (optional)
 
 [Eluna](https://github.com/ElunaLuaEngine/Eluna) can be compiled into the core
-as an option. It is **off by default**: without `-DBUILD_ELUNA=ON` none of it
-is compiled, and every core change for it sits inside `#ifdef ENABLE_ELUNA`,
-so `unifdef -UENABLE_ELUNA` on a changed file gives back the file without
-Eluna.
+as an option. It is **off by default**: without `-DBUILD_ELUNA=ON` the Eluna
+engine and its hooks are not compiled, and almost every core change for it sits
+inside `#ifdef ENABLE_ELUNA`, so `unifdef -UENABLE_ELUNA` on a changed file gives
+back the file without Eluna. The exceptions are listed next.
+
+**Core changes in every build.** In every build: `Group::GroupLoot`/`NeedBeforeGreed` skip an item
+already marked looted (no change without Eluna: nothing marks an item looted before the first loot
+open); the five `--unlootedCount` sites (a `uint8`) no longer wrap 0 to 255; `_removeRolls` rescans
+from the start after a vote (same result as before); `Group` gains a bool and its getter.
 
 The integration is built on the port by Nighthawk42 and Nightdawg in
 [TuringKi/turtle-wow-custom](https://github.com/TuringKi/turtle-wow-custom)
@@ -198,8 +203,8 @@ What the core does to keep to that, only while `Eluna.Enabled = 1`:
    item events. Since `dep/eluna-patches/0009` a map state is refused
    ("attempt to call method '...' that does not exist for state: N").
 4. Kick and log out only from the world state: `Player:KickPlayer` and
-   `Player:LogoutPlayer` (and `Player:RemoveFromGroup`, which cancels and counts the
-   leaver's loot rolls) are world-only since `dep/eluna-patches/0009`
+   `Player:LogoutPlayer` (and `Player:RemoveFromGroup`, which takes the leaver's votes out of
+   the group's loot rolls and walks the roll list) are world-only since `dep/eluna-patches/0009`
    (a map state is refused), and `LogoutPlayer` deletes the player
    synchronously even there, so save or kick instead. Treat
    `Aura:GetCasterLevel` as possibly nil (it is nil once the caster is gone,
@@ -340,6 +345,13 @@ skips players in GM mode.
 
 ## Known limits
 
+- **`Data()` and nested tables.** The 64-level limit is per conversion and exact for plain
+  tables (a `LuaVal` userdata nested inside can go deeper). A Lua error raised in the middle of
+  a nested table walk jumps past C++ destructors, so each such script error leaks a little
+  memory, as upstream. Wide tables whose sub-tables are shared are copied once per reference,
+  which takes exponential time, as upstream.
+- **Master loot give.** The core's master-give path can mark an item looted without the usual checks;
+  it needs a modified client and is not caused by these patches.
 - **Global functions that change server-wide data are world-only**
   (`dep/eluna-patches/0009`): `PerformIngameSpawn`, `SendMail`,
   `SaveAllPlayers`, `StartGameEvent`, `StopGameEvent`, `AddVendorItem`,

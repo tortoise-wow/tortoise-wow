@@ -12,9 +12,10 @@ WorldSession::KickPlayer call as the global Kick: it closes the socket of a
 session, which the network threads own, from a map thread), and
 Player:LogoutPlayer (WorldSession::LogoutPlayer deletes the player
 synchronously while the calling hook's C++ frames may still hold it), and
-Player:RemoveFromGroup (a group membership change: Group::RemoveMember also cancels
-the leaver's loot rolls and counts them, which from inside a roll hook counted a roll
-twice and freed it under the caller). Called
+Player:RemoveFromGroup (a group membership change: Group::RemoveMember also runs
+Group::_removeRolls, which takes the leaver's votes out of the group's loot rolls and
+walks the group's roll list, which from inside a roll hook was walked a second time
+under the caller). Called
 from a map state they run on that map's thread next to other maps and their
 sessions.
 

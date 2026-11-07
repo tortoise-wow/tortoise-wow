@@ -1341,8 +1341,9 @@ void Group::CountTheRoll(Rolls::iterator& rollI)
             struct RollEventGuard
             {
                 bool& flag;
-                explicit RollEventGuard(bool& f) : flag(f) { flag = true; }
-                ~RollEventGuard() { flag = false; }
+                bool const previous;                // a nested event 56 (via Disband) restores, not clears
+                explicit RollEventGuard(bool& f) : flag(f), previous(f) { flag = true; }
+                ~RollEventGuard() { flag = previous; }
             } rollEventGuard(m_inRollEvent);
             e->OnGroupRollRewardItem(elunaRewardPlayer, elunaRewardItem, elunaRewardCount, elunaRewardVote, roll);
         }
@@ -1845,8 +1846,10 @@ void Group::_removeRolls(ObjectGuid guid)
 
         roll->playerVote.erase(itr2);
 
-        // CountRollVote(true) ended the roll and a roll event handler may have changed RollId
-        // (CountTheRoll fires it last): rescan instead of trusting the returned iterator.
+        // The leaver's vote is erased above, so CountRollVote takes its early return (no vote
+        // found) and does not count a roll here. The rescan is defensive: if it ever ended a roll,
+        // the roll event (fired last in CountTheRoll) can change RollId, and the iterator is not
+        // trusted after that.
         if (CountRollVote(guid, it, ROLL_NOT_EMITED_YET))
             it = RollId.begin();
         else
