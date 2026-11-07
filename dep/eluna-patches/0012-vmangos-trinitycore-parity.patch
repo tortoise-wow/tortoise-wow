@@ -16,7 +16,7 @@ Added to the VMaNGOS backend (methods/VMangos, hooks, LuaValue):
   IsChannelActive, CalculateDamage.
 - WorldObject:Data() and Map:Data() (the LuaVal the core already stores). A
   LuaVal given to Set/AsLuaVal is now deep-copied (value semantics), so two
-  objects never share one map across threads and a table cannot contain itself.
+  objects never share one map across threads and a table cannot contain itself; nesting deeper than 64 levels is refused with an error, never cut.
 - ChatHandler type: the third argument of PLAYER_EVENT_ON_COMMAND (new overload
   Eluna::OnCommand(ChatHandler&, text)) with SendSysMessage, PSendSysMessage,
   IsConsole, GetPlayer, GetAccountId, GetSecurity, IsAvailable/HasPermission,
@@ -85,17 +85,24 @@ index 8f52e71..dbcf843 100644
  #endif
  };
 diff --git a/LuaValue.cpp b/LuaValue.cpp
-index 39c28f2..06f5362 100644
+index 39c28f2..72c25f3 100644
 --- a/LuaValue.cpp
 +++ b/LuaValue.cpp
-@@ -250,7 +250,13 @@ LuaVal LuaVal::AsLuaVal(lua_State* L, int index)
+@@ -250,7 +250,20 @@ LuaVal LuaVal::AsLuaVal(lua_State* L, int index)
          return FromTable(L, index);
      case LUA_TUSERDATA:
          if (LuaVal* ptr = GetLuaVal(L, index))
 +#if defined ELUNA_VMANGOS
 +            // Value semantics: a LuaVal stored into another table or object's data is copied, so two
-+            // objects never share (and race on) one map, and a table cannot contain itself.
-+            return ptr->deepClone();
++            // objects never share (and race on) one map; nesting deeper than 64 levels is refused, not cut.
++        {
++            {
++                LuaVal copy;
++                if (ptr->deepCloneLimited(copy, 64))
++                    return copy;
++            }   // `copy` is destroyed before the Lua error below unwinds this frame
++            luaL_error(L, "Data(): table nested deeper than 64 levels");
++        }
 +#else
              return ptr->reference();
 +#endif
@@ -103,37 +110,49 @@ index 39c28f2..06f5362 100644
      }
      luaL_argerror(L, index, "Trying to use unsupported type");
 diff --git a/LuaValue.h b/LuaValue.h
-index fdb654e..a8fe0b0 100644
+index fdb654e..59c84ed 100644
 --- a/LuaValue.h
 +++ b/LuaValue.h
-@@ -148,6 +148,32 @@ public:
+@@ -148,6 +148,44 @@ public:
      LuaVal reference() const {
          return *this;
      }
 +#if defined ELUNA_VMANGOS
 +    // Recursive copy: every table (WrappedMap) is copied, so the result shares nothing with this value.
-+    // A table that contains itself (reached through a shared_ptr) is copied once and keeps the loop out:
-+    // the copy of a map already being copied is an empty table.
++    // A LuaVal stored into another is always copied (value semantics, see AsLuaVal), so a table can never
++    // contain itself and the nesting is finite.
++    //
++    // deepClone() copies without a limit (the core uses it when an object leaves its map).
 +    LuaVal deepClone() const {
-+        return deepCloneImpl(0);
++        LuaVal out;
++        deepCloneLimited(out, ~0u);
++        return out;
 +    }
-+    LuaVal deepCloneImpl(unsigned int depth) const {
-+        LuaVal lv;
-+        lv.v = std::visit([&](auto&& arg) -> LuaValVariant
++    // Copies into `out`; returns false, leaving `out` unfinished, when a table sits maxDepth or more
++    // levels down. Nothing is ever dropped silently: the caller refuses the store.
++    bool deepCloneLimited(LuaVal& out, unsigned int maxDepth) const {
++        return deepCloneImpl(out, 0, maxDepth);
++    }
++    bool deepCloneImpl(LuaVal& out, unsigned int depth, unsigned int maxDepth) const {
++        if (auto const* map = std::get_if<WrappedMap>(&v))
 +        {
-+            using T = std::decay_t<decltype(arg)>;
-+            if constexpr (std::is_same_v<T, WrappedMap>)
-+            {
-+                auto copy = std::make_shared<MapType>();
-+                if (depth < 64)
-+                    for (auto const& pair : *arg)
-+                        copy->emplace(pair.first.deepCloneImpl(depth + 1), pair.second.deepCloneImpl(depth + 1));
-+                return copy;
-+            }
-+            else
-+                return arg;
-+        }, v);
-+        return lv;
++            if (depth >= maxDepth)
++                return false;
++            auto copy = std::make_shared<MapType>();
++            if (*map)
++                for (auto const& pair : **map)
++                {
++                    LuaVal key, value;
++                    if (!pair.first.deepCloneImpl(key, depth + 1, maxDepth) ||
++                        !pair.second.deepCloneImpl(value, depth + 1, maxDepth))
++                        return false;
++                    copy->emplace(std::move(key), std::move(value));
++                }
++            out.v = copy;
++            return true;
++        }
++        out.v = v;
++        return true;
 +    }
 +#endif
  
@@ -562,10 +581,10 @@ index 0000000..aa7535f
 +}
 +#endif
 diff --git a/methods/VMangos/CreatureMethods.h b/methods/VMangos/CreatureMethods.h
-index 9b74dbc..80e3bf1 100644
+index d1f5902..5aa1b20 100644
 --- a/methods/VMangos/CreatureMethods.h
 +++ b/methods/VMangos/CreatureMethods.h
-@@ -1141,8 +1141,92 @@ namespace LuaCreature
+@@ -1239,8 +1239,92 @@ namespace LuaCreature
          return 0;
      }
  
