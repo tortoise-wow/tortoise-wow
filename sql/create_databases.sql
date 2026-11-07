@@ -24,6 +24,9 @@ CREATE DATABASE /*!32312 IF NOT EXISTS*/ `tw_char` /*!40100 DEFAULT CHARACTER SE
 
 USE `tw_char`;
 
+-- Active character persistence uses InnoDB so failed multi-table saves can roll back.
+-- Historical archival copies keep their original engines and must remain read-only.
+
 --
 -- Table structure for table `account_data`
 --
@@ -83,7 +86,7 @@ CREATE TABLE `auction` (
   `deposit` int(11) NOT NULL DEFAULT 0,
   PRIMARY KEY (`id`) USING BTREE,
   UNIQUE KEY `key_item_guid` (`itemguid`) USING BTREE
-) ENGINE=MyISAM DEFAULT CHARSET=utf8mb3 COLLATE=utf8mb3_general_ci ROW_FORMAT=FIXED;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb3 COLLATE=utf8mb3_general_ci ROW_FORMAT=DYNAMIC;
 /*!40101 SET character_set_client = @saved_cs_client */;
 
 --
@@ -113,7 +116,7 @@ CREATE TABLE `bugreport` (
   `type` longtext NOT NULL,
   `content` longtext NOT NULL,
   PRIMARY KEY (`id`) USING BTREE
-) ENGINE=MyISAM DEFAULT CHARSET=utf8mb3 COLLATE=utf8mb3_general_ci ROW_FORMAT=DYNAMIC COMMENT='Debug System';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb3 COLLATE=utf8mb3_general_ci ROW_FORMAT=DYNAMIC COMMENT='Debug System';
 /*!40101 SET character_set_client = @saved_cs_client */;
 
 --
@@ -184,7 +187,7 @@ CREATE TABLE `character_action` (
   `action` int(10) unsigned NOT NULL DEFAULT 0,
   `type` tinyint(3) unsigned NOT NULL DEFAULT 0,
   PRIMARY KEY (`guid`,`button`) USING BTREE
-) ENGINE=MyISAM DEFAULT CHARSET=utf8mb3 COLLATE=utf8mb3_general_ci ROW_FORMAT=DYNAMIC COMMENT='Player System';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb3 COLLATE=utf8mb3_general_ci ROW_FORMAT=DYNAMIC COMMENT='Player System';
 /*!40101 SET character_set_client = @saved_cs_client */;
 
 --
@@ -311,7 +314,7 @@ CREATE TABLE `character_battleground_data` (
   `join_o` float NOT NULL DEFAULT 0,
   `join_map` int(11) NOT NULL DEFAULT 0,
   PRIMARY KEY (`guid`) USING BTREE
-) ENGINE=MyISAM DEFAULT CHARSET=utf8mb3 COLLATE=utf8mb3_general_ci ROW_FORMAT=DYNAMIC COMMENT='Player System';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb3 COLLATE=utf8mb3_general_ci ROW_FORMAT=DYNAMIC COMMENT='Player System';
 /*!40101 SET character_set_client = @saved_cs_client */;
 
 --
@@ -415,7 +418,7 @@ CREATE TABLE `character_bgqueue` (
   `action` int(11) NOT NULL,
   `time` int(11) NOT NULL,
   PRIMARY KEY (`PlayerGUID`) USING BTREE
-) ENGINE=MyISAM DEFAULT CHARSET=utf8mb3 COLLATE=utf8mb3_general_ci ROW_FORMAT=DYNAMIC;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb3 COLLATE=utf8mb3_general_ci ROW_FORMAT=DYNAMIC;
 /*!40101 SET character_set_client = @saved_cs_client */;
 
 --
@@ -491,7 +494,7 @@ CREATE TABLE `character_forgotten_skills` (
   `skill` mediumint(8) unsigned NOT NULL,
   `value` mediumint(8) unsigned NOT NULL,
   PRIMARY KEY (`guid`,`skill`) USING BTREE
-) ENGINE=MyISAM DEFAULT CHARSET=utf8mb3 COLLATE=utf8mb3_general_ci ROW_FORMAT=DYNAMIC COMMENT='Player System';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb3 COLLATE=utf8mb3_general_ci ROW_FORMAT=DYNAMIC COMMENT='Player System';
 /*!40101 SET character_set_client = @saved_cs_client */;
 
 --
@@ -508,7 +511,7 @@ CREATE TABLE `character_gifts` (
   `flags` int(10) unsigned NOT NULL DEFAULT 0,
   PRIMARY KEY (`item_guid`) USING BTREE,
   KEY `idx_guid` (`guid`) USING BTREE
-) ENGINE=MyISAM DEFAULT CHARSET=utf8mb3 COLLATE=utf8mb3_general_ci ROW_FORMAT=FIXED;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb3 COLLATE=utf8mb3_general_ci ROW_FORMAT=DYNAMIC;
 /*!40101 SET character_set_client = @saved_cs_client */;
 
 --
@@ -526,7 +529,7 @@ CREATE TABLE `character_homebind` (
   `position_y` float NOT NULL DEFAULT 0,
   `position_z` float NOT NULL DEFAULT 0,
   PRIMARY KEY (`guid`) USING BTREE
-) ENGINE=MyISAM DEFAULT CHARSET=utf8mb3 COLLATE=utf8mb3_general_ci ROW_FORMAT=DYNAMIC COMMENT='Player System';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb3 COLLATE=utf8mb3_general_ci ROW_FORMAT=DYNAMIC COMMENT='Player System';
 /*!40101 SET character_set_client = @saved_cs_client */;
 
 --
@@ -544,7 +547,7 @@ CREATE TABLE `character_honor_cp` (
   `date` int(10) unsigned NOT NULL DEFAULT 0,
   `type` tinyint(3) unsigned NOT NULL DEFAULT 0,
   KEY `idx_guid` (`guid`) USING BTREE
-) ENGINE=MyISAM DEFAULT CHARSET=utf8mb3 COLLATE=utf8mb3_general_ci ROW_FORMAT=DYNAMIC COMMENT='Player System';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb3 COLLATE=utf8mb3_general_ci ROW_FORMAT=DYNAMIC COMMENT='Player System';
 /*!40101 SET character_set_client = @saved_cs_client */;
 
 --
@@ -560,7 +563,7 @@ CREATE TABLE `character_instance` (
   `permanent` tinyint(1) unsigned NOT NULL DEFAULT 0,
   PRIMARY KEY (`guid`,`instance`) USING BTREE,
   KEY `idx_instance` (`instance`) USING BTREE
-) ENGINE=MyISAM DEFAULT CHARSET=utf8mb3 COLLATE=utf8mb3_general_ci ROW_FORMAT=FIXED;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb3 COLLATE=utf8mb3_general_ci ROW_FORMAT=DYNAMIC;
 /*!40101 SET character_set_client = @saved_cs_client */;
 
 --
@@ -578,7 +581,7 @@ CREATE TABLE `character_inventory` (
   `item_template` int(10) unsigned NOT NULL DEFAULT 0 COMMENT 'Item Identifier',
   PRIMARY KEY (`item`) USING BTREE,
   KEY `idx_guid` (`guid`) USING BTREE
-) ENGINE=MyISAM DEFAULT CHARSET=utf8mb3 COLLATE=utf8mb3_general_ci ROW_FORMAT=DYNAMIC COMMENT='Player System';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb3 COLLATE=utf8mb3_general_ci ROW_FORMAT=DYNAMIC COMMENT='Player System';
 /*!40101 SET character_set_client = @saved_cs_client */;
 
 --
@@ -636,7 +639,7 @@ CREATE TABLE `character_pet` (
   `teachspelldata` longtext DEFAULT NULL,
   PRIMARY KEY (`id`) USING BTREE,
   KEY `idx_owner` (`owner`) USING BTREE
-) ENGINE=MyISAM DEFAULT CHARSET=utf8mb3 COLLATE=utf8mb3_general_ci ROW_FORMAT=DYNAMIC COMMENT='Pet System';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb3 COLLATE=utf8mb3_general_ci ROW_FORMAT=DYNAMIC COMMENT='Pet System';
 /*!40101 SET character_set_client = @saved_cs_client */;
 
 --
@@ -680,7 +683,7 @@ CREATE TABLE `character_queststatus` (
   `itemcount4` int(10) unsigned NOT NULL DEFAULT 0,
   `reward_choice` int(10) unsigned NOT NULL DEFAULT 0,
   PRIMARY KEY (`guid`,`quest`) USING BTREE
-) ENGINE=MyISAM DEFAULT CHARSET=utf8mb3 COLLATE=utf8mb3_general_ci ROW_FORMAT=DYNAMIC COMMENT='Player System';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb3 COLLATE=utf8mb3_general_ci ROW_FORMAT=DYNAMIC COMMENT='Player System';
 /*!40101 SET character_set_client = @saved_cs_client */;
 
 --
@@ -696,7 +699,7 @@ CREATE TABLE `character_reputation` (
   `standing` int(11) NOT NULL DEFAULT 0,
   `flags` int(11) NOT NULL DEFAULT 0,
   PRIMARY KEY (`guid`,`faction`) USING BTREE
-) ENGINE=MyISAM DEFAULT CHARSET=utf8mb3 COLLATE=utf8mb3_general_ci ROW_FORMAT=DYNAMIC COMMENT='Player System';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb3 COLLATE=utf8mb3_general_ci ROW_FORMAT=DYNAMIC COMMENT='Player System';
 /*!40101 SET character_set_client = @saved_cs_client */;
 
 --
@@ -728,7 +731,7 @@ CREATE TABLE `character_skills` (
   `value` mediumint(8) unsigned NOT NULL,
   `max` mediumint(8) unsigned NOT NULL,
   PRIMARY KEY (`guid`,`skill`) USING BTREE
-) ENGINE=MyISAM DEFAULT CHARSET=utf8mb3 COLLATE=utf8mb3_general_ci ROW_FORMAT=DYNAMIC COMMENT='Player System';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb3 COLLATE=utf8mb3_general_ci ROW_FORMAT=DYNAMIC COMMENT='Player System';
 /*!40101 SET character_set_client = @saved_cs_client */;
 
 --
@@ -763,7 +766,7 @@ CREATE TABLE `character_social` (
   KEY `idx_friend` (`friend`) USING BTREE,
   KEY `idx_guid_flags` (`guid`,`flags`) USING BTREE,
   KEY `idx_friend_flags` (`friend`,`flags`) USING BTREE
-) ENGINE=MyISAM DEFAULT CHARSET=utf8mb3 COLLATE=utf8mb3_general_ci ROW_FORMAT=DYNAMIC COMMENT='Player System';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb3 COLLATE=utf8mb3_general_ci ROW_FORMAT=DYNAMIC COMMENT='Player System';
 /*!40101 SET character_set_client = @saved_cs_client */;
 
 --
@@ -780,7 +783,7 @@ CREATE TABLE `character_spell` (
   `disabled` tinyint(3) unsigned NOT NULL DEFAULT 0,
   PRIMARY KEY (`guid`,`spell`) USING BTREE,
   KEY `idx_spell` (`spell`) USING BTREE
-) ENGINE=MyISAM DEFAULT CHARSET=utf8mb3 COLLATE=utf8mb3_general_ci ROW_FORMAT=DYNAMIC COMMENT='Player System';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb3 COLLATE=utf8mb3_general_ci ROW_FORMAT=DYNAMIC COMMENT='Player System';
 /*!40101 SET character_set_client = @saved_cs_client */;
 
 --
@@ -797,7 +800,7 @@ CREATE TABLE `character_spell_cooldown` (
   `time` bigint(20) unsigned NOT NULL DEFAULT 0,
   `catTime` bigint(20) unsigned NOT NULL DEFAULT 0,
   PRIMARY KEY (`guid`,`spell`) USING BTREE
-) ENGINE=MyISAM DEFAULT CHARSET=utf8mb3 COLLATE=utf8mb3_general_ci ROW_FORMAT=FIXED;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb3 COLLATE=utf8mb3_general_ci ROW_FORMAT=DYNAMIC;
 /*!40101 SET character_set_client = @saved_cs_client */;
 
 --
@@ -813,7 +816,7 @@ CREATE TABLE `character_spell_dual_spec` (
   `spec` tinyint(3) unsigned NOT NULL DEFAULT 1 COMMENT 'primary or secondary',
   PRIMARY KEY (`guid`,`spell`,`spec`) USING BTREE,
   KEY `idx_spell` (`spell`) USING BTREE
-) ENGINE=MyISAM DEFAULT CHARSET=utf8mb3 COLLATE=utf8mb3_general_ci ROW_FORMAT=DYNAMIC COMMENT='Player System';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb3 COLLATE=utf8mb3_general_ci ROW_FORMAT=DYNAMIC COMMENT='Player System';
 /*!40101 SET character_set_client = @saved_cs_client */;
 
 --
@@ -853,7 +856,7 @@ CREATE TABLE `character_stats` (
   `attackPower` int(10) unsigned NOT NULL DEFAULT 0,
   `rangedAttackPower` int(10) unsigned NOT NULL DEFAULT 0,
   PRIMARY KEY (`guid`) USING BTREE
-) ENGINE=MyISAM DEFAULT CHARSET=utf8mb3 COLLATE=utf8mb3_general_ci ROW_FORMAT=FIXED;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb3 COLLATE=utf8mb3_general_ci ROW_FORMAT=DYNAMIC;
 /*!40101 SET character_set_client = @saved_cs_client */;
 
 --
@@ -870,7 +873,7 @@ CREATE TABLE `character_ticket` (
   `response_text` text DEFAULT NULL,
   `ticket_lastchange` timestamp NOT NULL DEFAULT current_timestamp() ON UPDATE current_timestamp(),
   PRIMARY KEY (`ticket_id`) USING BTREE
-) ENGINE=MyISAM DEFAULT CHARSET=utf8mb3 COLLATE=utf8mb3_general_ci ROW_FORMAT=DYNAMIC COMMENT='Player System';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb3 COLLATE=utf8mb3_general_ci ROW_FORMAT=DYNAMIC COMMENT='Player System';
 /*!40101 SET character_set_client = @saved_cs_client */;
 
 --
@@ -885,7 +888,7 @@ CREATE TABLE `character_titles` (
   `title` int(10) unsigned NOT NULL DEFAULT 0,
   `active` tinyint(4) NOT NULL DEFAULT 0,
   PRIMARY KEY (`guid`,`title`)
-) ENGINE=MyISAM DEFAULT CHARSET=utf8mb3 COLLATE=utf8mb3_general_ci ROW_FORMAT=DYNAMIC COMMENT='Player System';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb3 COLLATE=utf8mb3_general_ci ROW_FORMAT=DYNAMIC COMMENT='Player System';
 /*!40101 SET character_set_client = @saved_cs_client */;
 
 --
@@ -920,7 +923,7 @@ CREATE TABLE `character_tutorial` (
   `tut6` int(10) unsigned NOT NULL DEFAULT 0,
   `tut7` int(10) unsigned NOT NULL DEFAULT 0,
   PRIMARY KEY (`account`) USING BTREE
-) ENGINE=MyISAM AUTO_INCREMENT=3 DEFAULT CHARSET=utf8mb3 COLLATE=utf8mb3_general_ci ROW_FORMAT=DYNAMIC COMMENT='Player System';
+) ENGINE=InnoDB AUTO_INCREMENT=3 DEFAULT CHARSET=utf8mb3 COLLATE=utf8mb3_general_ci ROW_FORMAT=DYNAMIC COMMENT='Player System';
 /*!40101 SET character_set_client = @saved_cs_client */;
 
 --
@@ -1038,7 +1041,7 @@ CREATE TABLE `characters` (
   KEY `idx_online` (`online`) USING BTREE,
   KEY `idx_name` (`name`) USING BTREE,
   KEY `deleteDate` (`deleteDate`) USING BTREE
-) ENGINE=MyISAM DEFAULT CHARSET=utf8mb3 COLLATE=utf8mb3_general_ci ROW_FORMAT=DYNAMIC COMMENT='Player System';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb3 COLLATE=utf8mb3_general_ci ROW_FORMAT=DYNAMIC COMMENT='Player System';
 /*!40101 SET character_set_client = @saved_cs_client */;
 
 --
@@ -1161,7 +1164,7 @@ CREATE TABLE `corpse` (
   KEY `idx_instance` (`instance`) USING BTREE,
   KEY `idx_player` (`player`) USING BTREE,
   KEY `idx_time` (`time`) USING BTREE
-) ENGINE=MyISAM DEFAULT CHARSET=utf8mb3 COLLATE=utf8mb3_general_ci ROW_FORMAT=DYNAMIC COMMENT='Death System';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb3 COLLATE=utf8mb3_general_ci ROW_FORMAT=DYNAMIC COMMENT='Death System';
 /*!40101 SET character_set_client = @saved_cs_client */;
 
 --
@@ -1191,7 +1194,7 @@ DROP TABLE IF EXISTS `game_event_status`;
 CREATE TABLE `game_event_status` (
   `event` smallint(5) unsigned NOT NULL DEFAULT 0,
   PRIMARY KEY (`event`) USING BTREE
-) ENGINE=MyISAM DEFAULT CHARSET=utf8mb3 COLLATE=utf8mb3_general_ci ROW_FORMAT=FIXED COMMENT='Game event system';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb3 COLLATE=utf8mb3_general_ci ROW_FORMAT=DYNAMIC COMMENT='Game event system';
 /*!40101 SET character_set_client = @saved_cs_client */;
 
 --
@@ -1224,7 +1227,7 @@ CREATE TABLE `gm_subsurveys` (
   `rank` int(10) unsigned NOT NULL DEFAULT 0,
   `comment` text NOT NULL,
   PRIMARY KEY (`surveyId`,`subsurveyId`) USING BTREE
-) ENGINE=MyISAM DEFAULT CHARSET=utf8mb3 COLLATE=utf8mb3_general_ci ROW_FORMAT=DYNAMIC COMMENT='Player System';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb3 COLLATE=utf8mb3_general_ci ROW_FORMAT=DYNAMIC COMMENT='Player System';
 /*!40101 SET character_set_client = @saved_cs_client */;
 
 --
@@ -1241,7 +1244,7 @@ CREATE TABLE `gm_surveys` (
   `overallComment` longtext NOT NULL,
   `createTime` int(10) unsigned NOT NULL DEFAULT 0,
   PRIMARY KEY (`surveyId`) USING BTREE
-) ENGINE=MyISAM DEFAULT CHARSET=utf8mb3 COLLATE=utf8mb3_general_ci ROW_FORMAT=DYNAMIC COMMENT='Player System';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb3 COLLATE=utf8mb3_general_ci ROW_FORMAT=DYNAMIC COMMENT='Player System';
 /*!40101 SET character_set_client = @saved_cs_client */;
 
 --
@@ -1273,7 +1276,7 @@ CREATE TABLE `gm_tickets` (
   `ticketType` tinyint(3) unsigned NOT NULL DEFAULT 0,
   `securityNeeded` tinyint(3) unsigned NOT NULL DEFAULT 0,
   PRIMARY KEY (`ticketId`) USING BTREE
-) ENGINE=MyISAM DEFAULT CHARSET=utf8mb3 COLLATE=utf8mb3_general_ci ROW_FORMAT=DYNAMIC COMMENT='Player System';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb3 COLLATE=utf8mb3_general_ci ROW_FORMAT=DYNAMIC COMMENT='Player System';
 /*!40101 SET character_set_client = @saved_cs_client */;
 
 --
@@ -1289,7 +1292,7 @@ CREATE TABLE `group_instance` (
   `permanent` tinyint(1) unsigned NOT NULL DEFAULT 0,
   PRIMARY KEY (`leaderGuid`,`instance`) USING BTREE,
   KEY `idx_instance` (`instance`) USING BTREE
-) ENGINE=MyISAM DEFAULT CHARSET=utf8mb3 COLLATE=utf8mb3_general_ci ROW_FORMAT=FIXED;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb3 COLLATE=utf8mb3_general_ci ROW_FORMAT=DYNAMIC;
 /*!40101 SET character_set_client = @saved_cs_client */;
 
 --
@@ -1306,7 +1309,7 @@ CREATE TABLE `group_member` (
   `subgroup` smallint(5) unsigned NOT NULL,
   PRIMARY KEY (`groupId`,`memberGuid`) USING BTREE,
   KEY `idx_memberGuid` (`memberGuid`) USING BTREE
-) ENGINE=MyISAM DEFAULT CHARSET=utf8mb3 COLLATE=utf8mb3_general_ci ROW_FORMAT=FIXED COMMENT='Groups';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb3 COLLATE=utf8mb3_general_ci ROW_FORMAT=DYNAMIC COMMENT='Groups';
 /*!40101 SET character_set_client = @saved_cs_client */;
 
 --
@@ -1335,7 +1338,7 @@ CREATE TABLE `groups` (
   `isRaid` tinyint(1) unsigned NOT NULL,
   PRIMARY KEY (`groupId`) USING BTREE,
   UNIQUE KEY `key_leaderGuid` (`leaderGuid`) USING BTREE
-) ENGINE=MyISAM DEFAULT CHARSET=utf8mb3 COLLATE=utf8mb3_general_ci ROW_FORMAT=FIXED COMMENT='Groups';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb3 COLLATE=utf8mb3_general_ci ROW_FORMAT=DYNAMIC COMMENT='Groups';
 /*!40101 SET character_set_client = @saved_cs_client */;
 
 --
@@ -1358,7 +1361,7 @@ CREATE TABLE `guild` (
   `motd` varchar(255) NOT NULL DEFAULT '',
   `createdate` bigint(20) NOT NULL DEFAULT 0,
   PRIMARY KEY (`guildid`) USING BTREE
-) ENGINE=MyISAM DEFAULT CHARSET=utf8mb3 COLLATE=utf8mb3_general_ci ROW_FORMAT=DYNAMIC COMMENT='Guild System';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb3 COLLATE=utf8mb3_general_ci ROW_FORMAT=DYNAMIC COMMENT='Guild System';
 /*!40101 SET character_set_client = @saved_cs_client */;
 
 --
@@ -1458,7 +1461,7 @@ CREATE TABLE `guild_bank_money` (
   `money` int(11) NOT NULL DEFAULT 0,
   PRIMARY KEY (`guildid`,`isInferno`) USING BTREE,
   UNIQUE KEY `guildid` (`guildid`,`isInferno`) USING BTREE
-) ENGINE=MyISAM DEFAULT CHARSET=latin1 COLLATE=latin1_swedish_ci ROW_FORMAT=FIXED;
+) ENGINE=InnoDB DEFAULT CHARSET=latin1 COLLATE=latin1_swedish_ci ROW_FORMAT=DYNAMIC;
 /*!40101 SET character_set_client = @saved_cs_client */;
 
 --
@@ -1494,7 +1497,7 @@ CREATE TABLE `guild_bank_tabs` (
   `minrank4` int(11) NOT NULL DEFAULT 0,
   `minrank5` int(11) NOT NULL DEFAULT 0,
   PRIMARY KEY (`id`) USING BTREE
-) ENGINE=MyISAM DEFAULT CHARSET=latin1 COLLATE=latin1_swedish_ci ROW_FORMAT=DYNAMIC;
+) ENGINE=InnoDB DEFAULT CHARSET=latin1 COLLATE=latin1_swedish_ci ROW_FORMAT=DYNAMIC;
 /*!40101 SET character_set_client = @saved_cs_client */;
 
 --
@@ -1516,7 +1519,7 @@ CREATE TABLE `guild_eventlog` (
   KEY `idx_PlayerGuid1` (`PlayerGuid1`) USING BTREE,
   KEY `idx_PlayerGuid2` (`PlayerGuid2`) USING BTREE,
   KEY `idx_LogGuid` (`LogGuid`) USING BTREE
-) ENGINE=MyISAM DEFAULT CHARSET=utf8mb3 COLLATE=utf8mb3_general_ci ROW_FORMAT=FIXED COMMENT='Guild Eventlog';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb3 COLLATE=utf8mb3_general_ci ROW_FORMAT=DYNAMIC COMMENT='Guild Eventlog';
 /*!40101 SET character_set_client = @saved_cs_client */;
 
 --
@@ -1534,7 +1537,7 @@ CREATE TABLE `guild_house` (
   `position_z` float NOT NULL DEFAULT 0,
   `orientation` float NOT NULL DEFAULT 0,
   PRIMARY KEY (`guild_id`) USING BTREE
-) ENGINE=MyISAM DEFAULT CHARSET=utf8mb3 COLLATE=utf8mb3_general_ci ROW_FORMAT=FIXED COMMENT='Teleportation coordinates for Guild Housing';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb3 COLLATE=utf8mb3_general_ci ROW_FORMAT=DYNAMIC COMMENT='Teleportation coordinates for Guild Housing';
 /*!40101 SET character_set_client = @saved_cs_client */;
 
 --
@@ -1553,7 +1556,7 @@ CREATE TABLE `guild_member` (
   UNIQUE KEY `key_guid` (`guid`) USING BTREE,
   KEY `idx_guildid` (`guildid`) USING BTREE,
   KEY `idx_guildid_rank` (`guildid`,`rank`) USING BTREE
-) ENGINE=MyISAM DEFAULT CHARSET=utf8mb3 COLLATE=utf8mb3_general_ci ROW_FORMAT=FIXED COMMENT='Guild System';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb3 COLLATE=utf8mb3_general_ci ROW_FORMAT=DYNAMIC COMMENT='Guild System';
 /*!40101 SET character_set_client = @saved_cs_client */;
 
 --
@@ -1570,7 +1573,7 @@ CREATE TABLE `guild_rank` (
   `rights` int(10) unsigned NOT NULL DEFAULT 0,
   PRIMARY KEY (`guildid`,`rid`) USING BTREE,
   KEY `idx_rid` (`rid`) USING BTREE
-) ENGINE=MyISAM DEFAULT CHARSET=utf8mb3 COLLATE=utf8mb3_general_ci ROW_FORMAT=DYNAMIC COMMENT='Guild System';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb3 COLLATE=utf8mb3_general_ci ROW_FORMAT=DYNAMIC COMMENT='Guild System';
 /*!40101 SET character_set_client = @saved_cs_client */;
 
 --
@@ -1609,7 +1612,7 @@ CREATE TABLE `instance` (
   PRIMARY KEY (`id`) USING BTREE,
   KEY `idx_map` (`map`) USING BTREE,
   KEY `idx_resettime` (`resettime`) USING BTREE
-) ENGINE=MyISAM DEFAULT CHARSET=utf8mb3 COLLATE=utf8mb3_general_ci ROW_FORMAT=DYNAMIC;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb3 COLLATE=utf8mb3_general_ci ROW_FORMAT=DYNAMIC;
 /*!40101 SET character_set_client = @saved_cs_client */;
 
 --
@@ -1623,7 +1626,7 @@ CREATE TABLE `instance_reset` (
   `mapid` int(10) unsigned NOT NULL DEFAULT 0,
   `resettime` bigint(20) NOT NULL DEFAULT 0,
   PRIMARY KEY (`mapid`) USING BTREE
-) ENGINE=MyISAM DEFAULT CHARSET=utf8mb3 COLLATE=utf8mb3_general_ci ROW_FORMAT=FIXED;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb3 COLLATE=utf8mb3_general_ci ROW_FORMAT=DYNAMIC;
 /*!40101 SET character_set_client = @saved_cs_client */;
 
 --
@@ -1670,7 +1673,7 @@ CREATE TABLE `item_loot` (
   `property` int(11) NOT NULL DEFAULT 0,
   PRIMARY KEY (`guid`,`itemid`) USING BTREE,
   KEY `idx_owner_guid` (`owner_guid`) USING BTREE
-) ENGINE=MyISAM DEFAULT CHARSET=utf8mb3 COLLATE=utf8mb3_general_ci ROW_FORMAT=DYNAMIC COMMENT='Item System';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb3 COLLATE=utf8mb3_general_ci ROW_FORMAT=DYNAMIC COMMENT='Item System';
 /*!40101 SET character_set_client = @saved_cs_client */;
 
 --
@@ -1684,7 +1687,7 @@ CREATE TABLE `item_text` (
   `id` int(10) unsigned NOT NULL DEFAULT 0,
   `text` longtext DEFAULT NULL,
   PRIMARY KEY (`id`) USING BTREE
-) ENGINE=MyISAM DEFAULT CHARSET=utf8mb3 COLLATE=utf8mb3_general_ci ROW_FORMAT=FIXED COMMENT='Item System';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb3 COLLATE=utf8mb3_general_ci ROW_FORMAT=DYNAMIC COMMENT='Item System';
 /*!40101 SET character_set_client = @saved_cs_client */;
 
 --
@@ -1700,7 +1703,7 @@ CREATE TABLE `item_transmogs` (
   `DisplayID` int(10) unsigned NOT NULL,
   `SourceID` int(11) NOT NULL,
   PRIMARY KEY (`ID`) USING BTREE
-) ENGINE=MyISAM DEFAULT CHARSET=utf8mb3 COLLATE=utf8mb3_general_ci ROW_FORMAT=FIXED;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb3 COLLATE=utf8mb3_general_ci ROW_FORMAT=DYNAMIC;
 /*!40101 SET character_set_client = @saved_cs_client */;
 
 --
@@ -1801,7 +1804,7 @@ CREATE TABLE `logs_warden` (
   `position_z` float DEFAULT NULL COMMENT 'Player position Z',
   `date` timestamp NOT NULL DEFAULT current_timestamp() COMMENT 'Date of the log entry',
   PRIMARY KEY (`entry`) USING BTREE
-) ENGINE=MyISAM DEFAULT CHARSET=utf8mb3 COLLATE=utf8mb3_general_ci ROW_FORMAT=DYNAMIC COMMENT='Warden log of failed checks';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb3 COLLATE=utf8mb3_general_ci ROW_FORMAT=DYNAMIC COMMENT='Warden log of failed checks';
 /*!40101 SET character_set_client = @saved_cs_client */;
 
 --
@@ -1850,7 +1853,7 @@ CREATE TABLE `mail_items` (
   PRIMARY KEY (`mail_id`,`item_guid`) USING BTREE,
   KEY `idx_receiver` (`receiver`) USING BTREE,
   KEY `idx_item_guid` (`item_guid`) USING BTREE
-) ENGINE=MyISAM DEFAULT CHARSET=utf8mb3 COLLATE=utf8mb3_general_ci ROW_FORMAT=DYNAMIC;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb3 COLLATE=utf8mb3_general_ci ROW_FORMAT=DYNAMIC;
 /*!40101 SET character_set_client = @saved_cs_client */;
 
 --
@@ -1908,7 +1911,7 @@ CREATE TABLE `pet_spell` (
   `spell` int(10) unsigned NOT NULL DEFAULT 0 COMMENT 'Spell Identifier',
   `active` int(10) unsigned NOT NULL DEFAULT 0,
   PRIMARY KEY (`guid`,`spell`) USING BTREE
-) ENGINE=MyISAM DEFAULT CHARSET=utf8mb3 COLLATE=utf8mb3_general_ci ROW_FORMAT=DYNAMIC COMMENT='Pet System';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb3 COLLATE=utf8mb3_general_ci ROW_FORMAT=DYNAMIC COMMENT='Pet System';
 /*!40101 SET character_set_client = @saved_cs_client */;
 
 --
@@ -1923,7 +1926,7 @@ CREATE TABLE `pet_spell_cooldown` (
   `spell` int(10) unsigned NOT NULL DEFAULT 0 COMMENT 'Spell Identifier',
   `time` bigint(20) unsigned NOT NULL DEFAULT 0,
   PRIMARY KEY (`guid`,`spell`) USING BTREE
-) ENGINE=MyISAM DEFAULT CHARSET=utf8mb3 COLLATE=utf8mb3_general_ci ROW_FORMAT=FIXED;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb3 COLLATE=utf8mb3_general_ci ROW_FORMAT=DYNAMIC;
 /*!40101 SET character_set_client = @saved_cs_client */;
 
 --
@@ -1941,7 +1944,7 @@ CREATE TABLE `petition` (
   PRIMARY KEY (`ownerguid`) USING BTREE,
   UNIQUE KEY `key_ownerguid_petitionguid` (`ownerguid`,`petitionguid`) USING BTREE,
   UNIQUE KEY `charterguid` (`charterguid`) USING BTREE
-) ENGINE=MyISAM DEFAULT CHARSET=utf8mb3 COLLATE=utf8mb3_general_ci ROW_FORMAT=DYNAMIC COMMENT='Guild System';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb3 COLLATE=utf8mb3_general_ci ROW_FORMAT=DYNAMIC COMMENT='Guild System';
 /*!40101 SET character_set_client = @saved_cs_client */;
 
 --
@@ -1959,7 +1962,7 @@ CREATE TABLE `petition_sign` (
   PRIMARY KEY (`petitionguid`,`playerguid`) USING BTREE,
   KEY `idx_playerguid` (`playerguid`) USING BTREE,
   KEY `idx_ownerguid` (`ownerguid`) USING BTREE
-) ENGINE=MyISAM DEFAULT CHARSET=utf8mb3 COLLATE=utf8mb3_general_ci ROW_FORMAT=DYNAMIC COMMENT='Guild System';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb3 COLLATE=utf8mb3_general_ci ROW_FORMAT=DYNAMIC COMMENT='Guild System';
 /*!40101 SET character_set_client = @saved_cs_client */;
 
 
@@ -1977,7 +1980,7 @@ CREATE TABLE `saved_variables` (
   `nextHonorMaintenanceDay` int(10) unsigned NOT NULL DEFAULT 0,
   `honorMaintenanceMarker` tinyint(1) unsigned NOT NULL DEFAULT 0,
   PRIMARY KEY (`key`) USING BTREE
-) ENGINE=MyISAM DEFAULT CHARSET=utf8mb3 COLLATE=utf8mb3_general_ci ROW_FORMAT=DYNAMIC COMMENT='Variable Saves';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb3 COLLATE=utf8mb3_general_ci ROW_FORMAT=DYNAMIC COMMENT='Variable Saves';
 /*!40101 SET character_set_client = @saved_cs_client */;
 
 --
@@ -2009,7 +2012,7 @@ CREATE TABLE `variables` (
   `index` int(10) unsigned NOT NULL DEFAULT 0,
   `value` int(10) unsigned NOT NULL DEFAULT 0,
   PRIMARY KEY (`index`) USING BTREE
-) ENGINE=MyISAM DEFAULT CHARSET=latin1 COLLATE=latin1_swedish_ci ROW_FORMAT=FIXED;
+) ENGINE=InnoDB DEFAULT CHARSET=latin1 COLLATE=latin1_swedish_ci ROW_FORMAT=DYNAMIC;
 /*!40101 SET character_set_client = @saved_cs_client */;
 
 --
@@ -2038,7 +2041,7 @@ CREATE TABLE `world` (
   `map` int(10) unsigned NOT NULL DEFAULT 0,
   `data` longtext DEFAULT NULL,
   PRIMARY KEY (`map`) USING BTREE
-) ENGINE=MyISAM DEFAULT CHARSET=utf8mb3 COLLATE=utf8mb3_general_ci ROW_FORMAT=DYNAMIC;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb3 COLLATE=utf8mb3_general_ci ROW_FORMAT=DYNAMIC;
 /*!40101 SET character_set_client = @saved_cs_client */;
 
 --
@@ -2053,7 +2056,7 @@ CREATE TABLE `worldstates` (
   `value` int(11) DEFAULT NULL,
   `comment` varchar(255) DEFAULT NULL,
   UNIQUE KEY `key_entry` (`entry`) USING BTREE
-) ENGINE=MyISAM DEFAULT CHARSET=latin1 COLLATE=latin1_swedish_ci ROW_FORMAT=DYNAMIC;
+) ENGINE=InnoDB DEFAULT CHARSET=latin1 COLLATE=latin1_swedish_ci ROW_FORMAT=DYNAMIC;
 /*!40101 SET character_set_client = @saved_cs_client */;
 
 --

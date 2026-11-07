@@ -67,13 +67,18 @@ private:
     MYSQL_BIND * m_pInputArgs;
     MYSQL_BIND * m_pResult;
     MYSQL_RES *m_pResultMetadata;
+    bool m_bindFailed;
 };
 
 
 class MySQLConnection : public SqlConnection
 {
+    friend class MySqlPreparedStatement;
+
     public:
-        MySQLConnection(Database& db) : SqlConnection(db), mMysql(nullptr) {}
+        MySQLConnection(Database& db) : SqlConnection(db), mMysql(nullptr),
+            m_transactionActive(false), m_transactionFailed(false), m_connectionLost(false), m_transactionThreadId(0),
+            m_migrationActive(false), m_migrationFailed(false), m_migrationThreadId(0), m_transactionKnownAbort(false) {}
         ~MySQLConnection() override;
 
         bool OpenConnection(bool reconnect) override;
@@ -84,21 +89,37 @@ class MySQLConnection : public SqlConnection
         QueryNamedResult* QueryNamed(const char *sql) override;
         bool Execute(const char *sql) override;
         bool ExecuteMultiline(const char* sql) override;
+        bool ExecuteStmt(int nIndex, const SqlStmtParameters& params) override;
 
         unsigned long escape_string(char *to, const char *from, unsigned long length) override;
 
         bool BeginTransaction() override;
         bool CommitTransaction() override;
         bool RollbackTransaction() override;
+        bool CanRetryTransaction() const override;
+        bool ExecuteMigrationBatch(const std::vector<std::string>& statements) override;
 
     protected:
         SqlPreparedStatement * CreateStatement(const std::string& fmt) override;
 
     private:
         bool _TransactionCmd(const char *sql);
+        bool EnsureConnection();
+        void CloseConnection();
+        bool CheckTransaction();
+        bool CheckTransactionSql(const char* sql);
+        void RecordError(uint32 errNo, bool statementFailure = false);
         bool _Query(const char *sql, MYSQL_RES **pResult, MYSQL_FIELD **pFields, uint64* pRowCount, uint32* pFieldCount);
 
         MYSQL *mMysql;
+        bool m_transactionActive;
+        bool m_transactionFailed;
+        bool m_connectionLost;
+        unsigned long m_transactionThreadId;
+        bool m_migrationActive;
+        bool m_migrationFailed;
+        unsigned long m_migrationThreadId;
+        bool m_transactionKnownAbort;
 };
 
 class DatabaseMysql : public Database
