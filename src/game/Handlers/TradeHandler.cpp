@@ -32,6 +32,7 @@
 #include "SocialMgr.h"
 #include "Language.h"
 #include "Chat.h"
+#include "TradeMoney.h"
 #ifdef ENABLE_ELUNA
 #include "LuaEngine.h"
 #endif
@@ -384,6 +385,21 @@ void WorldSession::HandleAcceptTradeOpcode(WorldPacket& recvPacket)
         }
     }
 #endif
+    // ModifyMoney clamps incoming gold: refuse before moving items or charging either side.
+    const bool myBalanceFits = CanApplyTradeMoney(_player->GetMoney(), my_trade->GetMoney(),
+        his_trade->GetMoney(), MAX_MONEY_AMOUNT);
+    const bool hisBalanceFits = CanApplyTradeMoney(trader->GetMoney(), his_trade->GetMoney(),
+        my_trade->GetMoney(), MAX_MONEY_AMOUNT);
+    if (!myBalanceFits || !hisBalanceFits)
+    {
+        my_trade->SetAccepted(false, true);
+        his_trade->SetAccepted(false, true);
+        SendNotification(myBalanceFits ? "Your partner cannot receive that much gold." :
+            "This trade would exceed your gold limit.");
+        trader->GetSession()->SendNotification(hisBalanceFits ? "Your partner cannot receive that much gold." :
+            "This trade would exceed your gold limit.");
+        return;
+    }
     if (his_trade->IsAccepted())
     {
         setAcceptTradeMode(my_trade, his_trade, myItems, hisItems);

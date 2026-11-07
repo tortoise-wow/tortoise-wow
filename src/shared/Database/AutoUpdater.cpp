@@ -290,9 +290,6 @@ namespace DBUpdater
 
 
 
-        if (!targetDatabase->BeginTransaction())
-            return false;
-
       
         
         //Split strings into separate queries because multiline has some unfortunate side-effects. - Jamey
@@ -433,15 +430,19 @@ namespace DBUpdater
             return false;
         }
 
-        for (const auto& query : queries)
-        {
-            targetDatabase->Execute(query.c_str());
-        }
+        std::string name = migration.Name;
+        std::string module = migration.Module;
+        std::string hash = migration.Hash;
+        targetDatabase->escape_string(name);
+        targetDatabase->escape_string(module);
+        targetDatabase->escape_string(hash);
+        queries.emplace_back("INSERT INTO `" + std::string(MigrationTable) +
+            "` (`Name`, `Module`, `Hash`, `AppliedAt`) VALUES ('" + name + "','" + module +
+            "','" + hash + "',NOW())");
 
-        targetDatabase->PExecute("INSERT INTO `%s` (`Name`, `Module`, `Hash`, `AppliedAt`) VALUES (\'%s\', \'%s\', \'%s\', NOW());",
-            MigrationTable, migration.Name.c_str(), migration.Module.c_str(), migration.Hash.c_str());
-
-        bool res = targetDatabase->CommitTransactionDirect();
+        // MySQL DDL commits implicitly: keep it out of the guarded gameplay transaction API.
+        // A failed script must stop before its success ledger entry, without reconnect/replay.
+        bool res = targetDatabase->ExecuteMigrationBatch(queries);
 
         if (res)
         {
