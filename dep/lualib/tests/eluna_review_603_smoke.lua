@@ -87,6 +87,30 @@ a line with "FAIL" is a failed check. What to do and what to expect, per item:
      over several updates; GameObject:RemoveFromWorld deletes it; creature
      despawn keeps it in the map). So item 8 detects the damage when the
      timing happens, it does not make it happen.
+
+  9  server-wide functions are refused in a map state
+     Every map state, on its first update, calls each function the VMaNGOS
+     backend now flags world-only (dep/eluna-patches/0009: PerformIngameSpawn,
+     SendMail, SaveAllPlayers, StartGameEvent, StopGameEvent, AddVendorItem,
+     VendorRemoveItem, VendorRemoveAllItems, AddTaxiPath, Ban, Kick) and the
+     methods Player:LogoutPlayer and Player:KickPlayer on a player of its own
+     map. Expect one "9 refused=<name>" per function and method,
+     "9 world-only functions refused: 11 of 11" and
+     "9 world-only methods refused: 2 of 2"; do not call them in the world
+     state, where they still work. The arguments are deliberately incomplete:
+     before 0009 the call reaches the C++ method instead, which fails on them
+     (logged as FAIL, and it spawns, bans or mails nothing; SaveAllPlayers
+     does save every player). Before 0009: "9 FAIL PerformIngameSpawn failed
+     with an unexpected error: int expected, ...", Player:LogoutPlayer logs
+     the player out, and Player:KickPlayer disconnects it.
+
+  10 Aura:GetCasterLevel of a gone caster
+     The first player to log in spawns two rabbits (entry 721): one casts
+     Mark of the Wild (1126, a 30 min aura) on the other and despawns after
+     3 s; 8 s later the target's timer asks for the aura and its caster
+     level. Expect "10 GetCasterLevel of the gone caster is nil". Before
+     dep/eluna-patches/0010 that read the null guid lookup of the caster and
+     crashed the map's update (SIGSEGV); a successful read logs FAIL.
 ]]
 
 local SMOKE_INSTANCE_MAP = 34       -- The Stockade: no C++ instance script in src/scripts (nor Ragefire Chasm, 389)
@@ -351,3 +375,147 @@ CreateLuaEvent(function()
     checkHooks()
     CreateLuaEvent(checkHooks, 30000, 0)
 end, 5000, 1)
+
+-- 9: server-wide functions are refused in a map state.
+-- dep/eluna-patches/0009 flags them METHOD_REG_WORLD: the state registers
+-- Eluna's MethodWrongState closure instead of the method, and a call raises
+-- "attempt to call method '...' that does not exist for state: N". They run in
+-- the world state only (server events, commands). The arguments here are
+-- deliberately incomplete: before 0009 they reach the C++ method and fail on
+-- the arguments (logged as FAIL, not "refused"), so the check does not spawn,
+-- ban or mail anything while it reports the missing flag.
+local WorldOnlyFunctions = {
+    "PerformIngameSpawn", "SendMail", "SaveAllPlayers", "StartGameEvent", "StopGameEvent",
+    "AddVendorItem", "VendorRemoveItem", "VendorRemoveAllItems", "AddTaxiPath", "Ban", "Kick",
+}
+
+local function refusedWorldOnly(name, ok, err)
+    if ok then
+        log("9", "FAIL " .. name .. " ran in a map state (not world-only)")
+        return false
+    end
+    if tostring(err):find("does not exist for state", 1, true) then
+        log("9", "refused=" .. name)
+        return true
+    end
+    log("9", "FAIL " .. name .. " failed with an unexpected error: " .. tostring(err))
+    return false
+end
+
+local function refusedWorldOnlyMethod(name, fn)
+    local ok, err = pcall(fn)
+    -- 0009 flags the entries world-only (not unsafe); the unsafe refusal is
+    -- accepted too, in case an entry is ever flagged that way.
+    if not ok and tostring(err):find("flagged as unsafe", 1, true) then
+        log("9", "refused=" .. name .. " (unsafe method)")
+        return true
+    end
+    return refusedWorldOnly(name, ok, err)
+end
+
+local function checkWorldOnly(player)
+    local refused = 0
+    for _, name in ipairs(WorldOnlyFunctions) do
+        local fn = _G[name]
+        if type(fn) ~= "function" then
+            log("9", "FAIL " .. name .. " is not a global function")
+        elseif refusedWorldOnly(name, pcall(fn)) then
+            refused = refused + 1
+        end
+    end
+    log("9", "world-only functions refused: " .. refused .. " of " .. #WorldOnlyFunctions)
+
+    -- Player:LogoutPlayer and Player:KickPlayer are methods: there has to be
+    -- a player of this map state's map for them (one on another map is
+    -- refused by item 2's check).
+    if not player then
+        log("9", "no player on this map; the LogoutPlayer and KickPlayer checks did not run")
+        return
+    end
+    local refusedMethods = 0
+    if refusedWorldOnlyMethod("LogoutPlayer", function() player:LogoutPlayer(false) end) then
+        refusedMethods = refusedMethods + 1
+    end
+    if refusedWorldOnlyMethod("KickPlayer", function() player:KickPlayer() end) then
+        refusedMethods = refusedMethods + 1
+    end
+    log("9", "world-only methods refused: " .. refusedMethods .. " of 2")
+end
+
+local function firstPlayerOnThisMap()
+    for _, player in ipairs(GetPlayersInWorld() or {}) do
+        local ok, mapId = pcall(function() return player:GetMapId() end)
+        if ok and mapId == stateMapId then
+            return player
+        end
+    end
+    return nil
+end
+
+RegisterServerEvent(SERVER_EVENT_ON_MAP_UPDATE, function(event, map, diff)
+    if ticks ~= 1 then
+        return
+    end
+    checkWorldOnly(firstPlayerOnThisMap())
+end)
+
+-- 10: Aura:GetCasterLevel of an aura whose caster is gone returns nil.
+-- A rabbit casts Mark of the Wild (a 30 min aura) on another rabbit and
+-- despawns after 3 s; 8 s later the target's own timer asks for the aura and
+-- its caster level. Before dep/eluna-patches/0010 that dereferences the null
+-- GuidList lookup of the caster (SIGSEGV in the map's thread). The timer is
+-- registered on the target and uses the object it is passed: a userdata kept
+-- in an upvalue across a timer is invalid in this core.
+local CASTER_TEST_SPELL = 1126           -- Mark of the Wild, Rank 1
+local CASTER_TEST_ENTRY = 721            -- Rabbit
+local CASTER_TEST_GONE_AFTER_MS = 8000   -- the caster is unsummoned at 3 s
+local casterTestStarted = false
+
+local function startCasterTest(player)
+    if casterTestStarted then
+        return
+    end
+    casterTestStarted = true
+
+    local x, y, z, o = player:GetLocation()
+    local target = player:SpawnCreature(CASTER_TEST_ENTRY, x + 4, y, z, o, TEMPSUMMON_TIMED_DESPAWN, 120000)
+    local caster = player:SpawnCreature(CASTER_TEST_ENTRY, x + 8, y, z, o, TEMPSUMMON_TIMED_DESPAWN, 3000)
+    if not target or not caster then
+        log("10", "FAIL could not spawn the test creatures")
+        return
+    end
+
+    if not target:AddAura(CASTER_TEST_SPELL, caster) then
+        log("10", "FAIL AddAura returned nil")
+        return
+    end
+
+    local names = target:GetGUIDLow() .. "/" .. caster:GetGUIDLow()
+    local eventId = target:RegisterEvent(function(id, delay, repeats, obj)
+        if not obj:HasAura(CASTER_TEST_SPELL) then
+            log("10", "FAIL the aura left with its caster (" .. names .. ")")
+            return
+        end
+        local aura = obj:GetAura(CASTER_TEST_SPELL)
+        if not aura then
+            log("10", "FAIL GetAura returned nil for an aura HasAura saw (" .. names .. ")")
+            return
+        end
+        local level = aura:GetCasterLevel()
+        if level == nil then
+            log("10", "GetCasterLevel of the gone caster is nil (" .. names .. ")")
+        else
+            log("10", "FAIL GetCasterLevel returned " .. tostring(level) .. " for a caster that despawned (" .. names .. ")")
+        end
+    end, CASTER_TEST_GONE_AFTER_MS, 1)
+    if not eventId then
+        log("10", "FAIL RegisterEvent on the aura's target returned nil")
+        return
+    end
+
+    log("10", "aura " .. CASTER_TEST_SPELL .. " on " .. names .. " cast by a creature that despawns in 3 s")
+end
+
+RegisterPlayerEvent(PLAYER_EVENT_ON_LOGIN, function(event, player)
+    startCasterTest(player)
+end)

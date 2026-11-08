@@ -38,10 +38,11 @@ cmake --build build --target mangosd
   or is missing (after a submodule bump, refresh the patches); the checks run
   on every configure and remake a copy that fails them.
   `src/game/ElunaScriptBridge.cpp` also fails to compile (`#error`) without
-  the six markers. The copy is remade when a submodule file, a patch or
+  the ten markers. The copy is remade when a submodule file, a patch or
   `ElunaSources.cmake` changes. Each patch names its Eluna base commit; 0001,
-  0003, 0004, 0005 and 0006 are candidates to upstream to Eluna, 0002 is
-  VMaNGOS-specific (other cores get the check from trackable pointers).
+  0003, 0004, 0005, 0006, 0007, 0009 and 0010 are candidates to upstream to
+  Eluna, 0002 and 0008 are VMaNGOS-specific (other cores get the check from
+  trackable pointers, and track their spell targets).
 
   | Patch | Fixes |
   | --- | --- |
@@ -51,6 +52,10 @@ cmake --build build --target mangosd
   | `0004-vmangos-creature-spellhit-...` | `CREATURE_EVENT_ON_HIT_BY_SPELL` never fired: the Lua AI's `SpellHit` did not override this core's `CreatureAI::SpellHit(WorldObject*, ...)`. |
   | `0005-template-name-and-decoding-table-...` | Data race: every Lua state stored the per-type `ElunaTemplate<T>::tname` (one static per type for the whole process) in `Register`, so map states made or reloaded on different map threads wrote it at once while other states read it in `Push`/`Check`; also the lazy build of the base-64 table used for instance data. Both are now set once (`std::call_once`, a function-local static). |
   | `0006-eventmgr-free-lua-references-...` | Lua function references of timers leaked: when an object left its map or was destroyed with a timer pending, its event processor was removed with the events set to `LUAEVENT_STATE_ERASE`, which skips `luaL_unref` (meant for a closed or reloaded state). Each such timer's function, and what its upvalues reach, stayed in the state's registry until the state closed. They are now unreferenced (`LUAEVENT_STATE_ABORT`) on the thread that updates the state. A reload still marks every pending event `LUAEVENT_STATE_ERASE` (its references belong to the closed state), now also those of processors replaced by 0001 and waiting for the next cleanup, which are not in the processor list; otherwise that cleanup would unreference the old state's reference numbers in the new state. |
+  | `0007-creature-ai-no-state-falls-back-...` | Crash (null `Eluna*`): every hook of the Lua creature AI called `me->GetEluna()->...`, but `WorldObject::GetEluna` is null while the creature is not in the world, and `Creature::Update` can still run the AI then (seen on `.npc delete` of a scripted creature: SIGSEGV in `Eluna::UpdateAI`). A missing state now counts as not handled, so the native AI runs, as for a creature without a script. |
+  | `0008-vmangos-spell-gettarget-by-guid` | `Spell:GetTarget()` returned the target pointers cached in `SpellCastTargets`, which are refreshed only while the spell is casting: a projectile in flight kept the pointer of a target deleted meanwhile (a dead hunter's pet), and Lua read freed memory. The target is now looked up by its guid on the caster's map (`ObjectAccessor::GetUnit`, `Map::GetGameObject`/`GetCorpse`), and an item target the way `SpellCastTargets::Update` finds it: the caster player's item by guid (`TARGET_FLAG_ITEM`), or the trade partner's offered item (`TARGET_FLAG_TRADE_ITEM`, a trade enchant), found by slot `0..TRADE_SLOT_COUNT-1` before `Spell::cast` and by the item's guid (`TradeData::GetTradeSlotForItem`) after it, because `Spell::cast` runs `updateTradeSlotItem` before the cast hook and replaces the slot with the guid. |
+  | `0009-vmangos-world-only-global-methods` | Server-wide functions ran in map states too: `PerformIngameSpawn`, `SendMail`, `SaveAllPlayers`, `StartGameEvent`, `StopGameEvent`, `AddVendorItem`, `VendorRemoveItem`, `VendorRemoveAllItems`, `AddTaxiPath`, `Kick`, `Ban`, `Player:KickPlayer` and `Player:LogoutPlayer` write other maps, sessions, accounts or the core's vendor/taxi tables, close a session's socket or delete a player synchronously, and a map state runs on that map's thread next to other maps. They are now flagged `METHOD_REG_WORLD`, the mechanism the backend already uses for the Group and Guild methods: a map state gets a closure that raises "attempt to call method '...' that does not exist for state: N" (see Threading rules and Known limits). |
+  | `0010-vmangos-null-safe-method-chains` | Null dereferences in methods: `Aura:GetCasterLevel` read `aura->GetCaster()->GetLevel()`; the caster is a guid lookup that returns null once it despawned or logged out (a DoT from a dead add), and a player caster is found on any map (now `nil` when the caster is gone or on another map than the state's). `Item:GetItemLink` read `item->GetOwner()->GetLevel()`; an ownerless item (dropped, in a chest, in the mail) has no level (the link's level field is 0). The Lua instance AI's hooks and data methods (`Update`, `IsEncounterInProgress`, `OnPlayerEnter`, `OnObjectCreate`, `OnCreatureCreate`, `Initialize`, `Load`, `Save`, `GetData`/`SetData`, `GetData64`/`SetData64`) called `instance->GetEluna()->...` unchecked; a missing state now counts as "no script" (as the creature AI does since 0007), because `Map::GetEluna` refuses the state to a thread that does not update the map; `Save` returns NULL when the state is missing (wrong thread or no Lua instance script) and leaves `lastSaveData` alone: `InstanceData::SaveToDB` skips the write on NULL, so the stored data stays (the `DungeonPersistentState::SaveToDB` that stores an empty column for NULL runs for a new instance only), and `Load` keeps its data before the state check, so the map's next update reloads it. |
 - The backend is `ELUNA_VMANGOS` with `ELUNA_EXPANSION=0`.
 - Lua (5.2 by default; `ELUNA_LUA_VERSION` takes lua51..lua54) is downloaded
   from lua.org at configure time with a pinned SHA-256 and linked statically.
@@ -92,7 +97,7 @@ A Lua state must only ever be entered by one thread at a time.
 | State | Entered from |
 | --- | --- |
 | World state | The world thread (the main thread during startup). `World::GetEluna()` returns nullptr on any other thread, so a hook reached from a map, async or network thread is skipped (logged once). |
-| Map state | The thread updating that map, or the world thread while no map is updating. |
+| Map state | The thread updating that map, or the world thread while that map is not being updated. `Map::GetEluna()` returns nullptr to any other thread, and to the world thread while a thread is inside that map's update (logged once per map), so a hook reached from another map's thread, a `WorldAsync` task or a network thread is skipped instead of entering the state concurrently. |
 
 What the core does to keep to that, only while `Eluna.Enabled = 1`:
 
@@ -113,6 +118,16 @@ What the core does to keep to that, only while `Eluna.Enabled = 1`:
 - `Map` and `World` cache their `Eluna*`. Eluna's `ElunaMgr` container has no
   lock, so the core only touches it to make and destroy states, under one mutex
   (`ElunaStateLock`).
+- **The map's update thread owns its state.** `Map::DoUpdate` stores
+  `std::this_thread::get_id()` in an atomic for the length of the update, and
+  `Map::GetEluna()` hands the state only to that thread, or to the world
+  thread while the map is idle (empty owner): teleports, instance switches,
+  commands and the Eluna reload reach map states from the world thread after
+  `sMapMgr.Update` returned or while maps are not updating. Map lifecycle
+  sites that need the state regardless (`Map`'s constructor and destructor)
+  use the member. This is a tripwire, not a lock: it refuses a caller that
+  would enter the state from a thread that does not own it, and logs it once
+  per map, instead of corrupting the state silently.
 - **Objects of another map.** A map state only uses objects on its own map
   (`dep/eluna-patches/0002`): a player, creature, gameobject, item (by its
   owner) or `Map` userdata of another map is refused when a method is called
@@ -123,7 +138,8 @@ What the core does to keep to that, only while `Eluna.Enabled = 1`:
   guilds are not bound to a map, so in a map state their methods can still
   reach players on other maps (`SendPacket` to the members, member and leader
   changes); `Spell`, `Aura` and `BattleGround` userdata are not checked either
-  (they are only pushed by hooks on their own map).
+  (they are only pushed by hooks on their own map; `Aura:GetCasterLevel` does
+  return nil for a caster on another map, `dep/eluna-patches/0010`).
 - **Timed events of objects** (`obj:RegisterEvent`). An object's events live in
   the event manager of the state that registered them, and only the state of
   the object's own map can register map events on it. The object never keeps a
@@ -143,6 +159,40 @@ What the core does to keep to that, only while `Eluna.Enabled = 1`:
   be registered in it. Ships and zeppelins
   (`MO_TRANSPORT`) cannot have map events (`RegisterEvent` returns nil): they
   move between the maps of a continent.
+
+## Rules for script authors
+
+1. Never keep a userdata (`Player`, `Creature`, `Spell`, `Aura`, `Map`, item)
+   in a variable across a timer or a later hook: keep the guid (and the map
+   and instance id) and find the object again; check `GetMapId()` and
+   `GetInstanceId()` before you use it. A userdata is only valid during the
+   call that pushed it, so a kept one reads as "pointer to nonexisting
+   (invalidated) object".
+2. A map state only touches objects of its own map. Wrap the result of
+   `GetPlayerByGUID`, `GetPlayerByName` and `GetPlayersInWorld` in `pcall`:
+   a method on an object of another map is refused ("... got an object on
+   another map ...: refused").
+3. Anything server-wide (a spawn on another map, mail, game events, vendors,
+   taxi paths, bans, save-all, logout) belongs in the world state: server,
+   command and world-update events, never creature, map, instance, player or
+   item events. Since `dep/eluna-patches/0009` a map state is refused
+   ("attempt to call method '...' that does not exist for state: N").
+4. Kick and log out only from the world state: `Player:KickPlayer` and
+   `Player:LogoutPlayer` are both world-only since `dep/eluna-patches/0009`
+   (a map state is refused), and `LogoutPlayer` deletes the player
+   synchronously even there, so save or kick instead. Treat
+   `Aura:GetCasterLevel` as possibly nil (it is nil once the caster is gone,
+   `dep/eluna-patches/0010`) and check `Aura:GetCaster()`.
+5. Read `Spell:GetTarget()` only in the cast hook (`dep/eluna-patches/0008`
+   makes it a guid lookup; treat nil as normal).
+6. Wrap every hook and timer body in `pcall` (the toolkit's `TT.guard`): Lua is
+   compiled as C here, so an error that escapes unwinds with `longjmp` through
+   C++ frames and skips their destructors.
+7. Do not run `.reload eluna` or Lua `ReloadEluna()` during a walk or a raid:
+   a reload stalls the world tick while the scripts compile.
+8. Put nothing but scripts in `lua_scripts`: no backups, no extra folders (a
+   stray `tt.bak` once broke a toolkit load, and a copied state file next to
+   the scripts is loaded again in every state).
 
 ## Where the hooks are
 
@@ -189,16 +239,34 @@ destroyed, after its objects are unloaded.
   `.reload eluna` while instances open, `CREATURE_EVENT_ON_HIT_BY_SPELL` and
   `GAMEOBJECT_EVENT_ON_SPAWN` (on spawn and respawn), Lua references of
   despawned creatures returning to zero, a timer registered in a
-  gameobject's spawn event, and a check that every hook of the file is still
-  in its state's registry after reloads. The header says what to do and what to expect.
+  gameobject's spawn event, a check that every hook of the file is still
+  in its state's registry after reloads, the refusal of the server-wide
+  functions in a map state (`refused=<name>`, patch 0009) and
+  `Aura:GetCasterLevel` of an aura whose caster despawned (nil, patch 0010).
+  The header says what to do and what to expect.
 
 ## Known limits
 
-- **Global functions that change server-wide data** (for example
-  `AddTaxiPath`, which adds taxi nodes and paths to the core's tables) are
-  callable in every state, as upstream. In a map state they run on that map's
-  thread next to other maps: call them from the world state (server events),
-  which only runs while no map updates.
+- **Global functions that change server-wide data are world-only**
+  (`dep/eluna-patches/0009`): `PerformIngameSpawn`, `SendMail`,
+  `SaveAllPlayers`, `StartGameEvent`, `StopGameEvent`, `AddVendorItem`,
+  `VendorRemoveItem`, `VendorRemoveAllItems`, `AddTaxiPath`, `Kick`, `Ban`,
+  `Player:KickPlayer` and `Player:LogoutPlayer` write other maps, sessions,
+  accounts or the core's vendor/taxi tables, close a session's socket or
+  delete a player synchronously. A map state registers a refusal closure for
+  them instead of the method: the call raises "attempt to call method '...'
+  that does not exist for state: N". Call them from the world state (server,
+  command and world-update events), which only runs on the world thread while
+  no map updates. `Player:KickPlayer` and `Player:LogoutPlayer` are both
+  world-only; `LogoutPlayer` deletes the player synchronously inside the
+  calling hook, so scripts should kick or save instead of logging a player out.
+- **`Aura:GetCasterLevel` can be nil** (`dep/eluna-patches/0010`): the caster
+  is looked up by its guid, so it is gone once the caster despawned or logged
+  out (a DoT from a dead add), and it is nil for a caster on another map than
+  the state's. Read `Aura:GetCaster()` and check it, or treat nil as normal.
+- **`Item:GetItemLink` of an ownerless item** (`dep/eluna-patches/0010`):
+  an item without an owner (dropped, in a chest, in the mail) has no player
+  level; the link's level field is 0.
 - **ThreadSanitizer** (`.reload eluna` every 20 s and a console reload every
   60 s, four players teleporting between continents and instances, all map
   thread settings at 4; 17 min before 0005, 15 min with it): before 0005, 675 reports in

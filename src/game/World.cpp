@@ -4708,7 +4708,7 @@ Eluna* World::GetEluna() const
     if (!m_eluna)
         return nullptr;
 
-    if (std::this_thread::get_id() == m_elunaThread.load(std::memory_order_relaxed))
+    if (IsElunaWorldThread())
         return m_eluna;
 
     if (!m_elunaOffThreadLogged.exchange(true))

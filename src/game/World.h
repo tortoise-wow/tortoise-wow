@@ -1284,6 +1284,10 @@ class World
         // gets nullptr, so a hook reached from a map or async thread is skipped
         // instead of entering the world lua_State concurrently.
         Eluna* GetEluna() const;
+        // True on the thread that owns the world state (the world thread, or
+        // the main thread during startup). Map::GetEluna hands out a map's
+        // state to it while that map is not being updated.
+        bool IsElunaWorldThread() const { return std::this_thread::get_id() == m_elunaThread.load(std::memory_order_relaxed); }
         void SetElunaWorldThread();
         // Game events start and stop on the world thread and on map threads;
         // Eluna's OnGameEventStart/Stop are queued here, in order, and called

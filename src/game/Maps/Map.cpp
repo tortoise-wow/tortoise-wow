@@ -65,11 +65,44 @@
 #include "LuaEngine.h"
 #include "ElunaConfig.h"
 
+// The map's Lua state, but only on a thread allowed to enter it: the thread
+// running this map's update (DoUpdate records it in m_updatingThread), or the
+// world thread while no thread updates this map. A map state is a lua_State
+// and must only ever be entered by one thread at a time; the world thread
+// reaches map states between map updates (teleports, instance switches,
+// commands, the Eluna reload in World::Update) and a map thread only for its
+// own map. Anything else is refused here and logged once per map, as
+// World::GetEluna does for the world state, instead of corrupting the state
+// silently.
+Eluna* Map::GetEluna() const
+{
+    if (!m_eluna)
+        return nullptr;
+
+    std::thread::id const self = std::this_thread::get_id();
+    if (m_updatingThread.load(std::memory_order_relaxed) == self)
+        return m_eluna;
+
+    // Not the map's update thread: only the world thread, and only while no
+    // thread updates this map (else the update thread may be inside its
+    // state right now).
+    if (sWorld.IsElunaWorldThread() && m_updatingThread.load(std::memory_order_relaxed) == std::thread::id())
+        return m_eluna;
+
+    if (!m_elunaOffThreadLogged.exchange(true, std::memory_order_relaxed))
+        sLog.outError("Eluna: a hook asked for the Lua state of map %u (instance %u) on a thread that does not update it; it was skipped (logged once per map).",
+            GetId(), GetInstanceId());
+    return nullptr;
+}
 #endif
+
 Map::~Map()
 {
 #ifdef ENABLE_ELUNA
-    if (Eluna* eluna = GetEluna())
+    // The member, not GetEluna(): a map is destroyed by whichever thread
+    // removes it from the map manager (or fails to make it), and its state
+    // must still be told it is gone.
+    if (Eluna* eluna = m_eluna)
         eluna->OnDestroy(this);
 #endif
     UnloadAll(true);
@@ -188,7 +221,9 @@ Map::Map(uint32 id, time_t expiry, uint32 InstanceId)
             m_elunaLifetime = std::make_shared<char>(0);
     }
 
-    if (Eluna* eluna = GetEluna())
+    // The member, not GetEluna(): the map is made on the thread that will not
+    // necessarily be the one updating it, and this state is not in use yet.
+    if (Eluna* eluna = m_eluna)
         eluna->OnCreate(this);
 #endif
 
@@ -894,6 +929,13 @@ void Map::UpdatePlayers()
 
 void Map::DoUpdate(uint32 maxDiff)
 {
+#ifdef ENABLE_ELUNA
+    // This thread owns the map's Lua state until the update returns:
+    // Map::GetEluna hands the state out to it only (and to the world thread
+    // while the map is idle). Set before Update(), which enters the state
+    // (timers, hooks, instance data).
+    m_updatingThread.store(std::this_thread::get_id(), std::memory_order_relaxed);
+#endif
     uint32 const now = WorldTimer::getMSTime();
     uint32 diff = WorldTimer::getMSTimeDiff(_lastMapUpdate, now);
     if (diff > maxDiff)
@@ -902,6 +944,12 @@ void Map::DoUpdate(uint32 maxDiff)
     if (HavePlayers())
         _lastPlayerLeftTime = now;
     Update(diff);
+#ifdef ENABLE_ELUNA
+    // Idle again: the world thread may enter the state until the next update
+    // (MapManager::Update teleports and switches players after the update
+    // section, World::Update runs the reload and its own hooks after it).
+    m_updatingThread.store(std::thread::id(), std::memory_order_relaxed);
+#endif
 
     // track slowest map for performance statistics
     uint32 diff2 = WorldTimer::getMSTimeDiffToNow(now);
@@ -1979,7 +2027,11 @@ void Map::CreateInstanceData(bool load)
     if (i_script_id)
         i_data = sScriptMgr.CreateInstanceData(this);
 
-    if (Eluna* eluna = GetEluna())
+    // The member, not GetEluna(): a map created off the world thread would
+    // get nullptr from GetEluna and lose its Lua instance script. As in the
+    // constructor, this state was just made for this map and no other thread
+    // is inside it.
+    if (Eluna* eluna = m_eluna)
     {
         if (!i_data)
             i_data = eluna->GetInstanceData(this);
