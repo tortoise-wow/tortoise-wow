@@ -375,7 +375,7 @@ loaded. Run at c3638fa (2026-11-08), before the 0012 `LuaVal` fix:
 | Patch | Result |
 | --- | --- |
 | 0001-0006 | PASS: 603 items 1-5, 7, 8 (timers across teleports and instance unloads, other-map refusal, instance data across a restart, 15 reloads with instances open, spell hit and gameobject spawn, spawn-event timer, hooks intact); item 6 two of four rounds seen, `refs freed: 0 of 25` and `0 of 50`. |
-| 0007 | Not run yet (603 item 11 is new; it also needs the summon Lua AI fix above, the smoke FAILs a summon with 0 enter combat hooks). |
+| 0007 | PASS at 1a4205c (round 5, after the summon Lua AI fix): item 11, 5 rounds in 2 focus runs, per guid: Lua AI updates 72 to 81 and 1 enter combat hook, the native AI fought, 5 of 5 despawned inside the AI update hook; before the fix a summon had no Lua AI (0 hooks, 0 of 5). The full run's round 1 failed only because the player was still a GM. The missing-state case cannot be made by a script. |
 | 0008 | Not run yet (`.elunasmoke inflight` is new); the trade-slot enchant case needs a real client. |
 | 0009 | PASS: 11 of 11 world-only functions and 3 of 3 methods refused in map states 0, 1 and 34. |
 | 0010 | PASS in 4 of 6 runs; in 2 the target had lost the aura before the check (no crash); the cause is not known yet. |
