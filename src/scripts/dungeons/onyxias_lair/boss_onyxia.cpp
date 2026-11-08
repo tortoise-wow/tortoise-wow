@@ -40,14 +40,24 @@ enum
     SAY_PHASE_3_TRANS = -1249003,
     EMOTE_BREATH = -1249004,
 
+    SAY_CINDARION_AGGRO = 5014301,
+    SAY_CINDARION_VOLLEY = 5014302,
+    SAY_CINDARION_LANDING = 5014303,
+    SAY_CINDARION_DEATH = 5014304,
+
     SPELL_WINGBUFFET = 18500,
     SPELL_FLAMEBREATH = 18435,
     SPELL_CLEAVE = 19983,
     SPELL_TAILSWEEP = 15847,
     SPELL_KNOCK_AWAY = 19633,
+    SPELL_THRASH = 21919,
     SPELL_BELLOWINGROAR = 18431,
 
     SPELL_FIREBALL = 18392,
+    SPELL_FIREBALL_VOLLEY = 33437,
+    SPELL_CINDARION_CLAW_REND = 33438,
+    SPELL_CINDARION_FLAME_BREATH = 33439,
+    SPELL_CINDARION_ENRAGE = 33446,
     SPELL_DEEPBREATH = 23461,
     SPELL_HEATED_GROUND_EAST = 22191,
     SPELL_HEATED_GROUND_WEST = 22197,
@@ -67,13 +77,18 @@ enum
         
     NPC_ONYXIAN_WHELP = 11262,
     NPC_ONYXIAN_WARDER = 12129,
+    NPC_ONYXIAN_HATCHER = 50144,
     NPC_ERUPTION_TRIGGER = 20009,
+    NPC_CINDARION = 50143,
+
+    ACTION_CINDARION_START_PHASE_TWO = 1,
 
     GO_LAVATRAP_1 = 177984,
     GO_LAVATRAP_2 = 177985,
 
     DEPART_FLIGHT = 20,
     LANDING_FLIGHT = 21,
+    CINDARION_LANDING = 22,
 
     PHASE_ONE = 1,
     PHASE_TWO = 2,
@@ -128,6 +143,7 @@ struct boss_onyxiaAI : public ScriptedAI
     uint32 m_uiTailSweepTimer;
     uint32 m_uiWingBuffetTimer;
     uint32 m_uiKnockAwayTimer;
+    uint32 m_uiThrashTimer;
 
     uint32 m_uiFireballTimer;
     uint32 m_uiMovementTimer;
@@ -152,9 +168,12 @@ struct boss_onyxiaAI : public ScriptedAI
 
     ScriptedInstance* m_pInstance;
     std::list<GameObject*> GOListe;
+    std::list<ObjectGuid> m_lSummonedHatchers;
     
     void Reset() override
     {
+        DespawnSummonedHatchers();
+
         m_uiPhase              = PHASE_ONE;
         m_bTransition          = false;
         m_uiTransTimer         = 0;
@@ -165,6 +184,7 @@ struct boss_onyxiaAI : public ScriptedAI
         m_uiWingBuffetTimer    = urand(10000, 20000);
         m_uiKnockAwayTimer     = urand(15000, 25000);
         m_uiTailSweepTimer     = 5000;
+        m_uiThrashTimer        = urand(10000, 15000);
 
         m_uiFireballTimer      = 3000;
         m_uiMovementTimer      = 20000;
@@ -213,6 +233,7 @@ struct boss_onyxiaAI : public ScriptedAI
         DelayEventIfNeed(m_uiCleaveTimer, delay);
         DelayEventIfNeed(m_uiWingBuffetTimer, delay);
         DelayEventIfNeed(m_uiKnockAwayTimer, delay);
+        DelayEventIfNeed(m_uiThrashTimer, delay);
     }
     
     void CheckForTargetsInAggroRadius(uint32 uiDiff)
@@ -290,6 +311,10 @@ struct boss_onyxiaAI : public ScriptedAI
         // Daemon: Fix orientation.
         m_creature->SetStandState(UNIT_STAND_STATE_STAND);
 
+        if (Creature* cindarion = GetClosestCreatureWithEntry(m_creature, NPC_CINDARION, 200.0f))
+            if (!cindarion->IsInCombat())
+                cindarion->AI()->AttackStart(pWho);
+
         DoScriptText(SAY_AGGRO, m_creature);
         m_creature->SetInCombatWithZone();
         if (m_pInstance)
@@ -304,12 +329,16 @@ struct boss_onyxiaAI : public ScriptedAI
 
     void JustDied(Unit* pKiller) override
     {
+        ResetCindarion(false);
+
         if (m_pInstance)
             m_pInstance->SetData(DATA_ONYXIA_EVENT, DONE);
     }
 
     void EnterEvadeMode() override
     {
+        ResetCindarion();
+
         std::list<Creature*> WhelpList;
         GetCreatureListWithEntryInGrid(WhelpList, m_creature, NPC_ONYXIAN_WHELP, 200.0f);
         for (const auto& itr : WhelpList)
@@ -317,13 +346,50 @@ struct boss_onyxiaAI : public ScriptedAI
         
         ScriptedAI::EnterEvadeMode();
     }
+
+    void ResetCindarion(bool respawnDead = true)
+    {
+        std::list<Creature*> cindarions;
+        GetCreatureListWithEntryInGrid(cindarions, m_creature, NPC_CINDARION, 200.0f);
+        for (Creature* cindarion : cindarions)
+        {
+            if (!cindarion->IsAlive())
+            {
+                if (respawnDead)
+                    cindarion->Respawn();
+            }
+            else if (cindarion->IsInCombat())
+                cindarion->AI()->EnterEvadeMode();
+        }
+    }
     
     void JustSummoned(Creature *pSummoned) override
     {
         if (Unit* pTarget = m_creature->SelectAttackingTarget(ATTACKING_TARGET_RANDOM, 0))
             pSummoned->AI()->AttackStart(pTarget);
 
-        ++m_uiSummonCount;
+        if (pSummoned->GetEntry() == NPC_ONYXIAN_WHELP)
+            ++m_uiSummonCount;
+        else if (pSummoned->GetEntry() == NPC_ONYXIAN_HATCHER)
+        {
+            m_lSummonedHatchers.push_back(pSummoned->GetObjectGuid());
+            pSummoned->SetInCombatWithZone();
+        }
+    }
+
+    void SummonedCreatureDespawn(Creature* pSummoned) override
+    {
+        if (pSummoned->GetEntry() == NPC_ONYXIAN_HATCHER)
+            m_lSummonedHatchers.remove(pSummoned->GetObjectGuid());
+    }
+
+    void DespawnSummonedHatchers()
+    {
+        std::list<ObjectGuid> hatchers;
+        hatchers.swap(m_lSummonedHatchers);
+        for (const auto& guid : hatchers)
+            if (Creature* hatcher = m_creature->GetMap()->GetCreature(guid))
+                hatcher->ForcedDespawn();
     }
 
     void KilledUnit(Unit* pVictim) override
@@ -414,6 +480,14 @@ struct boss_onyxiaAI : public ScriptedAI
         }
         else
             m_uiTailSweepTimer -= uiDiff;
+
+        if (m_uiThrashTimer < uiDiff)
+        {
+            if (DoCastSpellIfCan(m_creature, SPELL_THRASH) == CAST_OK)
+                m_uiThrashTimer = m_uiPhase == PHASE_THREE ? urand(5000, 7000) : urand(10000, 15000);
+        }
+        else
+            m_uiThrashTimer -= uiDiff;
 
         DoMeleeAttackIfReady();
     }
@@ -555,7 +629,7 @@ struct boss_onyxiaAI : public ScriptedAI
                 case 0: m_creature->SummonCreature(NPC_ONYXIAN_WHELP, afSpawnLocations[0][0], afSpawnLocations[0][1], afSpawnLocations[0][2], 0.0f, TEMPSUMMON_TIMED_OR_CORPSE_DESPAWN, 120000); break;
                 case 1: m_creature->SummonCreature(NPC_ONYXIAN_WHELP, afSpawnLocations[1][0], afSpawnLocations[1][1], afSpawnLocations[1][2], 0.0f, TEMPSUMMON_TIMED_OR_CORPSE_DESPAWN, 120000); break;
             }
-            m_uiSummonWhelpsTimer = urand(1000, 10000);
+            m_uiSummonWhelpsTimer = urand(1000, 6000);
         }
         else
             m_uiSummonWhelpsTimer -= uiDiff;
@@ -573,6 +647,9 @@ struct boss_onyxiaAI : public ScriptedAI
             /** Stop combat and move to the first waypoint before taking off */
             if (bDebut && m_uiTransCount == 0)
             {
+                if (Creature* cindarion = GetClosestCreatureWithEntry(m_creature, NPC_CINDARION, 200.0f))
+                    cindarion->AI()->DoAction(ACTION_CINDARION_START_PHASE_TWO);
+
                 SetCombatMovement(false);
                 DoScriptText(SAY_PHASE_2_TRANS, m_creature);
                 m_creature->InterruptNonMeleeSpells(false);
@@ -640,6 +717,9 @@ struct boss_onyxiaAI : public ScriptedAI
             /** Landed. Restore target and start combat movement.*/
             else if (m_uiTransTimer < uiDiff && m_uiTransCount == 4)
             {               
+                m_creature->SummonCreature(NPC_ONYXIAN_HATCHER, -31.45f, -257.36f, -89.64f, 1.14f, TEMPSUMMON_TIMED_OR_CORPSE_DESPAWN, 300000);
+                m_creature->SummonCreature(NPC_ONYXIAN_HATCHER, -31.70f, -172.12f, -89.61f, 5.08f, TEMPSUMMON_TIMED_OR_CORPSE_DESPAWN, 300000);
+
                 if (Unit* pVictim = m_creature->GetVictim())
                     m_creature->SetTargetGuid(pVictim->GetObjectGuid()); 
 
@@ -654,6 +734,7 @@ struct boss_onyxiaAI : public ScriptedAI
                 m_uiCleaveTimer        = urand(2000, 5000);
                 m_uiWingBuffetTimer    = urand(10000, 20000);
                 m_uiKnockAwayTimer     = urand(10000, 20000);
+                m_uiThrashTimer        = urand(5000, 7000);
             }
         }
 
@@ -756,6 +837,204 @@ CreatureAI* GetAI_boss_onyxiaAI(Creature* pCreature)
     return new boss_onyxiaAI(pCreature);
 }
 
+struct boss_cindarionAI : public ScriptedAI
+{
+    enum CindarionPhase
+    {
+        PHASE_IDLE,
+        PHASE_AIRBORNE,
+        PHASE_DESCENDING,
+        PHASE_GROUND,
+    };
+
+    explicit boss_cindarionAI(Creature* creature) : ScriptedAI(creature)
+    {
+        Reset();
+    }
+
+    CindarionPhase m_phase;
+    uint32 m_uiFireballVolleyTimer;
+    uint32 m_uiClawRendTimer;
+    uint32 m_uiFlameBreathTimer;
+    uint32 m_uiThrashTimer;
+    bool m_bEnragedAtHalfHealth;
+    bool m_bEnragedAtLowHealth;
+
+    void Reset() override
+    {
+        m_phase = PHASE_IDLE;
+        m_uiFireballVolleyTimer = urand(15000, 18000);
+        m_uiClawRendTimer = 8000;
+        m_uiFlameBreathTimer = 8000;
+        m_uiThrashTimer = urand(12000, 14000);
+        m_bEnragedAtHalfHealth = false;
+        m_bEnragedAtLowHealth = false;
+        SetCombatMovement(false);
+        SetMeleeAttack(false);
+        m_creature->RemoveAurasDueToSpell(SPELL_CINDARION_ENRAGE);
+        m_creature->SetFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_NOT_SELECTABLE);
+        m_creature->SetWalk(false);
+        m_creature->SetFly(true);
+        m_creature->SetLevitate(true);
+    }
+
+    void EnterEvadeMode() override
+    {
+        m_phase = PHASE_IDLE;
+        m_creature->SetFly(true);
+        m_creature->SetLevitate(true);
+        ScriptedAI::EnterEvadeMode();
+    }
+
+    void MoveInLineOfSight(Unit* who) override
+    {
+        if (m_phase == PHASE_GROUND)
+            ScriptedAI::MoveInLineOfSight(who);
+    }
+
+    void AttackStart(Unit* target) override
+    {
+        if (!target)
+            return;
+
+        if (m_phase == PHASE_GROUND)
+        {
+            ScriptedAI::AttackStart(target);
+            return;
+        }
+
+        SetCombatMovement(false);
+        SetMeleeAttack(false);
+        if (m_creature->Attack(target, false))
+        {
+            m_creature->AddThreat(target);
+            m_creature->SetInCombatWith(target);
+            target->SetInCombatWith(m_creature);
+        }
+    }
+
+    void Aggro(Unit* /*who*/) override
+    {
+        m_phase = PHASE_AIRBORNE;
+        m_uiFireballVolleyTimer = urand(15000, 18000);
+        DoScriptText(SAY_CINDARION_AGGRO, m_creature);
+        m_creature->SetInCombatWithZone();
+    }
+
+    void DoAction(uint32 action) override
+    {
+        if (action != ACTION_CINDARION_START_PHASE_TWO || m_phase != PHASE_AIRBORNE)
+            return;
+
+        m_phase = PHASE_DESCENDING;
+        m_creature->InterruptNonMeleeSpells(false);
+        SetCombatMovement(false);
+        SetMeleeAttack(false);
+        m_creature->GetMotionMaster()->Clear(false);
+        m_creature->GetMotionMaster()->MovePoint(CINDARION_LANDING, -8.86f, -212.752f, -88.542f, MOVE_FLY_MODE, 2.5f);
+    }
+
+    void MovementInform(uint32 type, uint32 pointId) override
+    {
+        if (type != POINT_MOTION_TYPE || pointId != CINDARION_LANDING || m_phase != PHASE_DESCENDING)
+            return;
+
+        m_phase = PHASE_GROUND;
+        m_creature->SetFly(false);
+        m_creature->SetLevitate(false);
+        m_creature->SetWalk(false);
+        m_creature->RemoveFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_NOT_SELECTABLE);
+        DoScriptText(SAY_CINDARION_LANDING, m_creature);
+
+        m_uiClawRendTimer = 8000;
+        m_uiFlameBreathTimer = 8000;
+        m_uiThrashTimer = urand(12000, 14000);
+        SetCombatMovement(true);
+        SetMeleeAttack(true);
+        if (Unit* target = m_creature->GetVictim())
+            if (m_creature->GetMotionMaster()->GetCurrentMovementGeneratorType() != CHASE_MOTION_TYPE)
+                m_creature->GetMotionMaster()->MoveChase(target);
+    }
+
+    void DamageTaken(Unit* /*attacker*/, uint32& damage) override
+    {
+        if (m_phase != PHASE_GROUND || damage >= m_creature->GetHealth())
+            return;
+
+        uint32 const remainingHealth = m_creature->GetHealth() - damage;
+        if (!m_bEnragedAtHalfHealth && remainingHealth <= m_creature->GetMaxHealth() / 2)
+        {
+            m_bEnragedAtHalfHealth = true;
+            m_creature->CastSpell(m_creature, SPELL_CINDARION_ENRAGE, true);
+        }
+        if (!m_bEnragedAtLowHealth && remainingHealth <= m_creature->GetMaxHealth() / 5)
+        {
+            m_bEnragedAtLowHealth = true;
+            m_creature->CastSpell(m_creature, SPELL_CINDARION_ENRAGE, true);
+        }
+    }
+
+    void JustDied(Unit* /*killer*/) override
+    {
+        DoScriptText(SAY_CINDARION_DEATH, m_creature);
+    }
+
+    void UpdateAI(uint32 const diff) override
+    {
+        if (m_phase == PHASE_IDLE || m_phase == PHASE_DESCENDING ||
+            !m_creature->SelectHostileTarget() || !m_creature->GetVictim())
+            return;
+
+        if (m_phase == PHASE_AIRBORNE)
+        {
+            if (m_uiFireballVolleyTimer <= diff)
+            {
+                if (DoCastSpellIfCan(m_creature->GetVictim(), SPELL_FIREBALL_VOLLEY) == CAST_OK)
+                {
+                    if (urand(0, 99) < 40)
+                        DoScriptText(SAY_CINDARION_VOLLEY, m_creature);
+
+                    m_uiFireballVolleyTimer = urand(15000, 18000);
+                }
+            }
+            else
+                m_uiFireballVolleyTimer -= diff;
+            return;
+        }
+
+        if (m_uiClawRendTimer <= diff)
+        {
+            if (DoCastSpellIfCan(m_creature->GetVictim(), SPELL_CINDARION_CLAW_REND) == CAST_OK)
+                m_uiClawRendTimer = 8000;
+        }
+        else
+            m_uiClawRendTimer -= diff;
+
+        if (m_uiFlameBreathTimer <= diff)
+        {
+            if (DoCastSpellIfCan(m_creature->GetVictim(), SPELL_CINDARION_FLAME_BREATH) == CAST_OK)
+                m_uiFlameBreathTimer = urand(15000, 16000);
+        }
+        else
+            m_uiFlameBreathTimer -= diff;
+
+        if (m_uiThrashTimer <= diff)
+        {
+            if (DoCastSpellIfCan(m_creature, SPELL_THRASH) == CAST_OK)
+                m_uiThrashTimer = urand(12000, 14000);
+        }
+        else
+            m_uiThrashTimer -= diff;
+
+        DoMeleeAttackIfReady();
+    }
+};
+
+CreatureAI* GetAI_boss_cindarion(Creature* creature)
+{
+    return new boss_cindarionAI(creature);
+}
+
 struct OnyxianWhelpAI: public ScriptedAI
 {
     OnyxianWhelpAI(Creature* pCreature) : ScriptedAI(pCreature)
@@ -793,6 +1072,11 @@ void AddSC_boss_onyxia()
     newscript = new Script;
     newscript->Name = "boss_onyxia";
     newscript->GetAI = &GetAI_boss_onyxiaAI;
+    newscript->RegisterSelf();
+
+    newscript = new Script;
+    newscript->Name = "boss_cindarion";
+    newscript->GetAI = &GetAI_boss_cindarion;
     newscript->RegisterSelf();
 
     newscript = new Script;

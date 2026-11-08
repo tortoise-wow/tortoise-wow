@@ -166,6 +166,7 @@ dungeons/naxxramas/boss_sapphiron.cpp
 dungeons/naxxramas/boss_thaddius.cpp
 dungeons/naxxramas/instance_naxxramas.cpp
 dungeons/naxxramas/naxxramas.h
+dungeons/onyxias_lair/boss_axelus.cpp
 dungeons/onyxias_lair/boss_onyxia.cpp
 dungeons/onyxias_lair/instance_onyxia_lair.cpp
 dungeons/onyxias_lair/instance_onyxia_lair.h

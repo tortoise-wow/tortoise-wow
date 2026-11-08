@@ -230,6 +230,7 @@ void AddSC_boss_ptheradras();
 void AddSC_instance_maraudon();
 void AddSC_instance_onyxia_lair();
 void AddSC_boss_onyxia();                            //onyxias_lair
+void AddSC_boss_axelus();
 void AddSC_razorfen_downs();
 void AddSC_razorfen_kraul();                         //razorfen_kraul
 void AddSC_instance_razorfen_kraul();
@@ -613,6 +614,7 @@ void AddScripts()
     AddSC_instance_maraudon();
     AddSC_instance_onyxia_lair();
     AddSC_boss_onyxia();                                    //onyxias_lair
+    AddSC_boss_axelus();
     AddSC_razorfen_downs();
     AddSC_razorfen_kraul();                                 //razorfen_kraul
     AddSC_instance_razorfen_downs();
