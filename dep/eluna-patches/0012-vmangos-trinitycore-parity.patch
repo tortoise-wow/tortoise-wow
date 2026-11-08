@@ -21,7 +21,13 @@ Added to the VMaNGOS backend (methods/VMangos, hooks, LuaValue):
   IsChannelActive, CalculateDamage.
 - WorldObject:Data() and Map:Data() (the LuaVal the core already stores). A
   LuaVal given to Set/AsLuaVal is now deep-copied (value semantics), so two
-  objects never share one map across threads and a table cannot contain itself; nesting deeper than 64 levels (a plain table that holds itself too) is refused with an error, never cut.
+  objects never share one map across threads and a stored LuaVal cannot contain
+  itself. Converting a Lua table refuses a table that contains itself (a visited
+  set of the tables on the way down, by pointer) and nesting of 64 levels or
+  more, with a Lua error; nothing is ever cut. Each level makes room on the Lua
+  stack first (lua_checkstack), and no conversion raises a Lua error itself: the
+  message goes up to the Lua C function (Get, Set, New, AsTable), which raises it
+  once every C++ value of the call is destroyed (Lua is C, its errors longjmp).
 - ChatHandler type: the third argument of PLAYER_EVENT_ON_COMMAND (new overload
   Eluna::OnCommand(ChatHandler&, text)) with SendSysMessage, PSendSysMessage,
   IsConsole, GetPlayer, GetAccountId, GetSecurity, IsAvailable,
@@ -117,76 +123,304 @@ index 8f52e71..ee22695 100644
  #endif
  };
 diff --git a/LuaValue.cpp b/LuaValue.cpp
-index 39c28f2..cdad607 100644
+index 39c28f2..3c9ba00 100644
 --- a/LuaValue.cpp
 +++ b/LuaValue.cpp
-@@ -231,6 +231,18 @@ int LuaVal::lua_asLua(lua_State* L)
+@@ -30,6 +30,7 @@
+ #include "ElunaCompat.h"
+ #include "LuaValue.h"
+ #include <stdio.h> // snprintf
++#include <unordered_set> // std::unordered_set (the tables on the way down, see TableImpl)
+ 
+ extern "C"
+ {
+@@ -76,22 +77,42 @@ void LuaVal::Register(lua_State* L) {
+     lua_setglobal(L, "LuaVal");
+ }
+ 
++// Lua errors are raised only here, at the top of the C functions Lua calls, once every C++ object of
++// the call is destroyed: Lua is built as C, so luaL_error / luaL_argerror longjmp and would skip the
++// destructors of the LuaVal (strings, maps) of any frame they leave. The helpers below never raise one;
++// they return the message (a string literal, so the error owns nothing) and the argument it is about.
++int LuaVal::RaiseError(lua_State* L, LuaValError const& error)
++{
++    if (error.arg > 0)
++        return luaL_argerror(L, error.arg, error.message);
++    return luaL_error(L, "%s", error.message);
++}
++
+ int LuaVal::lua_get(lua_State* L) {
+     LuaVal* self = GetCheckLuaVal(L, 1);
++    LuaValError error;
++    int pushed = GetImpl(L, *self, error);
++    if (error.message)
++        return RaiseError(L, error);
++    return pushed;
++}
++
++int LuaVal::GetImpl(lua_State* L, LuaVal const& self, LuaValError& error) {
+     int arguments = std::max(2, lua_gettop(L));
+-    WrappedMap const* p = std::get_if<WrappedMap>(&self->v);
++    WrappedMap const* p = std::get_if<WrappedMap>(&self.v);
+     if (!p)
+-        luaL_argerror(L, 1, "trying to index a non-table LuaVal");
++        return error.Set(1, "trying to index a non-table LuaVal");
+     for (int i = 2; i <= arguments; ++i) {
+         auto& map = (*p);
+-        auto klv = AsLuaVal(L, i);
++        LuaVal klv;
++        if (!TryAsLuaVal(L, i, klv, error))
++            return 0;
+         if (std::holds_alternative<NIL>(klv.v))
+-            luaL_argerror(L, i, "trying to use nil as key");
++            return error.Set(i, "trying to use nil as key");
+         auto it = map->find(klv);
+         if (it == map->end()) {
+-            if (i < arguments) {
+-                luaL_argerror(L, i, "trying to index a nil value within a LuaVal");
+-            }
++            if (i < arguments)
++                return error.Set(i, "trying to index a nil value within a LuaVal");
+             break;
+         }
+         else if (i == arguments) {
+@@ -100,7 +121,7 @@ int LuaVal::lua_get(lua_State* L) {
+         }
+         p = std::get_if<WrappedMap>(&it->second.v);
+         if (!p)
+-            luaL_argerror(L, i, "trying to index a non-table LuaVal");
++            return error.Set(i, "trying to index a non-table LuaVal");
+     }
+     lua_pushnil(L);
+     return 1;
+@@ -108,30 +129,42 @@ int LuaVal::lua_get(lua_State* L) {
+ 
+ int LuaVal::lua_set(lua_State* L) {
+     LuaVal* self = GetCheckLuaVal(L, 1);
++    LuaValError error;
++    int pushed = SetImpl(L, *self, error);
++    if (error.message)
++        return RaiseError(L, error);
++    return pushed;
++}
++
++int LuaVal::SetImpl(lua_State* L, LuaVal const& self, LuaValError& error) {
+     int arguments = std::max(3, lua_gettop(L));
+-    WrappedMap const* p = std::get_if<WrappedMap>(&self->v);
++    WrappedMap const* p = std::get_if<WrappedMap>(&self.v);
+     if (!p)
+-        luaL_argerror(L, 1, "trying to index a non-table LuaVal");
++        return error.Set(1, "trying to index a non-table LuaVal");
+     for (int i = 2; i <= arguments - 2; ++i) {
+         auto& map = (*p);
+-        auto klv = AsLuaVal(L, i);
++        LuaVal klv;
++        if (!TryAsLuaVal(L, i, klv, error))
++            return 0;
+         if (std::holds_alternative<NIL>(klv.v))
+-            luaL_argerror(L, i, "trying to use nil as key");
++            return error.Set(i, "trying to use nil as key");
+         auto it = map->find(klv);
+         if (it == map->end()) {
+-            if (i < arguments) {
+-                luaL_argerror(L, i, "trying to index a nil value within a LuaVal");
+-            }
++            if (i < arguments)
++                return error.Set(i, "trying to index a nil value within a LuaVal");
+             break;
+         }
+         p = std::get_if<WrappedMap>(&it->second.v);
+         if (!p)
+-            luaL_argerror(L, i, "trying to index a non-table LuaVal");
++            return error.Set(i, "trying to index a non-table LuaVal");
+     }
+-    auto kk = AsLuaVal(L, arguments - 1);
+-    auto vv = AsLuaVal(L, arguments);
++    LuaVal kk, vv;
++    if (!TryAsLuaVal(L, arguments - 1, kk, error) || !TryAsLuaVal(L, arguments, vv, error))
++        return 0;   // nothing is stored: a refused value never reaches the map
+     if (std::holds_alternative<NIL>(kk.v))
+-        luaL_argerror(L, arguments - 1, "trying to use nil as key");
++        return error.Set(arguments - 1, "trying to use nil as key");
++    if (double const* number = std::get_if<double>(&kk.v); number && *number != *number)
++        return error.Set(arguments - 1, "trying to use NaN as key");   // AsTable could not set it in a Lua table
+     if (std::holds_alternative<NIL>(vv.v)) {
+         (**p).erase(kk);
+     }
+@@ -197,6 +230,27 @@ int LuaVal::asObject(lua_State* L) const
+ 
+ int LuaVal::asLua(lua_State* L, unsigned int depth) const
+ {
++    bool stackOk = true;
++    int pushed = asLuaImpl(L, depth, stackOk);
++    if (!stackOk)
++    {
++        // A nested level could not get Lua stack space; what was built is dropped, nil is returned.
++        lua_pop(L, pushed);
++        lua_pushnil(L);
++    }
++    return 1;
++}
++
++int LuaVal::asLuaImpl(lua_State* L, unsigned int depth, bool& stackOk) const
++{
++    // Every level pushes a table, a key and a value: make room for them first (a C function is only
++    // given LUA_MINSTACK slots, and writing past them corrupts the heap). Never raises an error.
++    if (!lua_checkstack(L, 3))
++    {
++        stackOk = false;
++        lua_pushnil(L);
++        return 1;
++    }
+     WrappedMap const* p = std::get_if<WrappedMap>(&v);
+     if (p)
+     {
+@@ -205,18 +259,17 @@ int LuaVal::asLua(lua_State* L, unsigned int depth) const
+             if (depth == 1) {
+                 it.first.asObject(L);
+                 it.second.asObject(L);
+-                lua_rawset(L, -3);
+-            }
+-            else if (depth == 0) {
+-                it.first.asLua(L, depth);
+-                it.second.asLua(L, depth);
+-                lua_rawset(L, -3);
+             }
+             else {
+-                it.first.asLua(L, depth - 1);
+-                it.second.asLua(L, depth - 1);
+-                lua_rawset(L, -3);
++                unsigned int next = depth == 0 ? 0 : depth - 1;
++                it.first.asLuaImpl(L, next, stackOk);
++                it.second.asLuaImpl(L, next, stackOk);
++                if (!stackOk) {
++                    lua_pop(L, 2);   // a nil key would make lua_rawset raise; the caller drops the table
++                    return 1;
++                }
+             }
++            lua_rawset(L, -3);
+         }
+         return 1;
+     }
+@@ -227,53 +280,138 @@ int LuaVal::lua_asLua(lua_State* L)
+ {
+     LuaVal* self = GetCheckLuaVal(L, 1);
+     int depth = luaL_optinteger(L, 2, 0);
+-    return self->asLua(L, static_cast<unsigned int>(depth));
++    bool stackOk = true;
++    self->asLuaImpl(L, static_cast<unsigned int>(depth), stackOk);
++    if (!stackOk)
++    {
++        lua_pop(L, 1);
++        return luaL_error(L, "AsTable: not enough Lua stack for the nesting of this LuaVal");
++    }
++    return 1;
++}
++
++bool LuaVal::TryAsLuaVal(lua_State* L, int index, LuaVal& out, LuaValError& error)
++{
++    if (index < 0 && index > LUA_REGISTRYINDEX)
++        index = lua_gettop(L) + index + 1;   // absolute: the walk pushes keys and values
++    std::unordered_set<void const*> path;    // the tables being copied, outermost first: a cycle comes back to one
++    out = LuaVal();
++    if (ConvertImpl(L, index, index, 0, path, out, error))
++        return true;
++    out = LuaVal();   // a partly built value is dropped here, before the caller raises the error
++    return false;
  }
  
  LuaVal LuaVal::AsLuaVal(lua_State* L, int index)
-+{
-+    bool tooDeep = false;
-+    LuaVal result = AsLuaValImpl(L, index, 0, tooDeep);
-+    if (tooDeep)
-+    {
-+        result = LuaVal();   // nothing to free when luaL_error unwinds this frame
-+        luaL_error(L, "Data(): table nested deeper than 64 levels");
-+    }
-+    return result;
+ {
+-    auto t = lua_type(L, index);
+-    switch (t)
++    // For C++ callers that run outside a Lua call (no Lua error possible here): a refused value is nil.
++    LuaVal out;
++    LuaValError error;
++    TryAsLuaVal(L, index, out, error);
++    return out;
 +}
 +
-+LuaVal LuaVal::AsLuaValImpl(lua_State* L, int index, unsigned int depth, bool& tooDeep)
- {
-     auto t = lua_type(L, index);
-     switch (t)
-@@ -247,10 +259,23 @@ LuaVal LuaVal::AsLuaVal(lua_State* L, int index)
-         return LuaVal(std::string(str, len));
++bool LuaVal::ConvertImpl(lua_State* L, int index, int arg, unsigned int depth, std::unordered_set<void const*>& path,
++                         LuaVal& out, LuaValError& error)
++{
++    switch (lua_type(L, index))
+     {
+     case LUA_TBOOLEAN:
+-        return LuaVal(static_cast<bool>(lua_toboolean(L, index)));
++        out = LuaVal(static_cast<bool>(lua_toboolean(L, index)));
++        return true;
+     case LUA_TNIL:
+-        return LuaVal();
++        out = LuaVal();
++        return true;
+     case LUA_TNUMBER:
+-        return LuaVal(lua_tonumber(L, index));
++        out = LuaVal(static_cast<double>(lua_tonumber(L, index)));
++        return true;
+     case LUA_TSTRING: {
+         size_t len;
+         const char* str = lua_tolstring(L, index, &len);
+-        return LuaVal(std::string(str, len));
++        out = LuaVal(std::string(str, len));
++        return true;
      }
      case LUA_TTABLE:
 -        return FromTable(L, index);
-+        return FromTableImpl(L, index, depth, tooDeep);
++        return TableImpl(L, index, arg, depth, path, out, error);
      case LUA_TUSERDATA:
          if (LuaVal* ptr = GetLuaVal(L, index))
+-            return ptr->reference();
++        {
 +#if defined ELUNA_VMANGOS
 +            // Value semantics: a LuaVal stored into another table or object's data is copied, so two
-+            // objects never share (and race on) one map; nesting deeper than 64 levels is refused, not cut.
-+        {
-+            {
-+                LuaVal copy;
-+                if (ptr->deepCloneLimited(copy, 64))
-+                    return copy;
-+            }   // `copy` is destroyed before the Lua error below unwinds this frame
-+            luaL_error(L, "Data(): table nested deeper than 64 levels");
-+        }
++            // objects never share (and race on) one map. A LuaVal holds no cycle (every store copies), so
++            // only its nesting is checked, counted from where it sits in the value being converted.
++            if (depth < LUAVAL_MAX_DEPTH && ptr->deepCloneLimited(out, LUAVAL_MAX_DEPTH - depth))
++                return true;
++            error.Set(arg, "Data(): table nested deeper than 64 levels");
++            return false;
 +#else
-             return ptr->reference();
++            out = ptr->reference();
++            return true;
 +#endif
++        }
          break;
      }
-     luaL_argerror(L, index, "Trying to use unsupported type");
-@@ -264,13 +289,37 @@ int LuaVal::lua_AsLuaVal(lua_State* L)
+-    luaL_argerror(L, index, "Trying to use unsupported type");
+-    return LuaVal();
++    error.Set(arg, "Trying to use unsupported type");
++    return false;
+ }
  
- LuaVal LuaVal::FromTable(lua_State* L, int index)
+-int LuaVal::lua_AsLuaVal(lua_State* L)
++bool LuaVal::TableImpl(lua_State* L, int index, int arg, unsigned int depth, std::unordered_set<void const*>& path,
++                       LuaVal& out, LuaValError& error)
  {
+-    return PushLuaVal(L, AsLuaVal(L, 1));
+-}
+-
+-LuaVal LuaVal::FromTable(lua_State* L, int index)
+-{
 -    // Assumed we know index is a table already
-+    bool tooDeep = false;
-+    LuaVal result = FromTableImpl(L, index, 0, tooDeep);
-+    if (tooDeep)
++    // index is a table. A table that holds itself, directly or through other tables (t.self = t), is
++    // refused, and so is one nested 64 levels or deeper; the walk stops and the error goes up to the
++    // Lua C function, which raises it.
++    if (depth >= LUAVAL_MAX_DEPTH)
 +    {
-+        result = LuaVal();
-+        luaL_error(L, "Data(): table nested deeper than 64 levels");
++        error.Set(arg, "Data(): table nested deeper than 64 levels");
++        return false;
 +    }
-+    return result;
-+}
-+
-+LuaVal LuaVal::FromTableImpl(lua_State* L, int index, unsigned int depth, bool& tooDeep)
-+{
-+    // Assumed we know index is a table already. A table that holds itself (t.self = t) or is
-+    // nested past 64 levels is refused: the walk stops and the caller raises the Lua error.
-+    if (depth >= 64)
++    void const* id = lua_topointer(L, index);
++    if (!path.insert(id).second)
 +    {
-+        tooDeep = true;
-+        return LuaVal();
++        error.Set(arg, "Data(): a table that contains itself cannot be stored");
++        return false;
++    }
++    // lua_next pushes a key and a value per level of nesting: make room (see asLuaImpl).
++    if (!lua_checkstack(L, 3))
++    {
++        error.Set(arg, "Data(): not enough Lua stack for the nesting of this table");
++        return false;
 +    }
      LuaVal m({});
      auto& t = std::get<WrappedMap>(m.v);
@@ -194,31 +428,83 @@ index 39c28f2..cdad607 100644
      lua_pushnil(L);
      while (lua_next(L, index) != 0) {
 -        t->emplace(AsLuaVal(L, top + 1), AsLuaVal(L, top + 2));
-+        auto key = AsLuaValImpl(L, top + 1, depth + 1, tooDeep);
-+        auto value = tooDeep ? LuaVal() : AsLuaValImpl(L, top + 2, depth + 1, tooDeep);
-+        if (tooDeep) {
++        LuaVal key, value;
++        if (!ConvertImpl(L, top + 1, arg, depth + 1, path, key, error) ||
++            !ConvertImpl(L, top + 2, arg, depth + 1, path, value, error))
++        {
 +            lua_settop(L, top);
-+            return LuaVal();
++            return false;
 +        }
 +        t->emplace(std::move(key), std::move(value));
          lua_pop(L, 1);
      }
-     return m;
+-    return m;
++    path.erase(id);   // only the tables on the way down count: the same table twice side by side is copied twice
++    out = std::move(m);
++    return true;
++}
++
++int LuaVal::lua_AsLuaVal(lua_State* L)
++{
++    LuaValError error;
++    {
++        LuaVal value;
++        if (TryAsLuaVal(L, 1, value, error))
++            return PushLuaVal(L, value);
++    }   // `value` is destroyed before the error is raised
++    return RaiseError(L, error);
++}
++
++LuaVal LuaVal::FromTable(lua_State* L, int index)
++{
++    return AsLuaVal(L, index);
+ }
+ 
+ size_t LuaValHash(LuaVal const& k)
 diff --git a/LuaValue.h b/LuaValue.h
-index fdb654e..cfda356 100644
+index fdb654e..9400e98 100644
 --- a/LuaValue.h
 +++ b/LuaValue.h
-@@ -72,6 +72,9 @@ public:
+@@ -30,6 +30,7 @@
+ #pragma once
+ 
+ #include <unordered_map> // std::unordered_map
++#include <unordered_set> // std::unordered_set
+ #include <string> // std::to_string, std::string
+ #include <variant> // std::monostate, std::variant, std::visit
+ #include <memory> // std::unique_ptr, std::shared_ptr
+@@ -70,8 +71,30 @@ public:
+     static std::string to_string_map(MapType const* ptr);
+     int asObject(lua_State* L) const;
      int asLua(lua_State* L, unsigned int depth) const;
++    // A refused value (unsupported type, a table that contains itself, nesting of 64 levels or more) is
++    // nil here; the Lua C functions use TryAsLuaVal and raise the error themselves.
      static LuaVal AsLuaVal(lua_State* L, int index);
      static LuaVal FromTable(lua_State* L, int index);
-+    // Nesting depth is carried down; tooDeep is set (and the walk stops) at 64 levels of plain tables.
-+    static LuaVal AsLuaValImpl(lua_State* L, int index, unsigned int depth, bool& tooDeep);
-+    static LuaVal FromTableImpl(lua_State* L, int index, unsigned int depth, bool& tooDeep);
++
++    // Why a conversion was refused: a string literal (owns nothing, so raising it frees nothing) and the
++    // argument it is about (0: none). Set returns 0 so `return error.Set(...)` ends a C function body.
++    struct LuaValError
++    {
++        char const* message = nullptr;
++        int arg = 0;
++        int Set(int argIndex, char const* text) { arg = argIndex; message = text; return 0; }
++    };
++    static constexpr unsigned int LUAVAL_MAX_DEPTH = 64;
++    // Never raises a Lua error (no longjmp past a C++ destructor): returns false with `error` set.
++    static bool TryAsLuaVal(lua_State* L, int index, LuaVal& out, LuaValError& error);
++    static bool ConvertImpl(lua_State* L, int index, int arg, unsigned int depth, std::unordered_set<void const*>& path,
++                            LuaVal& out, LuaValError& error);
++    static bool TableImpl(lua_State* L, int index, int arg, unsigned int depth, std::unordered_set<void const*>& path,
++                          LuaVal& out, LuaValError& error);
++    static int GetImpl(lua_State* L, LuaVal const& self, LuaValError& error);
++    static int SetImpl(lua_State* L, LuaVal const& self, LuaValError& error);
++    static int RaiseError(lua_State* L, LuaValError const& error);
++    int asLuaImpl(lua_State* L, unsigned int depth, bool& stackOk) const;
      static int lua_asLua(lua_State* L);
      static int lua_AsLuaVal(lua_State* L);
      static int lua_gc(lua_State* L);
-@@ -148,6 +151,44 @@ public:
+@@ -148,6 +171,44 @@ public:
      LuaVal reference() const {
          return *this;
      }
