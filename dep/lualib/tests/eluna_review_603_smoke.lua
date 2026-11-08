@@ -121,8 +121,10 @@ a line with "FAIL" is a failed check. What to do and what to expect, per item:
      spawn, enter combat, AI update, damage and died hooks, all returning
      nothing) 5 yd away, attacking it, in 5 rounds 8 s apart. Have the
      player out of GM mode (.gm off) so it is attacked. Expect per round
-     "11 round R ... native AI fought ok" (in combat, victim the player, Lua
-     AI updates seen), then it despawns from inside its own AI update hook:
+     "11 round R ... native AI fought ok" (in combat, victim the player, and
+     for this summon's guid alone: Lua AI updates seen and enter combat hooks
+     > 0; a round with 0 enter combat hooks logs FAIL: the summon had the
+     native AI only), then it despawns from inside its own AI update hook:
      "11 after round R: despawned inside its own AI update N times, no
      crash", and at the end "11 done: 5 of 5 despawned in the hook ok".
      0007 itself makes a MISSING Lua state count as "not handled" (this same
@@ -577,7 +579,10 @@ end)
 -- a script: see the header. The Kobold Worker gets Lua AI (every hook below returns nothing), attacks
 -- the player through the native AttackStart and must fight natively; then it despawns from inside its
 -- own AI update hook (the core goes on with the native UpdateAI in that tick, then deletes it), and
--- that is done SMOKE_AI_ROUNDS times.
+-- that is done SMOKE_AI_ROUNDS times. The hooks are counted per armed guid (natural Kobold Workers share
+-- the entry), and a round FAILs if the summon's ENTER_COMBAT hook count stays 0: that proves the summon
+-- got the Lua AI (ScriptMgr::GetCreatureAI offers it through the summon's own map, not its not-yet-in-
+-- world GetEluna()), not the native AI alone.
 local SMOKE_AI_ENTRY = 257          -- Kobold Worker
 local SMOKE_AI_ROUNDS = 5
 local CREATURE_EVENT_ON_ENTER_COMBAT = 1
@@ -585,9 +590,11 @@ local CREATURE_EVENT_ON_DIED = 4
 local CREATURE_EVENT_ON_SPAWN = 5
 local CREATURE_EVENT_ON_AIUPDATE = 7
 local CREATURE_EVENT_ON_DAMAGE_TAKEN = 9
-local aiCalls = { spawn = 0, combat = 0, update = 0, damage = 0, died = 0 }
+local aiCalls = { spawn = 0, combat = 0, update = 0, damage = 0, died = 0 }   -- entry-wide (natural Kobold Workers share the entry)
+local aiTrack = {}          -- guid low -> { update = n, combat = n }: hooks of the summons of THIS test only
 local aiDespawnArmed = {}   -- guid low -> true: despawn on the next AI update
 local aiDespawned = 0
+local aiFailed = 0          -- rounds where the summon never ran the Lua AI or the native AI did not fight
 local aiTestStarted = false
 
 RegisterCreatureEvent(SMOKE_AI_ENTRY, CREATURE_EVENT_ON_SPAWN, function(event, creature)
@@ -595,6 +602,10 @@ RegisterCreatureEvent(SMOKE_AI_ENTRY, CREATURE_EVENT_ON_SPAWN, function(event, c
 end)
 RegisterCreatureEvent(SMOKE_AI_ENTRY, CREATURE_EVENT_ON_ENTER_COMBAT, function(event, creature, target)
     aiCalls.combat = aiCalls.combat + 1
+    local t = aiTrack[creature:GetGUIDLow()]
+    if t then
+        t.combat = t.combat + 1
+    end
 end)
 RegisterCreatureEvent(SMOKE_AI_ENTRY, CREATURE_EVENT_ON_DAMAGE_TAKEN, function(event, creature, attacker, damage)
     aiCalls.damage = aiCalls.damage + 1
@@ -605,6 +616,10 @@ end)
 RegisterCreatureEvent(SMOKE_AI_ENTRY, CREATURE_EVENT_ON_AIUPDATE, function(event, creature, diff)
     aiCalls.update = aiCalls.update + 1
     local guid = creature:GetGUIDLow()
+    local t = aiTrack[guid]
+    if t then
+        t.update = t.update + 1
+    end
     if aiDespawnArmed[guid] then
         aiDespawnArmed[guid] = nil
         creature:DespawnOrUnsummon(0)   -- returns not handled: the native UpdateAI runs after this
@@ -619,17 +634,28 @@ local function runAiRound(player, round)
         log("11", "FAIL could not spawn the Lua AI creature")
         return
     end
-    creature:AttackStart(player)
-    local updatesBefore = aiCalls.update
     local id = creature:GetGUIDLow()
+    local t = { update = 0, combat = 0 }
+    aiTrack[id] = t   -- before AttackStart: count only this summon's hooks
+    creature:AttackStart(player)
     local playerGuid = player:GetGUIDLow()   -- the userdata itself is not valid in the timer
     creature:RegisterEvent(function(eventId, delay, repeats, obj)
         local victim = obj:GetVictim()
         local fights = obj:IsInCombat() and victim ~= nil and victim:GetGUIDLow() == playerGuid
+        local verdict
+        if t.combat == 0 then
+            verdict = " FAIL the summon never ran the Lua AI (0 enter combat hooks for this guid): the Lua AI was not selected for the summon"
+        elseif not (fights and t.update > 0) then
+            verdict = " FAIL the native AI did not take over"
+        else
+            verdict = " native AI fought ok"
+        end
+        if verdict:find("FAIL", 1, true) then
+            aiFailed = aiFailed + 1
+        end
         log("11", "round " .. round .. " Lua AI (no hook handled): in combat=" .. tostring(obj:IsInCombat()) ..
-            " victim=" .. (victim and victim:GetName() or "nil") .. " ai updates=" .. (aiCalls.update - updatesBefore) ..
-            " enter combat hooks=" .. aiCalls.combat ..
-            ((fights and aiCalls.update > updatesBefore) and " native AI fought ok" or " FAIL the native AI did not take over"))
+            " victim=" .. (victim and victim:GetName() or "nil") .. " ai updates=" .. t.update ..
+            " enter combat hooks=" .. t.combat .. verdict)
         aiDespawnArmed[id] = true
     end, 4000, 1)
 end
@@ -646,7 +672,8 @@ local function startAiTest(player)
         end
         if round >= SMOKE_AI_ROUNDS then
             log("11", "done: " .. aiDespawned .. " of " .. SMOKE_AI_ROUNDS .. " despawned in the hook" ..
-                (aiDespawned == SMOKE_AI_ROUNDS and " ok" or " FAIL (a round did not reach its despawn)"))
+                (aiDespawned ~= SMOKE_AI_ROUNDS and " FAIL (a round did not reach its despawn)" or
+                 aiFailed > 0 and (" FAIL (" .. aiFailed .. " rounds without Lua AI or native fight)") or " ok"))
             return
         end
         round = round + 1

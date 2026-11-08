@@ -11,6 +11,18 @@ already marked looted (no change without Eluna: nothing marks an item looted bef
 open); the five `--unlootedCount` sites (a `uint8`) no longer wrap 0 to 255; `_removeRolls` rescans
 from the start after a vote (same result as before); `Group` gains a bool and its getter.
 
+**Core change inside `#ifdef ENABLE_ELUNA` that changes behaviour.** `ScriptMgr::GetCreatureAI` offers
+the Lua AI through the creature's map (`FindMap()->GetEluna()`), not through `Creature::GetEluna()`.
+A `TemporarySummon` (`WorldObject::SummonCreature`, so `Player:SpawnCreature` and every script or
+core summon) runs `AIM_Initialize` before `Map::Add`, so it is not in the world yet and
+`GetEluna()` was null: the summon kept the native AI for good (`Creature::AddToWorld` only
+initialises a missing AI) and its Lua creature hooks never ran. Summons of entries with a
+`RegisterCreatureEvent` binding now get the Lua AI; before, only creatures loaded from the
+database did. The map is set in `Creature::Create`, and a summon is made on its summoner's map,
+which the summoning thread updates (or the world thread between updates), so `Map::GetEluna`'s
+thread check passes; if it ever refused, it returns null and logs once per map, and the summon
+keeps the native AI as before.
+
 The integration is built on the port by Nighthawk42 and Nightdawg in
 [TuringKi/turtle-wow-custom](https://github.com/TuringKi/turtle-wow-custom)
 (`aa0b2be`, `e649428`, `bdbe530`). Design discussion:
@@ -326,7 +338,9 @@ destroyed, after its objects are unloaded.
   functions in a map state (`refused=<name>`, patch 0009),
   `Aura:GetCasterLevel` of an aura whose caster despawned (nil, patch 0010)
   and Lua creature AI that handles no event running the native AI, despawned
-  from inside its own AI update (item 11, patch 0007).
+  from inside its own AI update (item 11, patch 0007; the hooks are counted per
+  summon guid and a round FAILs when the summon had no enter combat hook, which
+  proves it got the Lua AI).
   The header says what to do and what to expect.
 - `dep/lualib/tests/eluna_lootpet_smoke.lua` logs `ELUNA_LOOT ...` lines for
   the loot methods of patch 0011 (`.lootsmoke` and the group roll event). The
@@ -361,7 +375,7 @@ loaded. Run at c3638fa (2026-11-08), before the 0012 `LuaVal` fix:
 | Patch | Result |
 | --- | --- |
 | 0001-0006 | PASS: 603 items 1-5, 7, 8 (timers across teleports and instance unloads, other-map refusal, instance data across a restart, 15 reloads with instances open, spell hit and gameobject spawn, spawn-event timer, hooks intact); item 6 two of four rounds seen, `refs freed: 0 of 25` and `0 of 50`. |
-| 0007 | Not run yet (603 item 11 is new). |
+| 0007 | Not run yet (603 item 11 is new; it also needs the summon Lua AI fix above, the smoke FAILs a summon with 0 enter combat hooks). |
 | 0008 | Not run yet (`.elunasmoke inflight` is new); the trade-slot enchant case needs a real client. |
 | 0009 | PASS: 11 of 11 world-only functions and 3 of 3 methods refused in map states 0, 1 and 34. |
 | 0010 | PASS in 4 of 6 runs; in 2 the target had lost the aura before the check (no crash); the cause is not known yet. |
