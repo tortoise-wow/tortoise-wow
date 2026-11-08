@@ -64,7 +64,7 @@ cmake --build build --target mangosd
   | `0009-vmangos-world-only-global-methods` | Server-wide functions ran in map states too: `PerformIngameSpawn`, `SendMail`, `SaveAllPlayers`, `StartGameEvent`, `StopGameEvent`, `AddVendorItem`, `VendorRemoveItem`, `VendorRemoveAllItems`, `AddTaxiPath`, `Kick`, `Ban`, `Player:KickPlayer`, `Player:LogoutPlayer` and `Player:RemoveFromGroup` write other maps, sessions, accounts or the core's vendor/taxi tables, close a session's socket or delete a player synchronously, and a map state runs on that map's thread next to other maps. They are now flagged `METHOD_REG_WORLD`, the mechanism the backend already uses for the Group and Guild methods: a map state gets a closure that raises "attempt to call method '...' that does not exist for state: N" (see Threading rules and Known limits). |
   | `0010-vmangos-null-safe-method-chains` | Null dereferences in methods: `Aura:GetCasterLevel` read `aura->GetCaster()->GetLevel()`; the caster is a guid lookup that returns null once it despawned or logged out (a DoT from a dead add), and a player caster is found on any map (now `nil` when the caster is gone or on another map than the state's). `Item:GetItemLink` read `item->GetOwner()->GetLevel()`; an ownerless item (dropped, in a chest, in the mail) has no level (the link's level field is 0). The Lua instance AI's hooks and data methods (`Update`, `IsEncounterInProgress`, `OnPlayerEnter`, `OnObjectCreate`, `OnCreatureCreate`, `Initialize`, `Load`, `Save`, `GetData`/`SetData`, `GetData64`/`SetData64`) called `instance->GetEluna()->...` unchecked; a missing state now counts as "no script" (as the creature AI does since 0007), because `Map::GetEluna` refuses the state to a thread that does not update the map; `Save` returns NULL when the state is missing (wrong thread or no Lua instance script) and leaves `lastSaveData` alone: `InstanceData::SaveToDB` skips the write on NULL, so the stored data stays (the `DungeonPersistentState::SaveToDB` that stores an empty column for NULL runs for a new instance only), and `Load` keeps its data before the state check, so the map's next update reloads it. |
   | `0011-vmangos-loot-itemtemplate-roll` | Missing for loot scripts: no `Loot` type, `GetItemTemplate` pushed nil (this pin registered no `ItemTemplate` type for VMaNGOS), `Unit:GetCritterGUID` was a "not implemented" stub, `Group:GetMembers` is world-only so no map state could list a group, and nothing told a script who won a group loot roll. Adds the `Loot`, `ItemTemplate` and `Roll` types, `PLAYER_EVENT_ON_GROUP_ROLL_REWARD_ITEM` (56) and the methods listed under "Turtle custom methods". |
-  | `0012-vmangos-trinitycore-parity` | The TrinityCore script API that scripts port with. Globals `GetStateMap` (map states) and `GetPlayersOnMap` (map states; `GetStateMapId` and `GetStateInstanceId` come with 0011). `RegisterSpellEvent` for the spell events the core fires, called from `Spell.cpp`: 1 cast (after the cast hooks), 10 check cast (end of `CheckCast`; a `SPELL_FAILED_*` return cancels the cast, `SPELL_CAST_OK` lets it go on and a value outside both counts as OK; handler arguments `(event, spell, strict)`), 11 before cast and 12 after cast (`Spell::cast`), 20 before hit, 22 hit and 23 after hit (`DoAllEffectOnTarget`; they get the hit unit as last argument; 22 fires exactly once per successful target hit, whether the hit healed, damaged, only procced or only applied an aura), 19 effect hit and 21 effect hit target (`HandleEffects`; `true` prevents the default effect, the hit unit is the last argument); any other event number is an argument error. `Creature:GetThreat`, `ClearThreat`, `ResetAllThreat`, `FixateTarget` and `ClearFixate` (the fixate is a field of the unit that `GetTauntTarget` checks first, cleared when the creature leaves combat or dies). `Spell:IsTriggered`, `GetOriginalCaster`, `IsPositive`, `GetState`, `IsInterruptable`, `IsChannelActive`, `CalculateDamage`. `WorldObject:Data()` and `Map:Data()`: the `LuaVal` the core keeps with the object, with value semantics (a `LuaVal` stored into another is deep-copied; nesting deeper than 64 levels raises "Data(): table nested deeper than 64 levels" instead of being cut) and a detached copy left behind when the object leaves its map (`WorldObject::ResetMap`). The `ChatHandler` type: the third argument of `PLAYER_EVENT_ON_COMMAND` (`World::OnElunaCommand(ChatHandler&)`), with `SendSysMessage`, `PSendSysMessage`, `IsConsole`, `GetPlayer`, `GetSecurity`, `IsAvailable`, `HasLowerSecurity`, `GetSelected*` and more, world-only. |
+  | `0012-vmangos-trinitycore-parity` | The TrinityCore script API that scripts port with. Globals `GetStateMap` (map states) and `GetPlayersOnMap` (map states; `GetStateMapId` and `GetStateInstanceId` come with 0011). `RegisterSpellEvent` for the spell events the core fires, called from `Spell.cpp`: 1 cast (after the cast hooks), 10 check cast (end of `CheckCast`; a `SPELL_FAILED_*` return cancels the cast, `SPELL_CAST_OK` lets it go on and a value outside both counts as OK; handler arguments `(event, spell, strict)`), 11 before cast and 12 after cast (`Spell::cast`), 20 before hit, 22 hit and 23 after hit (`DoAllEffectOnTarget`; they get the hit unit as last argument; 22 fires exactly once per successful target hit, whether the hit healed, damaged, only procced or only applied an aura), 19 effect hit and 21 effect hit target (`HandleEffects`; `true` prevents the default effect, the hit unit is the last argument); any other event number is an argument error. `Creature:GetThreat`, `ClearThreat`, `ResetAllThreat`, `FixateTarget` and `ClearFixate` (the fixate is a field of the unit that `GetTauntTarget` checks first, cleared when the creature leaves combat or dies). `Spell:IsTriggered`, `GetOriginalCaster`, `IsPositive`, `GetState`, `IsInterruptable`, `IsChannelActive`, `CalculateDamage`. `WorldObject:Data()` and `Map:Data()`: the `LuaVal` the core keeps with the object, with value semantics (a `LuaVal` stored into another is deep-copied; a table that contains itself, directly or through other tables, raises "Data(): a table that contains itself cannot be stored" and nesting deeper than 64 levels "Data(): table nested deeper than 64 levels", instead of being cut; the conversion makes Lua stack room per level and raises its error only from the Lua C function, after the C++ values of the call are destroyed) and a detached copy left behind when the object leaves its map (`WorldObject::ResetMap`). The `ChatHandler` type: the third argument of `PLAYER_EVENT_ON_COMMAND` (`World::OnElunaCommand(ChatHandler&)`), with `SendSysMessage`, `PSendSysMessage`, `IsConsole`, `GetPlayer`, `GetSecurity`, `IsAvailable`, `HasLowerSecurity`, `GetSelected*` and more, world-only. |
 - The backend is `ELUNA_VMANGOS` with `ELUNA_EXPANSION=0`.
 - Lua (5.2 by default; `ELUNA_LUA_VERSION` takes lua51..lua54) is downloaded
   from lua.org at configure time with a pinned SHA-256 and linked statically.
@@ -127,8 +127,8 @@ What the core does to keep to that, only while `Eluna.Enabled = 1`:
   loads.
 - **`Data()`** is C++ memory of the object, not a Lua table: it survives `.reload eluna`.
   A handle is not invalidated with the object, so one kept by a map state is detached
-  (the object gets a deep copy when it leaves the map) rather than shared. Storing a plain table nested deeper than 64 levels, or one that holds itself
-  (`t.self = t`), raises a Lua error.
+  (the object gets a deep copy when it leaves the map) rather than shared. Storing a table nested deeper than 64 levels, or one that contains itself
+  (`t.self = t`, or `a.b = b` with `b.a = a`), raises a Lua error and stores nothing.
 - **`ChatHandler`** exists only in the world state, on the world thread, during the
   hook. A command parsed on a map thread gets no state and is skipped. A handle is only valid during the call that pushed it, like `Loot` and `Roll`. A handle
   kept after the hook reads nil once the outermost call has ended; during nested calls (the
@@ -323,17 +323,27 @@ destroyed, after its objects are unloaded.
   despawned creatures returning to zero, a timer registered in a
   gameobject's spawn event, a check that every hook of the file is still
   in its state's registry after reloads, the refusal of the server-wide
-  functions in a map state (`refused=<name>`, patch 0009) and
-  `Aura:GetCasterLevel` of an aura whose caster despawned (nil, patch 0010).
+  functions in a map state (`refused=<name>`, patch 0009),
+  `Aura:GetCasterLevel` of an aura whose caster despawned (nil, patch 0010)
+  and Lua creature AI that handles no event running the native AI, despawned
+  from inside its own AI update (item 11, patch 0007).
   The header says what to do and what to expect.
 - `dep/lualib/tests/eluna_lootpet_smoke.lua` logs `ELUNA_LOOT ...` lines for
   the loot methods of patch 0011 (`.lootsmoke` and the group roll event). The
   header says what to do and what to expect.
 - `dep/lualib/tests/eluna_parity_smoke.lua` logs `ELUNA_0012 <group>` lines for the
   patch 0012 API: state identity and `GetPlayersOnMap`, spell events and their order,
-  creature threat and fixate (`.elunasmoke threat`), the `Spell` getters, `Data()`
-  across teleports and reloads, and a Lua command with the `ChatHandler`
-  (`.paritysmoke`, in game and from the console). The header says what to do.
+  creature threat and fixate (`.elunasmoke threat`), the `Spell` getters, `Spell:GetTarget`
+  of a projectile whose target was deleted in flight (`.elunasmoke inflight`, patch 0008)
+  and of a trade-slot enchant (needs a real client), `Data()` across teleports and reloads
+  (the kept-handle detach, the self-reference, depth and unsupported-value refusals), and a
+  Lua command with the `ChatHandler` (`.paritysmoke`, in game and from the console). The
+  header says what to do.
+- `dep/lualib/tests/luaval_smoke.cpp` is the ctest `eluna.luaval` (`BUILD_ELUNA_TESTS=ON`):
+  `LuaVal` from the patched copy, in a plain Lua state, refusing cycles, nesting past 64
+  levels, unsupported values and NaN keys (200 rounds, and in a coroutine), storing 64
+  levels and reading them back with `AsTable`. Before the 0012 fix the self-reference case
+  overran the Lua stack (AddressSanitizer: heap-buffer-overflow in `lua_next`).
 
 Spell event order (Fireball rank 1, a delayed projectile, as the smoke script checks it):
 `check_cast`, `before_cast`, `cast`, `effect_hit_target` (effect 0), `after_cast`, then when the
@@ -343,13 +353,29 @@ handles at spell launch (`IsEffectHandledOnDelayedSpellLaunch`) fires its effect
 `GetPlayersOnMap` lists every player on the map including GMs (TrinityCore); `Map:GetPlayerCount`
 skips players in GM mode.
 
+## Smoke results
+
+A throwaway realm (fresh core database, two turtle-agent players, GM commands), every smoke script
+loaded. Run at c3638fa (2026-11-08), before the 0012 `LuaVal` fix:
+
+| Patch | Result |
+| --- | --- |
+| 0001-0006 | PASS: 603 items 1-5, 7, 8 (timers across teleports and instance unloads, other-map refusal, instance data across a restart, 15 reloads with instances open, spell hit and gameobject spawn, spawn-event timer, hooks intact); item 6 two of four rounds seen, `refs freed: 0 of 25` and `0 of 50`. |
+| 0007 | Not run yet (603 item 11 is new). |
+| 0008 | Not run yet (`.elunasmoke inflight` is new); the trade-slot enchant case needs a real client. |
+| 0009 | PASS: 11 of 11 world-only functions and 3 of 3 methods refused in map states 0, 1 and 34. |
+| 0010 | PASS in 4 of 6 runs; in 2 the target had lost the aura before the check (no crash); the cause is not known yet. |
+| 0011 | PASS: template, map change, `GetMembersOnMap`, loot and take, `StartGroupLootRoll` and its idempotence, the looted-item block, the roll event. Not run: `Player:IsBot` true, a critter with a companion out. |
+| 0012 | The server crashed on `Data():Set` of a table that holds itself (Lua stack overrun), fixed since, covered by ctest `eluna.luaval`, live re-run still to do. The other groups passed with that check taken out: state, spell event order, check-cast block, threat and fixate, Spell getters (Fireball), `ChatHandler` command. Not seen: the Arcane Missiles channel line. |
+
 ## Known limits
 
-- **`Data()` and nested tables.** The 64-level limit is per conversion and exact for plain
-  tables (a `LuaVal` userdata nested inside can go deeper). A Lua error raised in the middle of
-  a nested table walk jumps past C++ destructors, so each such script error leaks a little
-  memory, as upstream. Wide tables whose sub-tables are shared are copied once per reference,
-  which takes exponential time, as upstream.
+- **`Data()` and nested tables.** The 64-level limit is per conversion, counted from the stored
+  value down, for plain tables and `LuaVal` userdata nested in them alike (64 levels are stored,
+  65 refused). A refused value (a cycle, too deep, a function or other unsupported value) raises
+  its Lua error only after the conversion has freed what it built, so it leaks nothing. Wide tables
+  whose sub-tables are shared (the same table under two keys, no cycle) are copied once per
+  reference, which can take exponential time within the 64 levels, as upstream.
 - **Master loot give.** The core's master-give path can mark an item looted without the usual checks;
   it needs a modified client and is not caused by these patches.
 - **Global functions that change server-wide data are world-only**
@@ -416,7 +442,7 @@ skips players in GM mode.
 
 - A soak test with every thread setting above 1 and 500 bots, with the
   negative control (thread limit removed, it must crash).
-- A ThreadSanitizer run.
+- A ThreadSanitizer run with patches 0007 to 0012 (the run under Known limits predates them).
 - Tick-time numbers: built without Eluna, Eluna disabled, Eluna enabled.
 - A Windows/MSVC build.
 - Patch application on Windows: the patch files are LF (`.gitattributes` keeps
