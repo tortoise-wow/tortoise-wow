@@ -105,7 +105,9 @@ a line with "FAIL" is a failed check. What to do and what to expect, per item:
      the player out, and Player:KickPlayer disconnects it.
 
   10 Aura:GetCasterLevel of a gone caster
-     The first player to log in spawns two rabbits (entry 721): one casts
+     Runs only in the map 1 state (SMOKE_CASTER_TEST_MAP; the driver parks a
+     player in GM mode alone on GM Island, so nothing kills the rabbit). The
+     first player to log in there spawns two rabbits (entry 721): one casts
      Mark of the Wild (1126, a 30 min aura) on the other and despawns after
      3 s; 8 s later the target's timer asks for the aura and its caster
      level. Expect "10 GetCasterLevel of the gone caster is nil". Before
@@ -117,7 +119,8 @@ a line with "FAIL" is a failed check. What to do and what to expect, per item:
      its caster (... at N s alive=true ...)" is a living target that lost it.
 
   11 Lua creature AI that handles nothing falls back to the native AI (0007)
-     The first player to log in gets a Kobold Worker (257) with Lua AI (the
+     Runs only in the map 0 state (SMOKE_AI_TEST_MAP; the driver turns GM off
+     at login there). The first player to log in gets a Kobold Worker (257) with Lua AI (the
      spawn, enter combat, AI update, damage and died hooks, all returning
      nothing) 5 yd away, attacking it, in 5 rounds 8 s apart. Have the
      player out of GM mode (.gm off) so it is attacked. Expect per round
@@ -499,6 +502,7 @@ local CASTER_TEST_SPELL = 1126           -- Mark of the Wild, Rank 1
 local CASTER_TEST_ENTRY = 721            -- Rabbit
 local CASTER_TEST_GONE_AFTER_MS = 8000   -- the caster is unsummoned at 3 s
 local CASTER_TEST_ATTEMPTS = 3           -- a target killed during the 8 s is no result: try a new pair
+local SMOKE_CASTER_TEST_MAP = 1      -- item 10 runs only in this map's state (the driver parks a GM-mode player there)
 local casterTestStarted = false
 
 -- spawner: the player (first try) or the previous target (a retry); both are valid in the call.
@@ -562,7 +566,7 @@ local function runCasterTest(spawner, attempt)
 end
 
 local function startCasterTest(player)
-    if casterTestStarted then
+    if casterTestStarted or GetStateMapId() ~= SMOKE_CASTER_TEST_MAP then
         return
     end
     casterTestStarted = true
@@ -595,6 +599,7 @@ local aiTrack = {}          -- guid low -> { update = n, combat = n }: hooks of 
 local aiDespawnArmed = {}   -- guid low -> true: despawn on the next AI update
 local aiDespawned = 0
 local aiFailed = 0          -- rounds where the summon never ran the Lua AI or the native AI did not fight
+local SMOKE_AI_TEST_MAP = 0         -- item 11 runs only in this map's state (the driver turns GM off at login there)
 local aiTestStarted = false
 
 RegisterCreatureEvent(SMOKE_AI_ENTRY, CREATURE_EVENT_ON_SPAWN, function(event, creature)
@@ -661,7 +666,7 @@ local function runAiRound(player, round)
 end
 
 local function startAiTest(player)
-    if aiTestStarted then
+    if aiTestStarted or GetStateMapId() ~= SMOKE_AI_TEST_MAP then
         return
     end
     aiTestStarted = true

@@ -380,7 +380,7 @@ loaded. Run at c3638fa (2026-11-08), before the 0012 `LuaVal` fix:
 | 0009 | PASS: 11 of 11 world-only functions and 3 of 3 methods refused in map states 0, 1 and 34. |
 | 0010 | PASS in 4 of 6 runs; in 2 the target had lost the aura before the check (no crash); the cause is not known yet. |
 | 0011 | PASS: template, map change, `GetMembersOnMap`, loot and take, `StartGroupLootRoll` and its idempotence, the looted-item block, the roll event. Not run: `Player:IsBot` true, a critter with a companion out. |
-| 0012 | The server crashed on `Data():Set` of a table that holds itself (Lua stack overrun), fixed since, covered by ctest `eluna.luaval`, live re-run still to do. The other groups passed with that check taken out: state, spell event order, check-cast block, threat and fixate, Spell getters (Fireball), `ChatHandler` command. Not seen: the Arcane Missiles channel line. |
+| 0012 | The server crashed on `Data():Set` of a table that holds itself (Lua stack overrun), fixed since, covered by ctest `eluna.luaval`, live re-run still to do. The other groups passed with that check taken out: state, spell event order, check-cast block, threat and fixate, Spell getters (Fireball), `ChatHandler` command. Not seen: the Arcane Missiles channel lines (`arcane missiles cast` / `after_cast` / `1 s in`, hooks added since). |
 
 ## Known limits
 

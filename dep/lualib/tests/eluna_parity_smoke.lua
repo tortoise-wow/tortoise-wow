@@ -24,7 +24,9 @@ a line with "FAIL" is a failed check. Groups, what to do and what to expect:
            RegisterSpellEvent(x, 2, f) logs "spell unsupported refused". It also
            logs "hit once per target ok" (event 22 fired exactly once). Cast
            SMOKE_AURA_SPELL (1126, an aura-only spell that took none of the old
-           heal/damage/proc fire sites) on yourself: "aura-only hit once ok".
+           heal/damage/proc fire sites) on yourself or on a friend (a mage may
+           .learn 1126 and cast it; the hooks do not depend on the class), once per
+           cast: "aura-only hit once ok".
 
   threat   ".elunasmoke threat" on a selected creature that is in combat with
            you: AddThreat(player, 1000), GetThreat >= 1000, ResetAllThreat -> 0
@@ -42,15 +44,21 @@ a line with "FAIL" is a failed check. Groups, what to do and what to expect:
            state=5 GetTarget=nil (nil ok)". Before 0008: the freed creature.
   trade    (0008) An enchant (SMOKE_TRADE_ENCHANT_SPELL, 7418) cast on the
            partner's item in the "will not be traded" slot of an open trade:
-           "trade enchant check_cast (slot) / before_cast (slot) / cast (guid)
-           / after_cast (guid): GetTarget=item E guid G (item ok)". Needs a real
-           client: turtle-agent casts only at a unit or itself.
+           "trade enchant check_cast (slot) / before_cast (guid) / cast (guid)
+           / after_cast (guid): GetTarget=item E guid G (item ok)". Drive it with
+           turtle-agent's step trade RPCs (trade_open / trade_expect,
+           trade_set_item, cast with trade_slot 6, trade_accept).
 
   spellget Logged in the cast hook for SMOKE_SPELL: IsTriggered, IsPositive,
            GetState, IsInterruptable, IsChannelActive, CalculateDamage(0),
            GetOriginalCaster (for Fireball: false, false, a state 1..5 (only
-           logged), true, false, > 0, the caster). Cast Arcane Missiles (5143):
-           IsChannelActive is true in its hooks.
+           logged), true, false, > 0, the caster).
+           Cast Arcane Missiles (5143) at a target that survives the 5 s channel:
+           "arcane missiles cast: IsChannelActive=false (false ok)" (the channel
+           starts after the cast hook), "arcane missiles after_cast:
+           IsChannelActive=true (channel ok)" and 1 s later "arcane missiles 1 s
+           in: IsChannelActive=true (channeling ok)" (or "inconclusive" when the
+           channel ended early).
 
   data     On each login / map change player:Data() counts "n". After teleports
            the value keeps counting, after ".reload eluna" it survives. A handle
@@ -230,8 +238,8 @@ if type(mapId) == "number" and mapId >= 0 then
 
     -- 0008, the trade-slot enchant: an enchant cast on the item in the other player's "will not be traded"
     -- trade slot targets TARGET_FLAG_TRADE_ITEM, by slot number before Spell::cast and by the item's guid
-    -- after updateTradeSlotItem. GetTarget must return that item in both: check_cast / before_cast (slot)
-    -- and cast / after_cast (guid). Needs a real client (turtle-agent sends no trade-item cast target).
+    -- after updateTradeSlotItem. GetTarget must return that item in both: check_cast (slot)
+    -- and before_cast / cast / after_cast (guid; updateTradeSlotItem runs before OnBeforeCast). Drive it with turtle-agent's trade_slot cast on slot 6 of an open step trade.
     local function tradeTarget(name)
         return function(event, spell)
             local t = spell:GetTarget()
@@ -241,9 +249,30 @@ if type(mapId) == "number" and mapId >= 0 then
         end
     end
     RegisterSpellEvent(SMOKE_TRADE_ENCHANT_SPELL, 10, tradeTarget("check_cast (slot)"))
-    RegisterSpellEvent(SMOKE_TRADE_ENCHANT_SPELL, 11, tradeTarget("before_cast (slot)"))
+    RegisterSpellEvent(SMOKE_TRADE_ENCHANT_SPELL, 11, tradeTarget("before_cast (guid)"))
     RegisterSpellEvent(SMOKE_TRADE_ENCHANT_SPELL, 1, tradeTarget("cast (guid)"))
     RegisterSpellEvent(SMOKE_TRADE_ENCHANT_SPELL, 12, tradeTarget("after_cast (guid)"))
+
+    -- 0012 IsChannelActive on a channel: false in the cast hook (the channel starts in handle_immediate), true in
+    -- after_cast and 1 s into the channel (Spell.cpp:3934, 4058-4066, 4038).
+    local SMOKE_CHANNEL_SPELL = 5143 -- Arcane Missiles rank 1
+    RegisterSpellEvent(SMOKE_CHANNEL_SPELL, 1, function(event, spell)
+        log("spellget", "arcane missiles cast: IsChannelActive=" .. tostring(spell:IsChannelActive()) ..
+            (spell:IsChannelActive() and " FAIL (expected false before the channel starts)" or " (false ok)"))
+    end)
+    RegisterSpellEvent(SMOKE_CHANNEL_SPELL, 12, function(event, spell)
+        log("spellget", "arcane missiles after_cast: IsChannelActive=" .. tostring(spell:IsChannelActive()) ..
+            (spell:IsChannelActive() and " (channel ok)" or " FAIL (expected true)"))
+        spell:GetCaster():RegisterEvent(function(id, delay, repeats, obj)
+            local s = obj:GetCurrentSpell(3)   -- CURRENT_CHANNELED_SPELL
+            if not s or s:GetEntry() ~= SMOKE_CHANNEL_SPELL then
+                log("spellget", "arcane missiles 1 s in: inconclusive, the channel ended early (target died or moved)")
+                return
+            end
+            log("spellget", "arcane missiles 1 s in: IsChannelActive=" .. tostring(s:IsChannelActive()) ..
+                (s:IsChannelActive() and " (channeling ok)" or " FAIL (expected true while channeling)"))
+        end, 1000, 1)
+    end)
 end
 
 -- data ---------------------------------------------------------------------
