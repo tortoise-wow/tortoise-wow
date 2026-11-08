@@ -111,6 +111,30 @@ a line with "FAIL" is a failed check. What to do and what to expect, per item:
      level. Expect "10 GetCasterLevel of the gone caster is nil". Before
      dep/eluna-patches/0010 that read the null guid lookup of the caster and
      crashed the map's update (SIGSEGV); a successful read logs FAIL.
+     The target is checked every second: if it died (a player or script
+     killed the rabbit) its aura went with it, which is no 0010 result:
+     "10 RETRY ..." and a new pair (3 tries). "10 FAIL the aura left with
+     its caster (... at N s alive=true ...)" is a living target that lost it.
+
+  11 Lua creature AI that handles nothing falls back to the native AI (0007)
+     The first player to log in gets a Kobold Worker (257) with Lua AI (the
+     spawn, enter combat, AI update, damage and died hooks, all returning
+     nothing) 5 yd away, attacking it, in 5 rounds 8 s apart. Have the
+     player out of GM mode (.gm off) so it is attacked. Expect per round
+     "11 round R ... native AI fought ok" (in combat, victim the player, Lua
+     AI updates seen), then it despawns from inside its own AI update hook:
+     "11 after round R: despawned inside its own AI update N times, no
+     crash", and at the end "11 done: 5 of 5 despawned in the hook ok".
+     0007 itself makes a MISSING Lua state count as "not handled" (this same
+     branch). A script cannot make the state go missing: GetEluna() is null
+     only for a creature updated while out of the world or for a hook run
+     on a thread that does not update the map. The first is not reachable
+     from Lua or GM commands, and with Eluna on the core runs every map
+     sub-thread on the map's own thread (World.cpp: the "Eluna is enabled:
+     ... sub-threads run on each map's own thread" line), so the second is
+     closed too. If it ever happens, mangosd logs "Eluna: a hook asked for
+     the Lua state of map M ... on a thread that does not update it" and,
+     with 0007, goes on with the native AI instead of crashing.
 ]]
 
 local SMOKE_INSTANCE_MAP = 34       -- The Stockade: no C++ instance script in src/scripts (nor Ragefire Chasm, 389)
@@ -472,17 +496,14 @@ end)
 local CASTER_TEST_SPELL = 1126           -- Mark of the Wild, Rank 1
 local CASTER_TEST_ENTRY = 721            -- Rabbit
 local CASTER_TEST_GONE_AFTER_MS = 8000   -- the caster is unsummoned at 3 s
+local CASTER_TEST_ATTEMPTS = 3           -- a target killed during the 8 s is no result: try a new pair
 local casterTestStarted = false
 
-local function startCasterTest(player)
-    if casterTestStarted then
-        return
-    end
-    casterTestStarted = true
-
-    local x, y, z, o = player:GetLocation()
-    local target = player:SpawnCreature(CASTER_TEST_ENTRY, x + 4, y, z, o, TEMPSUMMON_TIMED_DESPAWN, 120000)
-    local caster = player:SpawnCreature(CASTER_TEST_ENTRY, x + 8, y, z, o, TEMPSUMMON_TIMED_DESPAWN, 3000)
+-- spawner: the player (first try) or the previous target (a retry); both are valid in the call.
+local function runCasterTest(spawner, attempt)
+    local x, y, z, o = spawner:GetLocation()
+    local target = spawner:SpawnCreature(CASTER_TEST_ENTRY, x + 4, y, z, o, TEMPSUMMON_TIMED_DESPAWN, 120000)
+    local caster = spawner:SpawnCreature(CASTER_TEST_ENTRY, x + 8, y, z, o, TEMPSUMMON_TIMED_DESPAWN, 3000)
     if not target or not caster then
         log("10", "FAIL could not spawn the test creatures")
         return
@@ -494,9 +515,28 @@ local function startCasterTest(player)
     end
 
     local names = target:GetGUIDLow() .. "/" .. caster:GetGUIDLow()
+    -- Look every second, so a lost aura says when it went and whether the target was alive then: an
+    -- aura that goes with the target's death (a player or a script killed the rabbit) is not 0010's.
+    local lostAt, lostAlive, lostCombat, lostHealth
     local eventId = target:RegisterEvent(function(id, delay, repeats, obj)
-        if not obj:HasAura(CASTER_TEST_SPELL) then
-            log("10", "FAIL the aura left with its caster (" .. names .. ")")
+        local second = (CASTER_TEST_GONE_AFTER_MS / 1000) - repeats + 1
+        if not lostAt and not obj:HasAura(CASTER_TEST_SPELL) then
+            lostAt, lostAlive, lostCombat, lostHealth = second, obj:IsAlive(), obj:IsInCombat(), obj:GetHealth()
+        end
+        if repeats ~= 1 then
+            return
+        end
+        if lostAt then
+            local why = "at " .. lostAt .. " s alive=" .. tostring(lostAlive) .. " combat=" .. tostring(lostCombat) ..
+                " hp=" .. tostring(lostHealth) .. " now alive=" .. tostring(obj:IsAlive())
+            if (not lostAlive or not obj:IsAlive()) and attempt < CASTER_TEST_ATTEMPTS then
+                log("10", "RETRY the target died, its aura went with it (" .. names .. " " .. why .. "): not a 0010 result")
+                runCasterTest(obj, attempt + 1)
+            elseif not lostAlive or not obj:IsAlive() then
+                log("10", "FAIL the target died " .. CASTER_TEST_ATTEMPTS .. " times in a row (" .. names .. " " .. why .. ")")
+            else
+                log("10", "FAIL the aura left with its caster (" .. names .. " " .. why .. ")")
+            end
             return
         end
         local aura = obj:GetAura(CASTER_TEST_SPELL)
@@ -510,15 +550,110 @@ local function startCasterTest(player)
         else
             log("10", "FAIL GetCasterLevel returned " .. tostring(level) .. " for a caster that despawned (" .. names .. ")")
         end
-    end, CASTER_TEST_GONE_AFTER_MS, 1)
+    end, 1000, CASTER_TEST_GONE_AFTER_MS / 1000)
     if not eventId then
         log("10", "FAIL RegisterEvent on the aura's target returned nil")
         return
     end
 
-    log("10", "aura " .. CASTER_TEST_SPELL .. " on " .. names .. " cast by a creature that despawns in 3 s")
+    log("10", "aura " .. CASTER_TEST_SPELL .. " on " .. names .. " cast by a creature that despawns in 3 s (attempt " .. attempt .. ")")
+end
+
+local function startCasterTest(player)
+    if casterTestStarted then
+        return
+    end
+    casterTestStarted = true
+    runCasterTest(player, 1)
 end
 
 RegisterPlayerEvent(PLAYER_EVENT_ON_LOGIN, function(event, player)
     startCasterTest(player)
+end)
+
+-- 11: a creature with Lua AI whose hooks do not handle an event runs the native AI (patch 0007).
+-- 0007 makes every ElunaCreatureAI hook treat a missing Lua state as "not handled", which is this same
+-- fallback branch. The missing state itself (GetEluna() == nullptr inside UpdateAI) cannot be made from
+-- a script: see the header. The Kobold Worker gets Lua AI (every hook below returns nothing), attacks
+-- the player through the native AttackStart and must fight natively; then it despawns from inside its
+-- own AI update hook (the core goes on with the native UpdateAI in that tick, then deletes it), and
+-- that is done SMOKE_AI_ROUNDS times.
+local SMOKE_AI_ENTRY = 257          -- Kobold Worker
+local SMOKE_AI_ROUNDS = 5
+local CREATURE_EVENT_ON_ENTER_COMBAT = 1
+local CREATURE_EVENT_ON_DIED = 4
+local CREATURE_EVENT_ON_SPAWN = 5
+local CREATURE_EVENT_ON_AIUPDATE = 7
+local CREATURE_EVENT_ON_DAMAGE_TAKEN = 9
+local aiCalls = { spawn = 0, combat = 0, update = 0, damage = 0, died = 0 }
+local aiDespawnArmed = {}   -- guid low -> true: despawn on the next AI update
+local aiDespawned = 0
+local aiTestStarted = false
+
+RegisterCreatureEvent(SMOKE_AI_ENTRY, CREATURE_EVENT_ON_SPAWN, function(event, creature)
+    aiCalls.spawn = aiCalls.spawn + 1
+end)
+RegisterCreatureEvent(SMOKE_AI_ENTRY, CREATURE_EVENT_ON_ENTER_COMBAT, function(event, creature, target)
+    aiCalls.combat = aiCalls.combat + 1
+end)
+RegisterCreatureEvent(SMOKE_AI_ENTRY, CREATURE_EVENT_ON_DAMAGE_TAKEN, function(event, creature, attacker, damage)
+    aiCalls.damage = aiCalls.damage + 1
+end)
+RegisterCreatureEvent(SMOKE_AI_ENTRY, CREATURE_EVENT_ON_DIED, function(event, creature, killer)
+    aiCalls.died = aiCalls.died + 1
+end)
+RegisterCreatureEvent(SMOKE_AI_ENTRY, CREATURE_EVENT_ON_AIUPDATE, function(event, creature, diff)
+    aiCalls.update = aiCalls.update + 1
+    local guid = creature:GetGUIDLow()
+    if aiDespawnArmed[guid] then
+        aiDespawnArmed[guid] = nil
+        creature:DespawnOrUnsummon(0)   -- returns not handled: the native UpdateAI runs after this
+        aiDespawned = aiDespawned + 1
+    end
+end)
+
+local function runAiRound(player, round)
+    local x, y, z, o = player:GetLocation()
+    local creature = player:SpawnCreature(SMOKE_AI_ENTRY, x + 5, y + 2, z, o, TEMPSUMMON_TIMED_DESPAWN, 60000)
+    if not creature then
+        log("11", "FAIL could not spawn the Lua AI creature")
+        return
+    end
+    creature:AttackStart(player)
+    local updatesBefore = aiCalls.update
+    local id = creature:GetGUIDLow()
+    local playerGuid = player:GetGUIDLow()   -- the userdata itself is not valid in the timer
+    creature:RegisterEvent(function(eventId, delay, repeats, obj)
+        local victim = obj:GetVictim()
+        local fights = obj:IsInCombat() and victim ~= nil and victim:GetGUIDLow() == playerGuid
+        log("11", "round " .. round .. " Lua AI (no hook handled): in combat=" .. tostring(obj:IsInCombat()) ..
+            " victim=" .. (victim and victim:GetName() or "nil") .. " ai updates=" .. (aiCalls.update - updatesBefore) ..
+            " enter combat hooks=" .. aiCalls.combat ..
+            ((fights and aiCalls.update > updatesBefore) and " native AI fought ok" or " FAIL the native AI did not take over"))
+        aiDespawnArmed[id] = true
+    end, 4000, 1)
+end
+
+local function startAiTest(player)
+    if aiTestStarted then
+        return
+    end
+    aiTestStarted = true
+    local round = 0
+    player:RegisterEvent(function(eventId, delay, repeats, obj)
+        if round > 0 then
+            log("11", "after round " .. round .. ": despawned inside its own AI update " .. aiDespawned .. " times, no crash")
+        end
+        if round >= SMOKE_AI_ROUNDS then
+            log("11", "done: " .. aiDespawned .. " of " .. SMOKE_AI_ROUNDS .. " despawned in the hook" ..
+                (aiDespawned == SMOKE_AI_ROUNDS and " ok" or " FAIL (a round did not reach its despawn)"))
+            return
+        end
+        round = round + 1
+        runAiRound(obj, round)
+    end, 8000, SMOKE_AI_ROUNDS + 1)
+end
+
+RegisterPlayerEvent(PLAYER_EVENT_ON_LOGIN, function(event, player)
+    startAiTest(player)
 end)

@@ -34,6 +34,18 @@ a line with "FAIL" is a failed check. Groups, what to do and what to expect:
            ClearFixate), ClearThreat(player) -> GetThreat 0,
            FixateTarget(a unit not on the list) false.
 
+  inflight (0008) ".elunasmoke inflight" spawns a temporary Kobold Vermin 28 yd
+           in front of you and arms the check; cast SMOKE_SPELL (Fireball) at it.
+           At launch it is unsummoned (deleted) while the projectile flies;
+           300 ms later the caster's current generic spell (the Fireball, state
+           5 = delayed) is asked for its target: "inflight after the delete:
+           state=5 GetTarget=nil (nil ok)". Before 0008: the freed creature.
+  trade    (0008) An enchant (SMOKE_TRADE_ENCHANT_SPELL, 7418) cast on the
+           partner's item in the "will not be traded" slot of an open trade:
+           "trade enchant check_cast (slot) / before_cast (slot) / cast (guid)
+           / after_cast (guid): GetTarget=item E guid G (item ok)". Needs a real
+           client: turtle-agent casts only at a unit or itself.
+
   spellget Logged in the cast hook for SMOKE_SPELL: IsTriggered, IsPositive,
            GetState, IsInterruptable, IsChannelActive, CalculateDamage(0),
            GetOriginalCaster (for Fireball: false, false, a state 1..5 (only
@@ -42,11 +54,16 @@ a line with "FAIL" is a failed check. Groups, what to do and what to expect:
 
   data     On each login / map change player:Data() counts "n". After teleports
            the value keeps counting, after ".reload eluna" it survives. A handle
-           kept in a global by the old map state shows the old value after the
-           player left it (logs "data detached ok"), the new state's value
-           differs. map:Data() has a counter per map. d:Set("me", d) then d:Get("me"):Get("me") is
+           kept by the old map state shows the value it had when the player
+           left that state ("kept handle ... (detached ok)" on the player's next
+           visit of the state: go to another map and come back, without
+           ".reload eluna" in between, which drops the kept handles). Login and
+           its map change arrive in one state: "kept handle same visit" there. map:Data() has a counter per map. d:Set("me", d) then d:Get("me"):Get("me") is
            nil (a copy, no cycle) and "data copy ok". A plain table that holds itself
-           (t.self = t) given to Set is refused with an error ("selfref refused ok").
+           (t.self = t, or a.b = b with b.a = a) given to Set is refused with an
+           error ("selfref refused ok"); a 65-level nesting is refused and a
+           64-level one stored ("depth limit ok"); a function inside a table is
+           refused ("unsupported refused ok"). None of them crashes the server.
 
   cmd      ".paritysmoke" from a GM in game and from the console: IsConsole
            false / true, GetPlayer player / nil, GetSecurity, GetSelectedUnit
@@ -58,6 +75,8 @@ a line with "FAIL" is a failed check. Groups, what to do and what to expect:
 
 local SMOKE_SPELL = 133 -- Fireball rank 1
 local SMOKE_AURA_SPELL = 1126 -- Mark of the Wild rank 1 (aura only; cast it on a friend or yourself)
+local SMOKE_INFLIGHT_ENTRY = 6 -- Kobold Vermin: the temporary target of ".elunasmoke inflight"
+local SMOKE_TRADE_ENCHANT_SPELL = 7418 -- Enchant Bracer - Minor Health (on the not-traded slot of a trade)
 
 local PLAYER_EVENT_ON_LOGIN = 3
 local PLAYER_EVENT_ON_MAP_CHANGE = 28
@@ -94,7 +113,7 @@ RegisterServerEvent(SERVER_EVENT_ON_MAP_UPDATE, function(event, map, diff)
     local players = GetPlayersOnMap()
     local notGM = 0
     for _, p in ipairs(players) do
-        if not p:IsGameMaster() then notGM = notGM + 1 end
+        if not p:IsGM() then notGM = notGM + 1 end
     end
     if notGM == map:GetPlayerCount() and #GetPlayersOnMap(2, true) == #players - notGM then
         log("state", "players ok: " .. #players .. " (" .. notGM .. " not in GM mode)")
@@ -178,31 +197,111 @@ if type(mapId) == "number" and mapId >= 0 then
     end)
     local okReg, err = pcall(RegisterSpellEvent, SMOKE_SPELL, 2, function() end)
     log("spell", okReg and "FAIL event 2 accepted" or ("unsupported refused: " .. tostring(err)))
+
+    -- 0008, a projectile whose target is deleted in flight: ".elunasmoke inflight" (world state) spawned a
+    -- temporary target and armed this through the map's data. At launch (after_cast) the target is
+    -- unsummoned (deleted at the end of this map update) while the Fireball is SPELL_STATE_DELAYED in the
+    -- caster's current generic spell; 300 ms later the caster's own timer asks that spell for its target.
+    -- Before 0008 GetTarget returned the cached pointer of the deleted creature.
+    RegisterSpellEvent(SMOKE_SPELL, 12, function(event, spell)
+        local d = GetStateMap():Data()
+        local armed = d:Get("inflight")
+        if not armed then return end
+        local target = spell:GetTarget()
+        if not target or target:GetGUIDLow() ~= armed then
+            log("spellget", "inflight: not the armed target (" .. tostring(target and target:GetGUIDLow()) .. " ~= " .. armed .. "), cast again at it")
+            return
+        end
+        d:Set("inflight", nil)
+        local caster = spell:GetCaster()
+        log("spellget", "inflight launch: GetTarget=" .. target:GetName() .. " " .. armed .. " state=" .. tostring(spell:GetState()) .. ", unsummoning it")
+        target:DespawnOrUnsummon(0)
+        caster:RegisterEvent(function(id, delay, repeats, obj)
+            local s = obj:GetCurrentSpell(1)   -- CURRENT_GENERIC_SPELL: the delayed projectile stays there until it lands
+            if not s or s:GetEntry() ~= SMOKE_SPELL then
+                log("spellget", "inflight: inconclusive, the Fireball already landed (cast from farther away)")
+                return
+            end
+            local t = s:GetTarget()
+            log("spellget", "inflight after the delete: state=" .. tostring(s:GetState()) .. " GetTarget=" ..
+                tostring(t and t:GetGUIDLow()) .. ((s:GetState() == 5 and t == nil) and " (nil ok)" or " FAIL (expected nil in state 5)"))
+        end, 300, 1)
+    end)
+
+    -- 0008, the trade-slot enchant: an enchant cast on the item in the other player's "will not be traded"
+    -- trade slot targets TARGET_FLAG_TRADE_ITEM, by slot number before Spell::cast and by the item's guid
+    -- after updateTradeSlotItem. GetTarget must return that item in both: check_cast / before_cast (slot)
+    -- and cast / after_cast (guid). Needs a real client (turtle-agent sends no trade-item cast target).
+    local function tradeTarget(name)
+        return function(event, spell)
+            local t = spell:GetTarget()
+            local isItem = t ~= nil and t:GetTypeId() == 1   -- TYPEID_ITEM
+            log("spellget", "trade enchant " .. name .. ": GetTarget=" .. (isItem and ("item " .. t:GetEntry() .. " guid " .. t:GetGUIDLow()) or tostring(t)) ..
+                (isItem and " (item ok)" or " FAIL (expected the trade item)"))
+        end
+    end
+    RegisterSpellEvent(SMOKE_TRADE_ENCHANT_SPELL, 10, tradeTarget("check_cast (slot)"))
+    RegisterSpellEvent(SMOKE_TRADE_ENCHANT_SPELL, 11, tradeTarget("before_cast (slot)"))
+    RegisterSpellEvent(SMOKE_TRADE_ENCHANT_SPELL, 1, tradeTarget("cast (guid)"))
+    RegisterSpellEvent(SMOKE_TRADE_ENCHANT_SPELL, 12, tradeTarget("after_cast (guid)"))
 end
 
 -- data ---------------------------------------------------------------------
-local keptHandle
+-- One kept handle per player and state. A handle taken in this state is checked on the player's next
+-- bump here. Login and the map change of the same login both arrive in one state with no map left in
+-- between: then the handle is still the live data ("same visit", shared on purpose). The detach is
+-- only checked when the player left this state and came back: then n moved on by 2 or more (a bump in
+-- each other state), and the kept handle must still show the n it had when the player left.
+local keptHandles = {}
+local function chain(n)
+    local t = { leaf = true }
+    for i = 2, n do t = { c = t } end
+    return t
+end
 local function bump(event, player)
     local d = player:Data()
     d:Set("n", (d:Get("n") or 0) + 1)
-    log("data", player:GetName() .. " n=" .. d:Get("n"))
-    if keptHandle and keptHandle.name == player:GetName() then
-        -- a handle kept from an earlier visit of this state: detached once the player left
-        log("data", "kept handle n=" .. tostring(keptHandle.d:Get("n")) .. " now n=" .. d:Get("n") ..
-            (keptHandle.d:Get("n") ~= d:Get("n") and " (detached ok)" or " FAIL (shared)"))
+    local n = d:Get("n")
+    log("data", player:GetName() .. " n=" .. n)
+    local kept = keptHandles[player:GetGUIDLow()]
+    if kept then
+        local keptNow = kept.d:Get("n")
+        if n == kept.n + 1 then
+            log("data", "kept handle same visit n=" .. tostring(keptNow) .. " now n=" .. n .. " (shared, no map left)")
+        else
+            log("data", "kept handle n=" .. tostring(keptNow) .. " now n=" .. n ..
+                (keptNow == kept.n and " (detached ok)" or (" FAIL (shared: the kept handle should still say " .. kept.n .. ")")))
+        end
     end
-    keptHandle = { name = player:GetName(), d = d } -- deliberately kept: this is what the rule forbids
+    keptHandles[player:GetGUIDLow()] = { n = n, d = d } -- deliberately kept: this is what the rule forbids
     -- value copy: no cycle
     d:Set("me", d)
     local inner = d:Get("me")
     log("data", (inner and inner:Get("me") == nil) and "copy ok" or "FAIL cycle")
     d:Set("me", nil)
-    -- a table that holds itself is refused with a Lua error, not stored and not a crash
+    -- a table that holds itself is refused with a Lua error, not stored and not a crash (twice, and through
+    -- another table); nesting of 65 levels is refused, 64 is stored
     local selfRef = {}
     selfRef.self = selfRef
+    local a, b = {}, {}
+    a.b = b
+    b.a = a
     local okSet, errSet = pcall(d.Set, d, "selfref", selfRef)
-    log("data", (not okSet and tostring(errSet):find("deeper than 64", 1, true) and d:Get("selfref") == nil)
-        and "selfref refused ok" or ("FAIL selfref ok=" .. tostring(okSet) .. " err=" .. tostring(errSet)))
+    local okSet2 = pcall(d.Set, d, "selfref", selfRef)
+    local okAB, errAB = pcall(d.Set, d, "ab", a)
+    log("data", (not okSet and not okSet2 and not okAB and tostring(errSet):find("contains itself", 1, true)
+            and tostring(errAB):find("contains itself", 1, true) and d:Get("selfref") == nil and d:Get("ab") == nil)
+        and "selfref refused ok" or ("FAIL selfref ok=" .. tostring(okSet) .. " err=" .. tostring(errSet) ..
+            " ab ok=" .. tostring(okAB) .. " err=" .. tostring(errAB)))
+    local okDeep, errDeep = pcall(d.Set, d, "deep", chain(65))
+    local okEdge = pcall(d.Set, d, "edge", chain(64))
+    log("data", (not okDeep and tostring(errDeep):find("deeper than 64", 1, true) and d:Get("deep") == nil and okEdge)
+        and "depth limit ok (65 refused, 64 stored)"
+        or ("FAIL depth 65 ok=" .. tostring(okDeep) .. " err=" .. tostring(errDeep) .. " 64 ok=" .. tostring(okEdge)))
+    d:Set("edge", nil)
+    local okFn, errFn = pcall(d.Set, d, "fn", { inner = { function() end } })
+    log("data", (not okFn and tostring(errFn):find("unsupported type", 1, true) and d:Get("fn") == nil)
+        and "unsupported refused ok" or ("FAIL unsupported ok=" .. tostring(okFn) .. " err=" .. tostring(errFn)))
 end
 RegisterPlayerEvent(PLAYER_EVENT_ON_LOGIN, bump)
 RegisterPlayerEvent(PLAYER_EVENT_ON_MAP_CHANGE, bump)
@@ -214,6 +313,15 @@ if type(mapId) == "number" and mapId == -1 then
             if not player then return false end
             player:GetMap():Data():Set("blockcast", true)
             log("spell", "blockcast armed on map " .. player:GetMapId())
+            return false
+        elseif command == "elunasmoke inflight" then
+            if not player then return false end
+            local x, y, z, o = player:GetLocation()
+            local target = player:SpawnCreature(SMOKE_INFLIGHT_ENTRY, x + 28 * math.cos(o), y + 28 * math.sin(o), z, o, 3, 120000)
+            if not target then log("spellget", "FAIL inflight: no target spawned") return false end
+            player:GetMap():Data():Set("inflight", target:GetGUIDLow())
+            log("spellget", "inflight armed on map " .. player:GetMapId() .. ": cast Fireball at " .. target:GetName() ..
+                " guid " .. target:GetGUIDLow())
             return false
         elseif command == "elunasmoke threat" then
             if not handler then log("cmd", "FAIL no handler") return false end
