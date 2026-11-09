@@ -9790,7 +9790,13 @@ uint32 ObjectMgr::CreateItemTransmogrifyTemplate(uint32 destItemId, uint32 sourc
     ItemPrototype const* source = GetItemPrototype(sourceItemId);
 
     if (!base)
-        return false;
+        return 0;
+
+    // Insert the template synchronously, so a failed insert is caught before
+    // any item uses it.
+    if (!CharacterDatabase.DirectPExecute("INSERT INTO `item_transmogs` (`ID`, `ItemID`, `DisplayID`, `SourceID`) VALUES ('%u','%u','%u', '%u')",
+        destId, destItemId, sourceDisplayId, sourceItemId))
+        return 0;
 
     ItemPrototype* copy = new ItemPrototype(*base);
 
@@ -9806,8 +9812,6 @@ uint32 ObjectMgr::CreateItemTransmogrifyTemplate(uint32 destItemId, uint32 sourc
 
     //Whoever wrote this should be burned at the stake.
     //sWorld.SendUpdateSingleItem(destId);
-    CharacterDatabase.PExecuteLog("INSERT INTO `item_transmogs` (`ID`, `ItemID`, `DisplayID`, `SourceID`) VALUES ('%u','%u','%u', '%u')", 
-        destId, destItemId, sourceDisplayId, sourceItemId);
 
     return destId;
 }
