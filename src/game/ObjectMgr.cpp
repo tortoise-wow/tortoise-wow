@@ -2867,15 +2867,11 @@ void ObjectMgr::LoadPetLevelInfo()
 
 ItemPrototype const* ObjectMgr::GetItemPrototype(uint32 id) const
 {
-    const ItemPrototype* transmogrifyProto = sObjectMgr.GetItemTransmogrifyTemplate(id);
-    if (transmogrifyProto)
-        return transmogrifyProto;
-
     auto iter = m_itemPrototypesMap.find(id);
-    if (iter == m_itemPrototypesMap.end())
-        return nullptr;
+    if (iter != m_itemPrototypesMap.end())
+        return &iter->second;
 
-    return &iter->second;
+    return GetItemTransmogrifyTemplate(id);
 }
 
 PetLevelInfo const* ObjectMgr::GetPetLevelInfo(uint32 creature_id, uint32 level) const
@@ -9744,6 +9740,7 @@ void ObjectMgr::LoadShop()
 void ObjectMgr::LoadItemTransmogrifyTemplates()
 {
     m_itemTransmogs.clear();
+    m_transmogId = TRANSMOG_FIRST_ID - 1;
 
     std::unique_ptr<QueryResult> result(CharacterDatabase.Query("SELECT `ID`, `ItemID`, `DisplayID`, `SourceID` FROM `item_transmogs` ORDER BY `ID` DESC"));
 
@@ -9762,7 +9759,7 @@ void ObjectMgr::LoadItemTransmogrifyTemplates()
         ItemPrototype* copy = new ItemPrototype;
         ItemPrototype const* base = GetItemPrototype(ItemID);
 
-        if (!m_transmogId)
+        if (ID > m_transmogId)
             m_transmogId = ID;
 
         if (!base)
@@ -9782,7 +9779,13 @@ void ObjectMgr::LoadItemTransmogrifyTemplates()
 
 uint32 ObjectMgr::CreateItemTransmogrifyTemplate(uint32 destItemId, uint32 sourceDisplayId, uint32 sourceItemId)
 {
-    uint32 destId = ++m_transmogId;
+    // Skip real item IDs, which get resolved by `GetItemPrototype` before the
+    // templates.
+    uint32 destId;
+    do
+    {
+        destId = ++m_transmogId;
+    } while (m_itemPrototypesMap.find(destId) != m_itemPrototypesMap.end());
 
     ItemPrototype* copy = new ItemPrototype;
     ItemPrototype const* base = GetItemPrototype(destItemId);

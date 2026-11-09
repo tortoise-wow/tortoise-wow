@@ -549,6 +549,9 @@ bool IsLanguageSkill(uint32 Skill);
 
 typedef robin_hood::unordered_map<uint32, ItemPrototype*> ItemTransmogrifyTemplateMap;
 
+// The first generated transmog template ID.
+#define TRANSMOG_FIRST_ID 100001
+
 enum PermVariables
 {
     // ITEM ID RANGES ARE USED FOR AQ WAR EFFORT
