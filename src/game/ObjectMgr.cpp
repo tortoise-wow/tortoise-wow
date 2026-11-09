@@ -9756,7 +9756,6 @@ void ObjectMgr::LoadItemTransmogrifyTemplates()
         uint32 DisplayID = fields[2].GetUInt32();
         uint32 SourceID = fields[3].GetUInt32();
 
-        ItemPrototype* copy = new ItemPrototype;
         ItemPrototype const* base = GetItemPrototype(ItemID);
 
         if (ID > m_transmogId)
@@ -9765,7 +9764,7 @@ void ObjectMgr::LoadItemTransmogrifyTemplates()
         if (!base)
             continue;
 
-        *copy = *base;
+        ItemPrototype* copy = new ItemPrototype(*base);
 
         copy->ItemId = ID;
         copy->DisplayInfoID = DisplayID;
@@ -9787,14 +9786,13 @@ uint32 ObjectMgr::CreateItemTransmogrifyTemplate(uint32 destItemId, uint32 sourc
         destId = ++m_transmogId;
     } while (m_itemPrototypesMap.find(destId) != m_itemPrototypesMap.end());
 
-    ItemPrototype* copy = new ItemPrototype;
     ItemPrototype const* base = GetItemPrototype(destItemId);
     ItemPrototype const* source = GetItemPrototype(sourceItemId);
 
     if (!base)
         return false;
 
-    *copy = *base;
+    ItemPrototype* copy = new ItemPrototype(*base);
 
     copy->ItemId = destId;
     copy->DisplayInfoID = sourceDisplayId;
@@ -9820,6 +9818,8 @@ void ObjectMgr::DeleteItemTransmogrifyTemplate(uint32 transmogrifyId)
     if (itr == m_itemTransmogs.end())
         return;
 
+    // The template is not freed, because other threads (item queries) may
+    // still hold a pointer to it.
     m_itemTransmogs.erase(transmogrifyId);
     sWorld.SendSingleItemInvalidate(transmogrifyId);
     CharacterDatabase.PExecuteLog("DELETE FROM `item_transmogs` WHERE `ID`=%u", transmogrifyId);
