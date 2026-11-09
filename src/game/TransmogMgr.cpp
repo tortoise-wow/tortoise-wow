@@ -279,11 +279,8 @@ uint8 TransmogMgr::ApplyTransmog(uint8 slot, uint32 sourceItemID, uint32 slotId)
 
 		_owner->DestroyItemCount(TRANSMOG_CURRENCY, 1, true);
 	}
-	else
-	{
-		sObjectMgr.DeleteItemTransmogrifyTemplate(destItem->GetTransmogrification());
-	}
 
+	sObjectMgr.DeleteItemTransmogrifyTemplate(destItem->GetTransmogrification());
 	destItem->SetTransmogrification(newItemId);
 	if (!destItem->IsSoulBound())
 		destItem->SetBinding(true);
