@@ -285,6 +285,8 @@ uint8 TransmogMgr::ApplyTransmog(uint8 slot, uint32 sourceItemID, uint32 slotId)
 
 		_owner->DestroyItemCount(TRANSMOG_CURRENCY, 1, true);
 	}
+	else if (slot >= EQUIPMENT_SLOT_END)
+		return 2; // bad slot
 
 	sObjectMgr.DeleteItemTransmogrifyTemplate(destItem->GetTransmogrification());
 	destItem->SetTransmogrification(newItemId);
