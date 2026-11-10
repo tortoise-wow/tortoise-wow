@@ -1,0 +1,12 @@
+-- ==============================================
+-- FILE: stale_replay_repair_reference_loot_template.sql
+-- GENERATED: 20261110014601
+-- ==============================================
+-- Repair for the October 6 out-of-order replay incident: restores fields that
+-- the replayed May migrations rolled back on rows that still hold the exact
+-- stale May value. Each UPDATE is guarded on the audited value, so this is a
+-- no-op on a healthy database (0 rows affected) and safe to re-run.
+-- Only upstream keys; no custom/recruiter rows. Item 17078 touches
+-- disenchant_id only.
+-- reference_loot_template {"entry": "901273", "item": "20400"} 
+UPDATE `reference_loot_template` SET `condition_id` = 108 WHERE `entry` <=> 901273 AND `item` <=> 20400 AND (BINARY CAST(`condition_id` AS CHAR CHARACTER SET utf8mb4) <=> BINARY CONVERT(X'30' USING utf8mb4));
