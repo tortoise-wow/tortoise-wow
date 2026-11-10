@@ -264,6 +264,9 @@ class Item : public Object
         bool IsBindedNotWith(Player const* player) const;
         bool IsBoundByEnchant() const;
         virtual void SaveToDB(bool direct = false);
+        // Owned trade transaction: append without clearing dirty state or deleting this.
+        bool AppendSaveToDB();
+        void CompleteSaveToDB();
         virtual bool LoadFromDB(uint32 guidLow, ObjectGuid ownerGuid, Field* fields, uint32 entry);
         virtual void DeleteFromDB();
         void DeleteFromInventoryDB();
@@ -395,6 +398,8 @@ class Item : public Object
         ItemUpdateState uState;
         int16 uQueuePos;
         bool mb_in_trade;                                   // true if item is currently in trade-window
+        bool AppendSaveToDB(bool direct, bool deferred);
+        void CompleteSaveToDB(bool deferred);
         ItemLootUpdateState m_lootState;
         time_t m_tradeAllowedUntil = 0;
         uint32 m_obtainedFromMapId = 0;

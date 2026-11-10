@@ -468,68 +468,7 @@ void HonorMgr::ClearHonorCP()
     m_honorCP.clear();
 }
 
-void HonorMgr::Save()
-{
-    if (!m_owner)
-        return;
-
-    HonorCPMap tempCP;
-
-    for (auto& honorCP : m_honorCP)
-    {
-
-        switch (honorCP.state)
-        {
-            case STATE_NEW:
-                CharacterDatabase.PExecute("INSERT INTO `character_honor_cp` (`guid`, `victimType`, `victim`, `cp`, `date`, `type`) "
-                    " VALUES (%u, %u, %u, %.1f, %u, %u)", m_owner->GetGUIDLow(), honorCP.victimType, honorCP.victimId,
-                    finiteAlways(honorCP.cp), honorCP.date, honorCP.type);
-                honorCP.state = STATE_UNCHANGED;
-                tempCP.push_back(honorCP);
-                break;
-            case STATE_UNCHANGED:
-                tempCP.push_back(honorCP);
-                break;
-            default:
-                break;
-        }
-    }
-
-    m_honorCP.clear();
-    m_honorCP = tempCP;
-    tempCP.clear();
-    SaveCurrency();
-    SaveStoredData();
-
-    // Static data, used for armory
-    /*CharacterDatabase.PExecute("DELETE FROM `character_honor_static` WHERE `guid` = %u", m_owner->GetGUIDLow());
-    std::ostringstream ss;
-    ss << "INSERT INTO `character_honor_static` (`guid`, `hk`, `dk`, `today_hk`, `today_dk`, "
-        "`yesterday_kills`, `yesterday_cp`, `thisWeek_kills`, `thisWeek_cp`, `lastWeek_kills`, `lastWeek_cp`) VALUES ("
-        << m_owner->GetGUIDLow() << ", "
-        << m_owner->GetUInt32Value(PLAYER_FIELD_LIFETIME_HONORABLE_KILLS) << ", "
-        << m_owner->GetUInt32Value(PLAYER_FIELD_LIFETIME_DISHONORABLE_KILLS) << ", "
-        << m_owner->GetUInt16Value(PLAYER_FIELD_SESSION_KILLS, 0) << ", "
-        << m_owner->GetUInt16Value(PLAYER_FIELD_SESSION_KILLS, 1) << ", "
-        << m_owner->GetUInt32Value(PLAYER_FIELD_YESTERDAY_KILLS) << ", "
-        << m_owner->GetUInt32Value(PLAYER_FIELD_YESTERDAY_CONTRIBUTION) << ", "
-        << m_owner->GetUInt32Value(PLAYER_FIELD_THIS_WEEK_KILLS) << ", "
-        << m_owner->GetUInt32Value(PLAYER_FIELD_THIS_WEEK_CONTRIBUTION) << ", "
-        << m_owner->GetUInt32Value(PLAYER_FIELD_LAST_WEEK_KILLS) << ", "
-        << m_owner->GetUInt32Value(PLAYER_FIELD_LAST_WEEK_CONTRIBUTION) << ")";
-    CharacterDatabase.Execute(ss.str().c_str());*/
-}
-
-void HonorMgr::SaveStoredData()
-{
-    if (!m_owner)
-        return;
-
-    CharacterDatabase.PExecute("UPDATE `characters` SET `honorRankPoints` = %.1f, `honorStanding` = %u, `honorHighestRank` = %u, "
-            "`honorLastWeekHK` = %u, `honorLastWeekCP` = %.1f, `honorStoredHK` = %u, `honorStoredDK` = %u WHERE `guid` = %u",
-            finiteAlways(m_rankPoints), m_standing, m_highestRank.rank, m_lastWeekHK,
-            finiteAlways(m_lastWeekCP), m_storedHK, m_storedDK, m_owner->GetGUIDLow());
-}
+#include "HonorSave.inc"
 
 void HonorMgr::Load(QueryResult* result)
 {
@@ -576,36 +515,12 @@ void HonorMgr::LoadCurrency(QueryResult* result)
     ResetCurrencyWeekIfNeeded();
 }
 
-void HonorMgr::SaveCurrency()
-{
-    if (!m_owner)
-        return;
-
-    ResetCurrencyWeekIfNeeded();
-
-    CharacterDatabase.PExecute("REPLACE INTO `character_pvp_currency` (`guid`, `honor`, `conquest`, `weekly_honor`, `week_begin_day`) "
-        "VALUES (%u, %u, %u, %u, %u)", m_owner->GetGUIDLow(), m_spendableHonor, m_conquestPoints, m_weeklySpendableHonor, m_currencyWeekBeginDay);
-}
-
 void HonorMgr::SendHonorCurrencyUpdate() const
 {
     if (!m_owner)
         return;
 
     m_owner->SendAddonMessage("TW_HONOR", "S2C_HONOR_RESPONSE;" + std::to_string(m_spendableHonor));
-}
-
-void HonorMgr::ResetCurrencyWeekIfNeeded()
-{
-    uint32 weekBeginDay = sHonorMaintenancer.GetWeekBeginDay();
-    if (!weekBeginDay)
-        weekBeginDay = sWorld.GetGameDay();
-
-    if (m_currencyWeekBeginDay != weekBeginDay)
-    {
-        m_weeklySpendableHonor = 0;
-        m_currencyWeekBeginDay = weekBeginDay;
-    }
 }
 
 uint32 HonorMgr::AddSpendableHonor(uint32 amount)
@@ -1021,5 +936,5 @@ void HonorMgr::SendPVPCredit(Unit* victim, float honor)
         }
     }
 
-    m_owner->SendDirectMessage(&data);
+    m_owner->_SendRewardPacket(std::move(data));
 }

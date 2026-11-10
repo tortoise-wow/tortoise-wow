@@ -26,6 +26,7 @@
 #include "SharedDefines.h"
 #include "DBCStructure.h"
 #include <map>
+#include <vector>
 
 enum FactionFlags
 {
@@ -64,6 +65,20 @@ class ReputationMgr
         ~ReputationMgr() {}
 
         void SaveToDB();
+        class SaveBatch
+        {
+            friend class ReputationMgr;
+        public:
+            SaveBatch() = default;
+            SaveBatch(SaveBatch const&) = delete;
+            SaveBatch& operator=(SaveBatch const&) = delete;
+        private:
+            ReputationMgr* owner = nullptr;
+            std::vector<RepListID> factions;
+            bool prepared = false;
+        };
+        bool AppendSaveToDB(SaveBatch& batch);
+        bool CompleteSaveToDB(SaveBatch& batch);
         void LoadFromDB(QueryResult *result);
     public:                                                 // statics
         static const int32 PointsInRank[MAX_REPUTATION_RANK];
@@ -119,6 +134,7 @@ class ReputationMgr
         void Serialize(OP& buf);
 
     private:                                                // internal helper functions
+        bool SaveToDB(SaveBatch* batch);
         void Initialize();
         uint32 GetDefaultStateFlags(const FactionEntry *factionEntry) const;
         bool SetReputation(FactionEntry const* factionEntry, int32 standing, bool incremental, bool noSpillover = false, bool noBase = false);
