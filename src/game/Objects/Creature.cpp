@@ -327,7 +327,8 @@ void Creature::RemoveCorpse()
                             if (Item* pItem = Item::CreateItem(itr.itemid, itr.count, pPlayer))
                             {
                                 itr.is_looted = true;
-                                --loot.unlootedCount;
+                                if (loot.unlootedCount)
+                                    --loot.unlootedCount;
 
                                 pItem->SaveToDB();
                                 std::string subject = pProto->Name1;
@@ -2008,6 +2009,9 @@ void Creature::SetDeathState(DeathState s)
 
     if (s == JUST_DIED)
     {
+#ifdef ENABLE_ELUNA
+        SetElunaFixateTarget(ObjectGuid());
+#endif
         // Turtle: Store players in map during raid creature death,
         // to allow trading of soulbound items among eligible players.
         if (IsInWorld() && FindMap() && FindMap()->IsRaid())
@@ -3322,6 +3326,9 @@ void Creature::RemoveAurasAtReset()
 
 void Creature::OnLeaveCombat()
 {
+#ifdef ENABLE_ELUNA
+    SetElunaFixateTarget(ObjectGuid());
+#endif
     UpdateCombatState(false);
     UpdateCombatWithZoneState(false);
 

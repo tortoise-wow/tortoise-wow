@@ -20,4 +20,16 @@ if(BUILD_ELUNA_TESTS)
   )
   set_target_properties(eluna_lua_smoke PROPERTIES FOLDER "Tests")
   add_test(NAME eluna.lua-runtime COMMAND eluna_lua_smoke)
+
+  # LuaVal from the patched Eluna copy (dep/eluna-patches 0012: cycles and deep nesting refused).
+  add_executable(eluna_luaval_smoke
+    tests/luaval_smoke.cpp
+    ${ELUNA_SOURCE_DIR}/LuaValue.cpp
+    ${ELUNA_SOURCE_DIR}/ElunaCompat.cpp
+  )
+  target_include_directories(eluna_luaval_smoke PRIVATE ${ELUNA_SOURCE_DIR})
+  target_compile_definitions(eluna_luaval_smoke PRIVATE ELUNA_VMANGOS)
+  target_link_libraries(eluna_luaval_smoke PRIVATE lualib)
+  set_target_properties(eluna_luaval_smoke PROPERTIES FOLDER "Tests" LINKER_LANGUAGE CXX)
+  add_test(NAME eluna.luaval COMMAND eluna_luaval_smoke)
 endif()

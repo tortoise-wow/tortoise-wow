@@ -1,0 +1,1492 @@
+tortoise-wow: VMaNGOS Eluna gets the TrinityCore script API that scripts port with.
+
+Added to the VMaNGOS backend (methods/VMangos, hooks, LuaValue):
+- Global GetStateMap() (map states only) and GetPlayersOnMap([team, onlyGM])
+  (the players of the state's own map, the map-state replacement for
+  GetPlayersInWorld). GetStateMapId / GetStateInstanceId are left to 0011.
+- RegisterSpellEvent(entry, event, fn[, shots]) for the events the core fires:
+  1 cast, 10 check cast, 11 before cast, 12 after cast, 19 effect hit,
+  20 before hit, 21 effect hit target, 22 hit, 23 after hit. Any other event is
+  an argument error (it would never fire). The hit unit is passed as a trailing
+  argument of the hit events (Spell::unitTarget is protected). A check-cast
+  result that is a SPELL_FAILED_* value cancels the cast; SPELL_CAST_OK lets it
+  go on, and a value outside both counts as OK. The check-cast handler is called
+  as (event, spell, strict) on every CheckCast: strict is true at prepare and
+  false at the completion check.
+- Creature:GetThreat, ClearThreat, ResetAllThreat, FixateTarget, ClearFixate
+  (the fixate is emulated by the core through the taunt target).
+  ClearThreat removes the unit's reference through the target's HostileRefManager, so it
+  leaves the online and the offline container.
+- Creature:DespawnOrUnsummon unsummons a temporary summon (TemporarySummon::UnSummon:
+  the object is removed at the end of the world update, or after the delay) and
+  despawns any other creature with ForcedDespawn, as before. The upstream VMaNGOS
+  method called ForcedDespawn for both, which only kills a summon and leaves the
+  object in the map. A pet is not unsummoned (Creature::DespawnOrUnsummon would
+  delete a hunter pet).
+- Spell:IsTriggered, GetOriginalCaster, IsPositive, GetState, IsInterruptable,
+  IsChannelActive, CalculateDamage.
+- WorldObject:Data() and Map:Data() (the LuaVal the core already stores). A
+  LuaVal given to Set/AsLuaVal is now deep-copied (value semantics), so two
+  objects never share one map across threads and a stored LuaVal cannot contain
+  itself. Converting a Lua table refuses a table that contains itself (a visited
+  set of the tables on the way down, by pointer) and nesting of 64 levels or
+  more, with a Lua error; nothing is ever cut. Each level makes room on the Lua
+  stack first (lua_checkstack), and no conversion raises a Lua error itself: the
+  message goes up to the Lua C function (Get, Set, New, AsTable), which raises it
+  once every C++ value of the call is destroyed (Lua is C, its errors longjmp).
+- ChatHandler type: the third argument of PLAYER_EVENT_ON_COMMAND (new overload
+  Eluna::OnCommand(ChatHandler&, text)) with SendSysMessage, PSendSysMessage,
+  IsConsole, GetPlayer, GetAccountId, GetSecurity, IsAvailable,
+  HasLowerSecurity, GetSelected*, SendGlobal(GM)SysMessage and the error flag.
+  World-only methods; the new file methods/VMangos/ChatHandlerMethods.h.
+
+Partly upstreamable: the LuaVal value semantics and RegisterSpellEvent are not
+VMaNGOS-specific; the hit unit argument and the ChatHandler are.
+
+Base: ElunaLuaEngine/Eluna 1b06f28ff3a00054d915d824c725fb4283fee74d (branch
+cmangos-spell-update), the dep/Eluna pin, with patches 0001-0011 applied. Eluna is
+GPL-3.0 (https://github.com/ElunaLuaEngine/Eluna, LICENSE); this change is under
+the same licence. Applied by cmake/ElunaSources.cmake to a copy in the build tree.
+diff --git a/ElunaIncludes.h b/ElunaIncludes.h
+index f388ea9..ca60914 100644
+--- a/ElunaIncludes.h
++++ b/ElunaIncludes.h
+@@ -13,6 +13,9 @@
+ // tortoise-wow dep/eluna-patches/0009 is applied (checked by the core).
+ #define ELUNA_TW_PATCH_0009 1
+ 
++// tortoise-wow dep/eluna-patches/0012 is applied (checked by the core).
++#define ELUNA_TW_PATCH_0012 1
++
+ // Required
+ #if !defined ELUNA_CMANGOS
+ #include "AccountMgr.h"
+diff --git a/LuaEngine.h b/LuaEngine.h
+index 8f52e71..ee22695 100644
+--- a/LuaEngine.h
++++ b/LuaEngine.h
+@@ -45,6 +45,7 @@ extern "C"
+ 
+ class AuctionHouseObject;
+ class Channel;
++class ChatHandler;
+ class Corpse;
+ class Creature;
+ class CreatureAI;
+@@ -423,6 +424,10 @@ public:
+     /* Custom */
+     void OnTimedEvent(int funcRef, uint32 delay, uint32 calls, WorldObject* obj);
+     bool OnCommand(Player* player, const char* text);
++#if defined ELUNA_VMANGOS
++    // Same event with the command handler as the third argument (the core handles ".reload eluna" itself).
++    bool OnCommand(ChatHandler& handler, const char* text);
++#endif
+     void OnWorldUpdate(uint32 diff);
+     void OnLootItem(Player* pPlayer, Item* pItem, uint32 count, ObjectGuid guid);
+     void OnLootMoney(Player* pPlayer, uint32 amount);
+@@ -659,7 +664,7 @@ public:
+     void OnCalcPeriodic(Aura* aura, AuraEffect const* auraEff, bool& isPeriodic, int32& amplitude);
+     bool OnAuraCanProc(Aura* aura, ProcEventInfo& procInfo);
+     bool OnAuraProc(Aura* aura, ProcEventInfo& procInfo);
+-    uint32 OnCheckCast(Spell* pSpell);
++    uint32 OnCheckCast(Spell* pSpell, bool strict);
+     void OnBeforeCast(Spell* pSpell);
+     void OnAfterCast(Spell* pSpell);
+     void OnObjectAreaTargetSelect(Spell* pSpell, uint8 effIndex, std::list<WorldObject*>& targets);
+@@ -683,7 +688,7 @@ public:
+     void OnCalcPeriodic(Aura* aura, bool& isPeriodic, int32& amplitude);
+     bool OnAuraCanProc(Aura* aura, ProcExecutionData& procInfo);
+     bool OnAuraProc(Aura* aura, ProcExecutionData& procInfo);
+-    uint32 OnCheckCast(Spell* pSpell);
++    uint32 OnCheckCast(Spell* pSpell, bool strict);
+     void OnBeforeCast(Spell* pSpell);
+     void OnAfterCast(Spell* pSpell);
+     void OnObjectAreaTargetSelect(Spell* pSpell, uint8 effIndex, std::list<WorldObject*>& targets);
+@@ -707,7 +712,7 @@ public:
+     void OnCalcPeriodic(Aura* aura, bool& isPeriodic, int32& amplitude);
+     // bool OnAuraCanProc(Aura* aura, ProcExecutionData& procInfo);
+     // bool OnAuraProc(Aura* aura, ProcExecutionData& procInfo);
+-    uint32 OnCheckCast(Spell* pSpell);
++    uint32 OnCheckCast(Spell* pSpell, bool strict);
+     void OnBeforeCast(Spell* pSpell);
+     void OnAfterCast(Spell* pSpell);
+     void OnObjectAreaTargetSelect(Spell* pSpell, uint8 effIndex, std::list<WorldObject*>& targets);
+@@ -715,11 +720,11 @@ public:
+     //void OnDestinationTargetSelect(Spell* pSpell, uint8 effIndex, SpellCastTargets& target);
+     bool OnEffectLaunch(Spell* pSpell, uint8 effIndex, uint8 mode, bool preventDefault);
+     bool OnEffectLaunchTarget(Spell* pSpell, uint8 effIndex, uint8 mode, bool preventDefault);
+-    bool OnEffectHit(Spell* pSpell, uint8 effIndex, uint8 mode, bool preventDefault);
+-    bool OnEffectHitTarget(Spell* pSpell, uint8 effIndex, uint8 mode, bool preventDefault);
+-    void OnBeforeSpellHit(Spell* pSpell, uint8 missInfo);
+-    void OnSpellHit(Spell* pSpell);
+-    void OnAfterSpellHit(Spell* pSpell);
++    bool OnEffectHit(Spell* pSpell, uint8 effIndex, uint8 mode, bool preventDefault, Unit* hitUnit = nullptr);
++    bool OnEffectHitTarget(Spell* pSpell, uint8 effIndex, uint8 mode, bool preventDefault, Unit* hitUnit = nullptr);
++    void OnBeforeSpellHit(Spell* pSpell, uint8 missInfo, Unit* hitUnit = nullptr);
++    void OnSpellHit(Spell* pSpell, Unit* hitUnit = nullptr);
++    void OnAfterSpellHit(Spell* pSpell, Unit* hitUnit = nullptr);
+     //void OnEffectCalcAbsorb(Spell* pSpell, SpellNonMeleeDamage const& damageInfo, uint32& resistAmount, int32& absorbAmount);
+ #endif
+ };
+diff --git a/LuaValue.cpp b/LuaValue.cpp
+index 39c28f2..3c9ba00 100644
+--- a/LuaValue.cpp
++++ b/LuaValue.cpp
+@@ -30,6 +30,7 @@
+ #include "ElunaCompat.h"
+ #include "LuaValue.h"
+ #include <stdio.h> // snprintf
++#include <unordered_set> // std::unordered_set (the tables on the way down, see TableImpl)
+ 
+ extern "C"
+ {
+@@ -76,22 +77,42 @@ void LuaVal::Register(lua_State* L) {
+     lua_setglobal(L, "LuaVal");
+ }
+ 
++// Lua errors are raised only here, at the top of the C functions Lua calls, once every C++ object of
++// the call is destroyed: Lua is built as C, so luaL_error / luaL_argerror longjmp and would skip the
++// destructors of the LuaVal (strings, maps) of any frame they leave. The helpers below never raise one;
++// they return the message (a string literal, so the error owns nothing) and the argument it is about.
++int LuaVal::RaiseError(lua_State* L, LuaValError const& error)
++{
++    if (error.arg > 0)
++        return luaL_argerror(L, error.arg, error.message);
++    return luaL_error(L, "%s", error.message);
++}
++
+ int LuaVal::lua_get(lua_State* L) {
+     LuaVal* self = GetCheckLuaVal(L, 1);
++    LuaValError error;
++    int pushed = GetImpl(L, *self, error);
++    if (error.message)
++        return RaiseError(L, error);
++    return pushed;
++}
++
++int LuaVal::GetImpl(lua_State* L, LuaVal const& self, LuaValError& error) {
+     int arguments = std::max(2, lua_gettop(L));
+-    WrappedMap const* p = std::get_if<WrappedMap>(&self->v);
++    WrappedMap const* p = std::get_if<WrappedMap>(&self.v);
+     if (!p)
+-        luaL_argerror(L, 1, "trying to index a non-table LuaVal");
++        return error.Set(1, "trying to index a non-table LuaVal");
+     for (int i = 2; i <= arguments; ++i) {
+         auto& map = (*p);
+-        auto klv = AsLuaVal(L, i);
++        LuaVal klv;
++        if (!TryAsLuaVal(L, i, klv, error))
++            return 0;
+         if (std::holds_alternative<NIL>(klv.v))
+-            luaL_argerror(L, i, "trying to use nil as key");
++            return error.Set(i, "trying to use nil as key");
+         auto it = map->find(klv);
+         if (it == map->end()) {
+-            if (i < arguments) {
+-                luaL_argerror(L, i, "trying to index a nil value within a LuaVal");
+-            }
++            if (i < arguments)
++                return error.Set(i, "trying to index a nil value within a LuaVal");
+             break;
+         }
+         else if (i == arguments) {
+@@ -100,7 +121,7 @@ int LuaVal::lua_get(lua_State* L) {
+         }
+         p = std::get_if<WrappedMap>(&it->second.v);
+         if (!p)
+-            luaL_argerror(L, i, "trying to index a non-table LuaVal");
++            return error.Set(i, "trying to index a non-table LuaVal");
+     }
+     lua_pushnil(L);
+     return 1;
+@@ -108,30 +129,42 @@ int LuaVal::lua_get(lua_State* L) {
+ 
+ int LuaVal::lua_set(lua_State* L) {
+     LuaVal* self = GetCheckLuaVal(L, 1);
++    LuaValError error;
++    int pushed = SetImpl(L, *self, error);
++    if (error.message)
++        return RaiseError(L, error);
++    return pushed;
++}
++
++int LuaVal::SetImpl(lua_State* L, LuaVal const& self, LuaValError& error) {
+     int arguments = std::max(3, lua_gettop(L));
+-    WrappedMap const* p = std::get_if<WrappedMap>(&self->v);
++    WrappedMap const* p = std::get_if<WrappedMap>(&self.v);
+     if (!p)
+-        luaL_argerror(L, 1, "trying to index a non-table LuaVal");
++        return error.Set(1, "trying to index a non-table LuaVal");
+     for (int i = 2; i <= arguments - 2; ++i) {
+         auto& map = (*p);
+-        auto klv = AsLuaVal(L, i);
++        LuaVal klv;
++        if (!TryAsLuaVal(L, i, klv, error))
++            return 0;
+         if (std::holds_alternative<NIL>(klv.v))
+-            luaL_argerror(L, i, "trying to use nil as key");
++            return error.Set(i, "trying to use nil as key");
+         auto it = map->find(klv);
+         if (it == map->end()) {
+-            if (i < arguments) {
+-                luaL_argerror(L, i, "trying to index a nil value within a LuaVal");
+-            }
++            if (i < arguments)
++                return error.Set(i, "trying to index a nil value within a LuaVal");
+             break;
+         }
+         p = std::get_if<WrappedMap>(&it->second.v);
+         if (!p)
+-            luaL_argerror(L, i, "trying to index a non-table LuaVal");
++            return error.Set(i, "trying to index a non-table LuaVal");
+     }
+-    auto kk = AsLuaVal(L, arguments - 1);
+-    auto vv = AsLuaVal(L, arguments);
++    LuaVal kk, vv;
++    if (!TryAsLuaVal(L, arguments - 1, kk, error) || !TryAsLuaVal(L, arguments, vv, error))
++        return 0;   // nothing is stored: a refused value never reaches the map
+     if (std::holds_alternative<NIL>(kk.v))
+-        luaL_argerror(L, arguments - 1, "trying to use nil as key");
++        return error.Set(arguments - 1, "trying to use nil as key");
++    if (double const* number = std::get_if<double>(&kk.v); number && *number != *number)
++        return error.Set(arguments - 1, "trying to use NaN as key");   // AsTable could not set it in a Lua table
+     if (std::holds_alternative<NIL>(vv.v)) {
+         (**p).erase(kk);
+     }
+@@ -197,6 +230,27 @@ int LuaVal::asObject(lua_State* L) const
+ 
+ int LuaVal::asLua(lua_State* L, unsigned int depth) const
+ {
++    bool stackOk = true;
++    int pushed = asLuaImpl(L, depth, stackOk);
++    if (!stackOk)
++    {
++        // A nested level could not get Lua stack space; what was built is dropped, nil is returned.
++        lua_pop(L, pushed);
++        lua_pushnil(L);
++    }
++    return 1;
++}
++
++int LuaVal::asLuaImpl(lua_State* L, unsigned int depth, bool& stackOk) const
++{
++    // Every level pushes a table, a key and a value: make room for them first (a C function is only
++    // given LUA_MINSTACK slots, and writing past them corrupts the heap). Never raises an error.
++    if (!lua_checkstack(L, 3))
++    {
++        stackOk = false;
++        lua_pushnil(L);
++        return 1;
++    }
+     WrappedMap const* p = std::get_if<WrappedMap>(&v);
+     if (p)
+     {
+@@ -205,18 +259,17 @@ int LuaVal::asLua(lua_State* L, unsigned int depth) const
+             if (depth == 1) {
+                 it.first.asObject(L);
+                 it.second.asObject(L);
+-                lua_rawset(L, -3);
+-            }
+-            else if (depth == 0) {
+-                it.first.asLua(L, depth);
+-                it.second.asLua(L, depth);
+-                lua_rawset(L, -3);
+             }
+             else {
+-                it.first.asLua(L, depth - 1);
+-                it.second.asLua(L, depth - 1);
+-                lua_rawset(L, -3);
++                unsigned int next = depth == 0 ? 0 : depth - 1;
++                it.first.asLuaImpl(L, next, stackOk);
++                it.second.asLuaImpl(L, next, stackOk);
++                if (!stackOk) {
++                    lua_pop(L, 2);   // a nil key would make lua_rawset raise; the caller drops the table
++                    return 1;
++                }
+             }
++            lua_rawset(L, -3);
+         }
+         return 1;
+     }
+@@ -227,53 +280,138 @@ int LuaVal::lua_asLua(lua_State* L)
+ {
+     LuaVal* self = GetCheckLuaVal(L, 1);
+     int depth = luaL_optinteger(L, 2, 0);
+-    return self->asLua(L, static_cast<unsigned int>(depth));
++    bool stackOk = true;
++    self->asLuaImpl(L, static_cast<unsigned int>(depth), stackOk);
++    if (!stackOk)
++    {
++        lua_pop(L, 1);
++        return luaL_error(L, "AsTable: not enough Lua stack for the nesting of this LuaVal");
++    }
++    return 1;
++}
++
++bool LuaVal::TryAsLuaVal(lua_State* L, int index, LuaVal& out, LuaValError& error)
++{
++    if (index < 0 && index > LUA_REGISTRYINDEX)
++        index = lua_gettop(L) + index + 1;   // absolute: the walk pushes keys and values
++    std::unordered_set<void const*> path;    // the tables being copied, outermost first: a cycle comes back to one
++    out = LuaVal();
++    if (ConvertImpl(L, index, index, 0, path, out, error))
++        return true;
++    out = LuaVal();   // a partly built value is dropped here, before the caller raises the error
++    return false;
+ }
+ 
+ LuaVal LuaVal::AsLuaVal(lua_State* L, int index)
+ {
+-    auto t = lua_type(L, index);
+-    switch (t)
++    // For C++ callers that run outside a Lua call (no Lua error possible here): a refused value is nil.
++    LuaVal out;
++    LuaValError error;
++    TryAsLuaVal(L, index, out, error);
++    return out;
++}
++
++bool LuaVal::ConvertImpl(lua_State* L, int index, int arg, unsigned int depth, std::unordered_set<void const*>& path,
++                         LuaVal& out, LuaValError& error)
++{
++    switch (lua_type(L, index))
+     {
+     case LUA_TBOOLEAN:
+-        return LuaVal(static_cast<bool>(lua_toboolean(L, index)));
++        out = LuaVal(static_cast<bool>(lua_toboolean(L, index)));
++        return true;
+     case LUA_TNIL:
+-        return LuaVal();
++        out = LuaVal();
++        return true;
+     case LUA_TNUMBER:
+-        return LuaVal(lua_tonumber(L, index));
++        out = LuaVal(static_cast<double>(lua_tonumber(L, index)));
++        return true;
+     case LUA_TSTRING: {
+         size_t len;
+         const char* str = lua_tolstring(L, index, &len);
+-        return LuaVal(std::string(str, len));
++        out = LuaVal(std::string(str, len));
++        return true;
+     }
+     case LUA_TTABLE:
+-        return FromTable(L, index);
++        return TableImpl(L, index, arg, depth, path, out, error);
+     case LUA_TUSERDATA:
+         if (LuaVal* ptr = GetLuaVal(L, index))
+-            return ptr->reference();
++        {
++#if defined ELUNA_VMANGOS
++            // Value semantics: a LuaVal stored into another table or object's data is copied, so two
++            // objects never share (and race on) one map. A LuaVal holds no cycle (every store copies), so
++            // only its nesting is checked, counted from where it sits in the value being converted.
++            if (depth < LUAVAL_MAX_DEPTH && ptr->deepCloneLimited(out, LUAVAL_MAX_DEPTH - depth))
++                return true;
++            error.Set(arg, "Data(): table nested deeper than 64 levels");
++            return false;
++#else
++            out = ptr->reference();
++            return true;
++#endif
++        }
+         break;
+     }
+-    luaL_argerror(L, index, "Trying to use unsupported type");
+-    return LuaVal();
++    error.Set(arg, "Trying to use unsupported type");
++    return false;
+ }
+ 
+-int LuaVal::lua_AsLuaVal(lua_State* L)
++bool LuaVal::TableImpl(lua_State* L, int index, int arg, unsigned int depth, std::unordered_set<void const*>& path,
++                       LuaVal& out, LuaValError& error)
+ {
+-    return PushLuaVal(L, AsLuaVal(L, 1));
+-}
+-
+-LuaVal LuaVal::FromTable(lua_State* L, int index)
+-{
+-    // Assumed we know index is a table already
++    // index is a table. A table that holds itself, directly or through other tables (t.self = t), is
++    // refused, and so is one nested 64 levels or deeper; the walk stops and the error goes up to the
++    // Lua C function, which raises it.
++    if (depth >= LUAVAL_MAX_DEPTH)
++    {
++        error.Set(arg, "Data(): table nested deeper than 64 levels");
++        return false;
++    }
++    void const* id = lua_topointer(L, index);
++    if (!path.insert(id).second)
++    {
++        error.Set(arg, "Data(): a table that contains itself cannot be stored");
++        return false;
++    }
++    // lua_next pushes a key and a value per level of nesting: make room (see asLuaImpl).
++    if (!lua_checkstack(L, 3))
++    {
++        error.Set(arg, "Data(): not enough Lua stack for the nesting of this table");
++        return false;
++    }
+     LuaVal m({});
+     auto& t = std::get<WrappedMap>(m.v);
+     int top = lua_gettop(L);
+     lua_pushnil(L);
+     while (lua_next(L, index) != 0) {
+-        t->emplace(AsLuaVal(L, top + 1), AsLuaVal(L, top + 2));
++        LuaVal key, value;
++        if (!ConvertImpl(L, top + 1, arg, depth + 1, path, key, error) ||
++            !ConvertImpl(L, top + 2, arg, depth + 1, path, value, error))
++        {
++            lua_settop(L, top);
++            return false;
++        }
++        t->emplace(std::move(key), std::move(value));
+         lua_pop(L, 1);
+     }
+-    return m;
++    path.erase(id);   // only the tables on the way down count: the same table twice side by side is copied twice
++    out = std::move(m);
++    return true;
++}
++
++int LuaVal::lua_AsLuaVal(lua_State* L)
++{
++    LuaValError error;
++    {
++        LuaVal value;
++        if (TryAsLuaVal(L, 1, value, error))
++            return PushLuaVal(L, value);
++    }   // `value` is destroyed before the error is raised
++    return RaiseError(L, error);
++}
++
++LuaVal LuaVal::FromTable(lua_State* L, int index)
++{
++    return AsLuaVal(L, index);
+ }
+ 
+ size_t LuaValHash(LuaVal const& k)
+diff --git a/LuaValue.h b/LuaValue.h
+index fdb654e..9400e98 100644
+--- a/LuaValue.h
++++ b/LuaValue.h
+@@ -30,6 +30,7 @@
+ #pragma once
+ 
+ #include <unordered_map> // std::unordered_map
++#include <unordered_set> // std::unordered_set
+ #include <string> // std::to_string, std::string
+ #include <variant> // std::monostate, std::variant, std::visit
+ #include <memory> // std::unique_ptr, std::shared_ptr
+@@ -70,8 +71,30 @@ public:
+     static std::string to_string_map(MapType const* ptr);
+     int asObject(lua_State* L) const;
+     int asLua(lua_State* L, unsigned int depth) const;
++    // A refused value (unsupported type, a table that contains itself, nesting of 64 levels or more) is
++    // nil here; the Lua C functions use TryAsLuaVal and raise the error themselves.
+     static LuaVal AsLuaVal(lua_State* L, int index);
+     static LuaVal FromTable(lua_State* L, int index);
++
++    // Why a conversion was refused: a string literal (owns nothing, so raising it frees nothing) and the
++    // argument it is about (0: none). Set returns 0 so `return error.Set(...)` ends a C function body.
++    struct LuaValError
++    {
++        char const* message = nullptr;
++        int arg = 0;
++        int Set(int argIndex, char const* text) { arg = argIndex; message = text; return 0; }
++    };
++    static constexpr unsigned int LUAVAL_MAX_DEPTH = 64;
++    // Never raises a Lua error (no longjmp past a C++ destructor): returns false with `error` set.
++    static bool TryAsLuaVal(lua_State* L, int index, LuaVal& out, LuaValError& error);
++    static bool ConvertImpl(lua_State* L, int index, int arg, unsigned int depth, std::unordered_set<void const*>& path,
++                            LuaVal& out, LuaValError& error);
++    static bool TableImpl(lua_State* L, int index, int arg, unsigned int depth, std::unordered_set<void const*>& path,
++                          LuaVal& out, LuaValError& error);
++    static int GetImpl(lua_State* L, LuaVal const& self, LuaValError& error);
++    static int SetImpl(lua_State* L, LuaVal const& self, LuaValError& error);
++    static int RaiseError(lua_State* L, LuaValError const& error);
++    int asLuaImpl(lua_State* L, unsigned int depth, bool& stackOk) const;
+     static int lua_asLua(lua_State* L);
+     static int lua_AsLuaVal(lua_State* L);
+     static int lua_gc(lua_State* L);
+@@ -148,6 +171,44 @@ public:
+     LuaVal reference() const {
+         return *this;
+     }
++#if defined ELUNA_VMANGOS
++    // Recursive copy: every table (WrappedMap) is copied, so the result shares nothing with this value.
++    // A LuaVal stored into another is always copied (value semantics, see AsLuaVal), so a table can never
++    // contain itself and the nesting is finite.
++    //
++    // deepClone() copies without a limit (the core uses it when an object leaves its map).
++    LuaVal deepClone() const {
++        LuaVal out;
++        deepCloneLimited(out, ~0u);
++        return out;
++    }
++    // Copies into `out`; returns false, leaving `out` unfinished, when a table sits maxDepth or more
++    // levels down. Nothing is ever dropped silently: the caller refuses the store.
++    bool deepCloneLimited(LuaVal& out, unsigned int maxDepth) const {
++        return deepCloneImpl(out, 0, maxDepth);
++    }
++    bool deepCloneImpl(LuaVal& out, unsigned int depth, unsigned int maxDepth) const {
++        if (auto const* map = std::get_if<WrappedMap>(&v))
++        {
++            if (depth >= maxDepth)
++                return false;
++            auto copy = std::make_shared<MapType>();
++            if (*map)
++                for (auto const& pair : **map)
++                {
++                    LuaVal key, value;
++                    if (!pair.first.deepCloneImpl(key, depth + 1, maxDepth) ||
++                        !pair.second.deepCloneImpl(value, depth + 1, maxDepth))
++                        return false;
++                    copy->emplace(std::move(key), std::move(value));
++                }
++            out.v = copy;
++            return true;
++        }
++        out.v = v;
++        return true;
++    }
++#endif
+ 
+     LuaValVariant v;
+ };
+diff --git a/hooks/PlayerHooks.cpp b/hooks/PlayerHooks.cpp
+index cb4affe..5f3784c 100644
+--- a/hooks/PlayerHooks.cpp
++++ b/hooks/PlayerHooks.cpp
+@@ -99,6 +99,20 @@ bool Eluna::OnCommand(Player* player, const char* text)
+     return CallAllFunctionsBool(binding, key, true);
+ }
+ 
++#if defined ELUNA_VMANGOS
++bool Eluna::OnCommand(ChatHandler& handler, const char* text)
++{
++    // The player is nil for the console. ".reload eluna" is taken over by World::OnElunaCommand before this.
++    Player* player = handler.GetSession() ? handler.GetSession()->GetPlayer() : nullptr;
++
++    START_HOOK_WITH_RETVAL(PLAYER_EVENT_ON_COMMAND, true);
++    HookPush(player);
++    HookPush(text);
++    HookPush(&handler);
++    return CallAllFunctionsBool(binding, key, true);
++}
++#endif
++
+ void Eluna::OnLootItem(Player* pPlayer, Item* pItem, uint32 count, ObjectGuid guid)
+ {
+     START_HOOK(PLAYER_EVENT_ON_LOOT_ITEM);
+diff --git a/hooks/SpellHooks.cpp b/hooks/SpellHooks.cpp
+index c37cccc..a344f69 100644
+--- a/hooks/SpellHooks.cpp
++++ b/hooks/SpellHooks.cpp
+@@ -233,11 +233,22 @@ bool Eluna::OnAuraProc(Aura* aura, ProcExecutionData& procInfo)
+ }
+ #endif
+ 
+-uint32 Eluna::OnCheckCast(Spell* pSpell)
++uint32 Eluna::OnCheckCast(Spell* pSpell, bool strict)
+ {
+     START_HOOK_WITH_RETVAL(SPELL_EVENT_ON_CHECK_CAST, pSpell, SPELL_CAST_OK);
+     HookPush(pSpell);
++    HookPush(strict);
++#if defined ELUNA_VMANGOS
++    // A SPELL_FAILED_* result (0 to SPELL_FAILED_UNKNOWN, so 1 too) cancels the cast; only
++    // SPELL_CAST_OK lets it go on. A value outside that range (-1, 300) must not reach the cast
++    // code as a result: count it as OK.
++    uint32 result = static_cast<uint32>(CallAllFunctionsInt(binding, key, int32(SPELL_CAST_OK)));
++    if (result != SPELL_CAST_OK && result > SPELL_FAILED_UNKNOWN)
++        return SPELL_CAST_OK;
++    return result;
++#else
+     return static_cast<uint32>(CallAllFunctionsInt(binding, key, int32(SPELL_CAST_OK)));
++#endif
+ }
+ 
+ void Eluna::OnBeforeCast(Spell* pSpell)
+@@ -361,45 +372,80 @@ bool Eluna::OnEffectLaunchTarget(Spell* pSpell, uint8 effIndex, uint8 mode, bool
+     return preventDefault;
+ }
+ 
++#if defined ELUNA_VMANGOS
++bool Eluna::OnEffectHit(Spell* pSpell, uint8 effIndex, uint8 mode, bool preventDefault, Unit* hitUnit)
++#else
+ bool Eluna::OnEffectHit(Spell* pSpell, uint8 effIndex, uint8 mode, bool preventDefault)
++#endif
+ {
+     START_HOOK_WITH_RETVAL(SPELL_EVENT_ON_EFFECT_HIT, pSpell, preventDefault);
+     HookPush(pSpell);
+     HookPush(effIndex);
+     HookPush(mode);
++#if defined ELUNA_VMANGOS
++    HookPush(hitUnit);
++#endif
+     preventDefault = CallAllFunctionsBool(binding, key, preventDefault);
+     return preventDefault;
+ }
+ 
++#if defined ELUNA_VMANGOS
++bool Eluna::OnEffectHitTarget(Spell* pSpell, uint8 effIndex, uint8 mode, bool preventDefault, Unit* hitUnit)
++#else
+ bool Eluna::OnEffectHitTarget(Spell* pSpell, uint8 effIndex, uint8 mode, bool preventDefault)
++#endif
+ {
+     START_HOOK_WITH_RETVAL(SPELL_EVENT_ON_EFFECT_HIT_TARGET, pSpell, preventDefault);
+     HookPush(pSpell);
+     HookPush(effIndex);
+     HookPush(mode);
++#if defined ELUNA_VMANGOS
++    HookPush(hitUnit);
++#endif
+     preventDefault = CallAllFunctionsBool(binding, key, preventDefault);
+     return preventDefault;
+ }
+ 
++#if defined ELUNA_VMANGOS
++void Eluna::OnBeforeSpellHit(Spell* pSpell, uint8 missInfo, Unit* hitUnit)
++#else
+ void Eluna::OnBeforeSpellHit(Spell* pSpell, uint8 missInfo)
++#endif
+ {
+     START_HOOK(SPELL_EVENT_ON_BEFORE_HIT, pSpell);
+     HookPush(pSpell);
+     HookPush(missInfo);
++#if defined ELUNA_VMANGOS
++    HookPush(hitUnit);
++#endif
+     CallAllFunctions(binding, key);
+ }
+ 
++#if defined ELUNA_VMANGOS
++void Eluna::OnSpellHit(Spell* pSpell, Unit* hitUnit)
++#else
+ void Eluna::OnSpellHit(Spell* pSpell)
++#endif
+ {
+     START_HOOK(SPELL_EVENT_ON_HIT, pSpell);
+     HookPush(pSpell);
++#if defined ELUNA_VMANGOS
++    HookPush(hitUnit);
++#endif
+     CallAllFunctions(binding, key);
+ }
+ 
++#if defined ELUNA_VMANGOS
++void Eluna::OnAfterSpellHit(Spell* pSpell, Unit* hitUnit)
++#else
+ void Eluna::OnAfterSpellHit(Spell* pSpell)
++#endif
+ {
+     START_HOOK(SPELL_EVENT_ON_AFTER_HIT, pSpell);
+     HookPush(pSpell);
++#if defined ELUNA_VMANGOS
++    HookPush(hitUnit);
++#endif
+     CallAllFunctions(binding, key);
+ }
+ 
+diff --git a/methods/Methods.cpp b/methods/Methods.cpp
+index 7d43c3e..f06f14e 100644
+--- a/methods/Methods.cpp
++++ b/methods/Methods.cpp
+@@ -39,6 +39,7 @@
+ #include "BigIntMethods.h"
+ #include "CustomMethodsInterface.h"
+ #if defined ELUNA_VMANGOS
++#include "ChatHandlerMethods.h"
+ #include "LootMethods.h"
+ #include "ItemTemplateMethods.h"
+ #include "RollMethods.h"
+@@ -150,6 +151,11 @@ void RegisterMethods(Eluna* E)
+     ElunaTemplate<ObjectGuid>::Register(E, "ObjectGuid");
+     ElunaTemplate<ObjectGuid>::SetMethods(E, LuaBigInt::ObjectGuidMethods);
+ 
++#if defined ELUNA_VMANGOS
++    ElunaTemplate<ChatHandler>::Register(E, "ChatHandler");
++    ElunaTemplate<ChatHandler>::SetMethods(E, LuaChatHandler::ChatHandlerMethods);
++#endif
++
+     LuaCustom::RegisterCustomMethods(E);
+ 
+     LuaVal::Register(E->L);
+diff --git a/methods/VMangos/ChatHandlerMethods.h b/methods/VMangos/ChatHandlerMethods.h
+new file mode 100644
+index 0000000..46a8362
+--- /dev/null
++++ b/methods/VMangos/ChatHandlerMethods.h
+@@ -0,0 +1,264 @@
++/*
++* Copyright (C) 2010 - 2024 Eluna Lua Engine <https://elunaluaengine.github.io/>
++* This program is free software licensed under GPL version 3
++* Please see the included DOCS/LICENSE.md for more information
++*/
++
++#ifndef CHATHANDLERMETHODS_H
++#define CHATHANDLERMETHODS_H
++
++/***
++ * The command handler that is the third argument of PLAYER_EVENT_ON_COMMAND: it answers the caller of
++ * the command (the in-game chat of a player, or the console / SOAP caller) and tells who the caller is.
++ *
++ * It only exists in the "World" state, during the hook: a handler kept after the hook returns is an
++ * invalidated object. Do not use it from timers.
++ *
++ * Inherits all methods from: none
++ */
++namespace LuaChatHandler
++{
++    /**
++     * Sends a message to the caller of the command.
++     *
++     * @param string text : the message
++     * @param uint32 entry : (instead of text) the id of a core string, see the mangos_string table
++     */
++    int SendSysMessage(Eluna* E, ChatHandler* handler)
++    {
++        if (lua_type(E->L, 2) == LUA_TNUMBER)
++            handler->SendSysMessage(E->CHECKVAL<int32>(2));
++        else
++            handler->SendSysMessage(E->CHECKVAL<const char*>(2));
++        return 0;
++    }
++
++    /**
++     * Sends a formatted message to the caller of the command. The format is that of Lua's `string.format`.
++     *
++     * @param string format : the format
++     * @param ... : the arguments of the format
++     */
++    int PSendSysMessage(Eluna* E, ChatHandler* handler)
++    {
++        int top = lua_gettop(E->L);
++        luaL_checkstring(E->L, 2);
++
++        lua_getglobal(E->L, "string");
++        lua_getfield(E->L, -1, "format");
++        lua_remove(E->L, -2);
++        for (int i = 2; i <= top; ++i)
++            lua_pushvalue(E->L, i);
++        lua_call(E->L, top - 1, 1); // an error in the format is a Lua error
++
++        if (char const* text = lua_tostring(E->L, -1))
++            handler->SendSysMessage(text);
++        lua_pop(E->L, 1);
++        return 0;
++    }
++
++    /**
++     * Returns `true` if the command comes from the console (or SOAP), `false` if a player typed it.
++     *
++     * @return bool isConsole
++     */
++    int IsConsole(Eluna* E, ChatHandler* handler)
++    {
++        E->Push(handler->GetSession() == nullptr);
++        return 1;
++    }
++
++    /**
++     * Returns the [Player] that typed the command, or nil for the console.
++     *
++     * @return [Player] player
++     */
++    int GetPlayer(Eluna* E, ChatHandler* handler)
++    {
++        // Not ChatHandler::GetPlayer: it dereferences the session, which the console does not have.
++        E->Push(handler->GetSession() ? handler->GetSession()->GetPlayer() : nullptr);
++        return 1;
++    }
++
++    /**
++     * Returns the id of the account of the caller.
++     *
++     * @return uint32 accountId
++     */
++    int GetAccountId(Eluna* E, ChatHandler* handler)
++    {
++        E->Push(handler->ElunaAccountId());
++        return 1;
++    }
++
++    /**
++     * Returns the security level of the caller: 0 player, 1 moderator, 2 game master, 3 administrator,
++     * 4 console.
++     *
++     * @return uint32 security
++     */
++    int GetSecurity(Eluna* E, ChatHandler* handler)
++    {
++        E->Push(handler->ElunaAccessLevel());
++        return 1;
++    }
++
++    /**
++     * Returns `true` if the caller has at least the given security level.
++     * A command that is for game masters must check this: players only reach Lua commands if the
++     * server lets them run commands at all.
++     *
++     * @param uint32 level : the security level
++     * @return bool isAvailable
++     */
++    int IsAvailable(Eluna* E, ChatHandler* handler)
++    {
++        uint32 level = E->CHECKVAL<uint32>(2);
++        E->Push(handler->ElunaAccessLevel() >= level);
++        return 1;
++    }
++
++    /**
++     * Returns `true` if the caller must NOT act on the given [Player] because its security is higher,
++     * and has already told the caller so.
++     *
++     * @param [Player] player
++     * @param bool strong = false : also refuse a player of the same security level
++     * @return bool hasLowerSecurity
++     */
++    int HasLowerSecurity(Eluna* E, ChatHandler* handler)
++    {
++        Player* player = E->CHECKOBJ<Player>(2);
++        bool strong = E->CHECKVAL<bool>(3, false);
++
++        E->Push(handler->ElunaHasLowerSecurity(player, strong));
++        return 1;
++    }
++
++    /**
++     * Returns the [Player] the caller has selected, or the caller if nothing is selected.
++     * Returns nil for the console.
++     *
++     * @return [Player] player
++     */
++    int GetSelectedPlayer(Eluna* E, ChatHandler* handler)
++    {
++        E->Push(handler->ElunaSelectedPlayer());
++        return 1;
++    }
++
++    /**
++     * Returns the [Player] the caller has selected, else the caller. Returns nil for the console.
++     *
++     * @return [Player] player
++     */
++    int GetSelectedPlayerOrSelf(Eluna* E, ChatHandler* handler)
++    {
++        Player* player = handler->ElunaSelectedPlayer();
++        if (!player && handler->GetSession())
++            player = handler->GetSession()->GetPlayer();
++        E->Push(player);
++        return 1;
++    }
++
++    /**
++     * Returns the [Unit] the caller has selected (the caller itself if nothing is selected), which can be
++     * on another map. Returns nil for the console.
++     *
++     * @return [Unit] unit
++     */
++    int GetSelectedUnit(Eluna* E, ChatHandler* handler)
++    {
++        E->Push(handler->ElunaSelectedUnit());
++        return 1;
++    }
++
++    /**
++     * Returns the [Creature] the caller has selected on its map. Returns nil for the console.
++     *
++     * @return [Creature] creature
++     */
++    int GetSelectedCreature(Eluna* E, ChatHandler* handler)
++    {
++        E->Push(handler->ElunaSelectedCreature());
++        return 1;
++    }
++
++    /**
++     * Returns the [GameObject] the caller has selected (with `.gobject select`). Returns nil for the console.
++     *
++     * @return [GameObject] object
++     */
++    int GetSelectedObject(Eluna* E, ChatHandler* handler)
++    {
++        E->Push(handler->ElunaSelectedGameObject());
++        return 1;
++    }
++
++    /**
++     * Sends a message to every player on the server.
++     *
++     * @param string text
++     */
++    int SendGlobalSysMessage(Eluna* E, ChatHandler* handler)
++    {
++        handler->ElunaSendGlobalSysMessage(E->CHECKVAL<const char*>(2));
++        return 0;
++    }
++
++    /**
++     * Sends a message to every game master that is online.
++     *
++     * @param string text
++     */
++    int SendGlobalGMSysMessage(Eluna* E, ChatHandler* /*handler*/)
++    {
++        sWorld.SendGMText(std::string(E->CHECKVAL<const char*>(2)), SEC_MODERATOR);
++        return 0;
++    }
++
++    /**
++     * Returns `true` if the command already told the caller about an error.
++     *
++     * @return bool hasSentErrorMessage
++     */
++    int HasSentErrorMessage(Eluna* E, ChatHandler* handler)
++    {
++        E->Push(handler->HasSentErrorMessage());
++        return 1;
++    }
++
++    /**
++     * Marks that the command has sent an error to the caller, so the core does not print its help.
++     *
++     * @param bool value = true
++     */
++    int SetSentErrorMessage(Eluna* E, ChatHandler* handler)
++    {
++        handler->ElunaSetSentErrorMessage(E->CHECKVAL<bool>(2, true));
++        return 0;
++    }
++
++    // The handler only reaches the world state, on the world thread (the commands of a map thread get no state).
++    ElunaRegister<ChatHandler> ChatHandlerMethods[] =
++    {
++        { "SendSysMessage", &LuaChatHandler::SendSysMessage, METHOD_REG_WORLD },
++        { "PSendSysMessage", &LuaChatHandler::PSendSysMessage, METHOD_REG_WORLD },
++        { "IsConsole", &LuaChatHandler::IsConsole, METHOD_REG_WORLD },
++        { "GetPlayer", &LuaChatHandler::GetPlayer, METHOD_REG_WORLD },
++        { "GetAccountId", &LuaChatHandler::GetAccountId, METHOD_REG_WORLD },
++        { "GetSecurity", &LuaChatHandler::GetSecurity, METHOD_REG_WORLD },
++        { "IsAvailable", &LuaChatHandler::IsAvailable, METHOD_REG_WORLD },
++        { "HasLowerSecurity", &LuaChatHandler::HasLowerSecurity, METHOD_REG_WORLD },
++        { "GetSelectedPlayer", &LuaChatHandler::GetSelectedPlayer, METHOD_REG_WORLD },
++        { "GetSelectedPlayerOrSelf", &LuaChatHandler::GetSelectedPlayerOrSelf, METHOD_REG_WORLD },
++        { "GetSelectedUnit", &LuaChatHandler::GetSelectedUnit, METHOD_REG_WORLD },
++        { "GetSelectedCreature", &LuaChatHandler::GetSelectedCreature, METHOD_REG_WORLD },
++        { "GetSelectedObject", &LuaChatHandler::GetSelectedObject, METHOD_REG_WORLD },
++        { "SendGlobalSysMessage", &LuaChatHandler::SendGlobalSysMessage, METHOD_REG_WORLD },
++        { "SendGlobalGMSysMessage", &LuaChatHandler::SendGlobalGMSysMessage, METHOD_REG_WORLD },
++        { "HasSentErrorMessage", &LuaChatHandler::HasSentErrorMessage, METHOD_REG_WORLD },
++        { "SetSentErrorMessage", &LuaChatHandler::SetSentErrorMessage, METHOD_REG_WORLD }
++    };
++}
++#endif
+diff --git a/methods/VMangos/CreatureMethods.h b/methods/VMangos/CreatureMethods.h
+index 1dfe9c2..9fb79e7 100644
+--- a/methods/VMangos/CreatureMethods.h
++++ b/methods/VMangos/CreatureMethods.h
+@@ -938,15 +938,24 @@ namespace LuaCreature
+     }
+ 
+     /**
+-     * Despawn this [Creature].
++     * Despawn this [Creature]. A creature that was summoned (script spawn, [WorldObject:SpawnCreature],
++     * PerformIngameSpawn) is unsummoned: the core removes the object, at the end of the world update
++     * (or, with a delay, when the delay has run out). Any other creature is despawned and respawns
++     * after its respawn delay. A pet is not unsummoned here.
+      *
+-     * @param uint32 delay = 0 : dely to despawn in milliseconds
++     * @param uint32 delay = 0 : delay to despawn in milliseconds
+      */
+     int DespawnOrUnsummon(Eluna* E, Creature* creature)
+     {
+         uint32 msTimeToDespawn = E->CHECKVAL<uint32>(2, 0);
+ 
+-        creature->ForcedDespawn(msTimeToDespawn);
++        // tortoise-wow: ForcedDespawn only kills a temporary summon: the object stays in the map,
++        // dead, for as long as its summon type waits for UnSummon. Creature::DespawnOrUnsummon would
++        // also delete a hunter pet (PET_SAVE_AS_DELETED), so the split is made here.
++        if (creature->IsTemporarySummon())
++            static_cast<TemporarySummon*>(creature)->UnSummon(msTimeToDespawn);
++        else
++            creature->ForcedDespawn(msTimeToDespawn);
+         return 0;
+     }
+ 
+@@ -1251,8 +1260,97 @@ namespace LuaCreature
+         return 0;
+     }
+ 
++    /**
++     * Returns the threat of a [Unit] on this [Creature]'s threat list (online list), 0 if it has none.
++     *
++     * @param [Unit] target
++     * @return float threat
++     */
++    int GetThreat(Eluna* E, Creature* creature)
++    {
++        Unit* target = E->CHECKOBJ<Unit>(2);
++
++        E->Push(creature->GetThreatManager().getThreat(target, false));
++        return 1;
++    }
++
++    /**
++     * Removes a [Unit] from this [Creature]'s threat list. If it was the current victim the
++     * creature selects another target on its next update, or evades if the list is empty.
++     *
++     * @param [Unit] target
++     */
++    int ClearThreat(Eluna* E, Creature* creature)
++    {
++        Unit* target = E->CHECKOBJ<Unit>(2);
++
++        // The target's HostileRefManager holds one reference per creature that has it on its threat
++        // list, online or offline. deleteReference removes that reference, which takes it out of
++        // the owner's online or offline container (UEV_THREAT_REF_REMOVE_FROM_LIST) and drops the
++        // current victim if it was that one. ThreatManager::modifyThreatPercent only looks at the
++        // online container.
++        target->GetHostileRefManager().deleteReference(creature);
++        return 0;
++    }
++
++    /**
++     * Sets the threat of every [Unit] on this [Creature]'s threat list to 0. The list is kept.
++     */
++    int ResetAllThreat(Eluna* /*E*/, Creature* creature)
++    {
++        // Copy first: setThreat can move a reference between the online and offline list.
++        ThreatList const& list = creature->GetThreatManager().getThreatList();
++        std::vector<HostileReference*> refs(list.begin(), list.end());
++        for (HostileReference* ref : refs)
++            ref->setThreat(0.0f);
++        return 0;
++    }
++
++    /**
++     * Makes this [Creature] attack a [Unit] on its threat list regardless of the threat of the others,
++     * for as long as the target is a valid target, until [Creature:ClearFixate], or until the creature
++     * leaves combat or dies. This core has no fixate: it is emulated like a permanent taunt by the unit.
++     *
++     * @param [Unit] target
++     * @return bool fixated : false if the target is not on the threat list
++     */
++    int FixateTarget(Eluna* E, Creature* creature)
++    {
++        Unit* target = E->CHECKOBJ<Unit>(2);
++
++        bool onList = false;
++        for (HostileReference* ref : creature->GetThreatManager().getThreatList())
++        {
++            if (ref->getUnitGuid() == target->GetObjectGuid())
++            {
++                onList = true;
++                break;
++            }
++        }
++        if (onList)
++            creature->SetElunaFixateTarget(target->GetObjectGuid());
++        E->Push(onList);
++        return 1;
++    }
++
++    /**
++     * Clears the fixate set by [Creature:FixateTarget].
++     */
++    int ClearFixate(Eluna* /*E*/, Creature* creature)
++    {
++        creature->SetElunaFixateTarget(ObjectGuid());
++        return 0;
++    }
++
+     ElunaRegister<Creature> CreatureMethods[] =
+     {
++        // Threat
++        { "GetThreat", &LuaCreature::GetThreat },
++        { "ClearThreat", &LuaCreature::ClearThreat },
++        { "ResetAllThreat", &LuaCreature::ResetAllThreat },
++        { "FixateTarget", &LuaCreature::FixateTarget },
++        { "ClearFixate", &LuaCreature::ClearFixate },
++
+         // Getters
+         { "GetAITarget", &LuaCreature::GetAITarget },
+         { "GetAITargets", &LuaCreature::GetAITargets },
+diff --git a/methods/VMangos/GlobalMethods.h b/methods/VMangos/GlobalMethods.h
+index 5b30752..d65d6ec 100644
+--- a/methods/VMangos/GlobalMethods.h
++++ b/methods/VMangos/GlobalMethods.h
+@@ -105,6 +105,63 @@ namespace LuaGlobalFunctions
+         return 1;
+     }
+ 
++    /**
++     * Returns the [Map] pointer of the Lua state. Raises an error in the "World" state.
++     *
++     * @return [Map] map
++     */
++    int GetStateMap(Eluna* E)
++    {
++        E->Push(E->GetBoundMap());
++        return 1;
++    }
++
++    /**
++     * Returns a table with the [Player]s on the [Map] of the Lua state. Only available in a map state;
++     * use [Global:GetPlayersInWorld] in the "World" state.
++     *
++     * <pre>
++     * enum TeamId
++     * {
++     *     TEAM_ALLIANCE = 0,
++     *     TEAM_HORDE = 1,
++     *     TEAM_NEUTRAL = 2
++     * };
++     * </pre>
++     *
++     * @param [TeamId] team = TEAM_NEUTRAL : optional check team of the [Player], Alliance, Horde or Neutral (All)
++     * @param bool onlyGM = false : optional check if GM only
++     * @return table mapPlayers
++     */
++    int GetPlayersOnMap(Eluna* E)
++    {
++        uint32 team = E->CHECKVAL<uint32>(1, TEAM_NEUTRAL);
++        bool onlyGM = E->CHECKVAL<bool>(2, false);
++
++        lua_newtable(E->L);
++        int tbl = lua_gettop(E->L);
++        uint32 i = 0;
++
++        if (Map* map = E->GetBoundMap())
++        {
++            Map::PlayerList const& players = map->GetPlayers();
++            for (Map::PlayerList::const_iterator itr = players.begin(); itr != players.end(); ++itr)
++            {
++                Player* player = itr->getSource();
++                if (!player || !player->IsInWorld())
++                    continue;
++                if ((team == TEAM_NEUTRAL || player->GetTeamId() == team) && (!onlyGM || player->IsGameMaster()))
++                {
++                    E->Push(player);
++                    lua_rawseti(E->L, tbl, ++i);
++                }
++            }
++        }
++
++        lua_settop(E->L, tbl);
++        return 1;
++    }
++
+     /**
+      * Returns [Quest] template
+      *
+@@ -890,6 +947,63 @@ namespace LuaGlobalFunctions
+         return RegisterEntryHelper(E, Hooks::REGTYPE_GAMEOBJECT_GOSSIP);
+     }
+ 
++    /**
++     * Registers a [Spell] event handler, called for the spell with the given Id.
++     *
++     * Only the events this core fires are accepted; any other event is an error.
++     * SPELL_EVENT_ON_CHECK_CAST fires on every Spell::CheckCast: once when the cast is
++     * prepared (strict = true) and again when a spell with a cast time completes
++     * (strict = false), as TrinityCore's check-cast handlers do. A `shots` limit counts each call.
++     * The state is the one of the map of the caster, so register spell events in a script every map
++     * state loads. In these events only read, set data, add threat or queue work with
++     * [Global:CreateLuaEvent]: do not despawn, teleport or remove the caster or the target.
++     *
++     * <pre>
++     * enum SpellEvents
++     * {
++     *     SPELL_EVENT_ON_CAST              = 1,    // (event, spell, skipCheck)
++     *     SPELL_EVENT_ON_CHECK_CAST        = 10,   // (event, spell, strict) - Can return a SPELL_FAILED_* value to cancel the cast; strict is true at prepare, false at the completion check
++     *     SPELL_EVENT_ON_BEFORE_CAST       = 11,   // (event, spell)
++     *     SPELL_EVENT_ON_AFTER_CAST        = 12,   // (event, spell)
++     *     SPELL_EVENT_ON_EFFECT_HIT        = 19,   // (event, spell, effIndex, mode, hitUnit) - Can return true to prevent the default effect
++     *     SPELL_EVENT_ON_BEFORE_HIT        = 20,   // (event, spell, missInfo, hitUnit)
++     *     SPELL_EVENT_ON_EFFECT_HIT_TARGET = 21,   // (event, spell, effIndex, mode, hitUnit) - Can return true to prevent the default effect
++     *     SPELL_EVENT_ON_HIT               = 22,   // (event, spell, hitUnit)
++     *     SPELL_EVENT_ON_AFTER_HIT         = 23    // (event, spell, hitUnit)
++     * };
++     * </pre>
++     *
++     * @proto cancel = (entry, event, function)
++     * @proto cancel = (entry, event, function, shots)
++     *
++     * @param uint32 entry : [Spell] Id
++     * @param uint32 event : [Spell] event Id, refer to SpellEvents above
++     * @param function function : function to register
++     * @param uint32 shots = 0 : the number of times the function will be called, 0 means "always call this function"
++     *
++     * @return function cancel : a function that cancels the binding when called
++     */
++    int RegisterSpellEvent(Eluna* E)
++    {
++        uint32 ev = E->CHECKVAL<uint32>(2);
++        switch (ev)
++        {
++            case Hooks::SPELL_EVENT_ON_CAST:
++            case Hooks::SPELL_EVENT_ON_CHECK_CAST:
++            case Hooks::SPELL_EVENT_ON_BEFORE_CAST:
++            case Hooks::SPELL_EVENT_ON_AFTER_CAST:
++            case Hooks::SPELL_EVENT_ON_EFFECT_HIT:
++            case Hooks::SPELL_EVENT_ON_BEFORE_HIT:
++            case Hooks::SPELL_EVENT_ON_EFFECT_HIT_TARGET:
++            case Hooks::SPELL_EVENT_ON_HIT:
++            case Hooks::SPELL_EVENT_ON_AFTER_HIT:
++                break;
++            default:
++                return luaL_argerror(E->L, 2, "spell event not supported on VMaNGOS");
++        }
++        return RegisterEntryHelper(E, Hooks::REGTYPE_SPELL);
++    }
++
+     /**
+      * Registers an [Item] event handler.
+      *
+@@ -2937,6 +3051,7 @@ namespace LuaGlobalFunctions
+         { "RegisterCreatureGossipEvent", &LuaGlobalFunctions::RegisterCreatureGossipEvent },
+         { "RegisterGameObjectEvent", &LuaGlobalFunctions::RegisterGameObjectEvent },
+         { "RegisterGameObjectGossipEvent", &LuaGlobalFunctions::RegisterGameObjectGossipEvent },
++        { "RegisterSpellEvent", &LuaGlobalFunctions::RegisterSpellEvent },
+         { "RegisterItemEvent", &LuaGlobalFunctions::RegisterItemEvent },
+         { "RegisterItemGossipEvent", &LuaGlobalFunctions::RegisterItemGossipEvent },
+         { "RegisterPlayerGossipEvent", &LuaGlobalFunctions::RegisterPlayerGossipEvent },
+@@ -2974,6 +3089,8 @@ namespace LuaGlobalFunctions
+         { "GetPlayerByName", &LuaGlobalFunctions::GetPlayerByName },
+         { "GetGameTime", &LuaGlobalFunctions::GetGameTime },
+         { "GetPlayersInWorld", &LuaGlobalFunctions::GetPlayersInWorld },
++        { "GetStateMap", &LuaGlobalFunctions::GetStateMap, METHOD_REG_MAP },
++        { "GetPlayersOnMap", &LuaGlobalFunctions::GetPlayersOnMap, METHOD_REG_MAP },
+         { "GetGuildByName", &LuaGlobalFunctions::GetGuildByName },
+         { "GetGuildByLeaderGUID", &LuaGlobalFunctions::GetGuildByLeaderGUID },
+         { "GetPlayerCount", &LuaGlobalFunctions::GetPlayerCount },
+diff --git a/methods/VMangos/MapMethods.h b/methods/VMangos/MapMethods.h
+index 18a77ae..6b9ca0b 100644
+--- a/methods/VMangos/MapMethods.h
++++ b/methods/VMangos/MapMethods.h
+@@ -271,6 +271,17 @@ namespace LuaMap
+         return 1;
+     }
+     
++    /**
++     * Returns a handle to the Lua data of this [Map], kept by the core with the map.
++     * See [WorldObject:Data]. Do not keep the handle across hooks or timers.
++     *
++     * @return LuaVal data
++     */
++    int Data(Eluna* E, Map* map)
++    {
++        return LuaVal::PushLuaVal(E->L, map->lua_data);
++    }
++
+     ElunaRegister<Map> MapMethods[] =
+     {
+         // Getters
+@@ -296,6 +307,7 @@ namespace LuaMap
+ 
+         // Other
+         { "SaveInstanceData", &LuaMap::SaveInstanceData },
++        { "Data", &LuaMap::Data },
+ 
+         { "IsArena", METHOD_REG_NONE },
+         { "IsHeroic", METHOD_REG_NONE }
+diff --git a/methods/VMangos/SpellMethods.h b/methods/VMangos/SpellMethods.h
+index 2902115..a8d6f21 100644
+--- a/methods/VMangos/SpellMethods.h
++++ b/methods/VMangos/SpellMethods.h
+@@ -167,6 +167,125 @@ namespace LuaSpell
+         return 1;
+     }
+ 
++    /**
++     * Returns `true` if the [Spell] was cast as a triggered spell (no cost, no cast time checks of its own).
++     *
++     * @return bool isTriggered
++     */
++    int IsTriggered(Eluna* E, Spell* spell)
++    {
++        E->Push(spell->IsTriggered());
++        return 1;
++    }
++
++    /**
++     * Returns the [Unit] or [GameObject] the [Spell] was originally cast for (the caster that a
++     * triggered spell was triggered by), or the caster if there is none. Returns nil when it is gone or
++     * on another map than the caster.
++     *
++     * @return [WorldObject] originalCaster
++     */
++    int GetOriginalCaster(Eluna* E, Spell* spell)
++    {
++        WorldObject* caster = spell->GetCaster();
++        ObjectGuid guid = spell->GetOriginalCasterGuid();
++        if (!caster || !guid)
++        {
++            E->Push(caster);
++            return 1;
++        }
++
++        // Looked up by guid: the pointer cached in the spell is refreshed only while it is casting.
++        if (guid.IsGameObject())
++        {
++            Map* map = caster->GetMap();
++            E->Push(map ? map->GetGameObject(guid) : nullptr);
++        }
++        else
++        {
++            Unit* original = ObjectAccessor::GetUnit(*caster, guid);
++            if (original && original->FindMap() != caster->GetMap())
++                original = nullptr;
++            E->Push(original);
++        }
++        return 1;
++    }
++
++    /**
++     * Returns `true` if the [Spell] is a positive (beneficial) spell.
++     *
++     * @return bool isPositive
++     */
++    int IsPositive(Eluna* E, Spell* spell)
++    {
++        E->Push(spell->m_spellInfo->IsPositiveSpell());
++        return 1;
++    }
++
++    /**
++     * Returns the state of the [Spell]: 0 = none, 1 = preparing, 2 = casting, 3 = finished, 4 = idle, 5 = delayed.
++     *
++     * @return uint32 state
++     */
++    int GetState(Eluna* E, Spell* spell)
++    {
++        E->Push(uint32(spell->getState()));
++        return 1;
++    }
++
++    /**
++     * Returns `true` if an interrupting spell (a kick, silence) can interrupt the [Spell].
++     *
++     * Uses the rule of the interrupt-cast effect: the spell must not be triggered, must be of the
++     * silence prevention type, and the interrupt flag of its cast (damage) or channel (interrupt) must be set.
++     *
++     * @return bool isInterruptable
++     */
++    int IsInterruptable(Eluna* E, Spell* spell)
++    {
++        SpellEntry const* info = spell->m_spellInfo;
++        bool result = !spell->IsTriggered() && info->PreventionType == SPELL_PREVENTION_TYPE_SILENCE;
++        if (result)
++        {
++            if (spell->GetCurrentContainer() == CURRENT_CHANNELED_SPELL)
++                result = (info->ChannelInterruptFlags & CHANNEL_FLAG_INTERRUPT) != 0;
++            else
++                result = (info->InterruptFlags & SPELL_INTERRUPT_FLAG_DAMAGE) != 0;
++        }
++        E->Push(result);
++        return 1;
++    }
++
++    /**
++     * Returns `true` if the [Spell] is a channeled spell that is being channeled now.
++     *
++     * @return bool isChannelActive
++     */
++    int IsChannelActive(Eluna* E, Spell* spell)
++    {
++        E->Push(spell->IsChannelActive());
++        return 1;
++    }
++
++    /**
++     * Returns the damage or healing amount of the effect of the [Spell], as the core calculates it
++     * (level scaling, bonus; a new random roll on every call).
++     *
++     * @param uint32 effIndex : effect index, 0 to 2
++     * @param [Unit] target = nil : the target of the effect, optional
++     * @return int32 amount
++     */
++    int CalculateDamage(Eluna* E, Spell* spell)
++    {
++        uint32 effIndex = E->CHECKVAL<uint32>(2);
++        if (effIndex >= MAX_EFFECT_INDEX)
++            return luaL_argerror(E->L, 2, "effect index out of range");
++        Unit* target = E->CHECKOBJ<Unit>(3, false);
++
++        E->Push(spell->CalculateDamage(SpellEffectIndex(effIndex), target));
++        return 1;
++    }
++
+     /**
+      * Sets the [Spell] to automatically repeat.
+      *
+@@ -219,12 +338,19 @@ namespace LuaSpell
+         { "GetPowerCost", &LuaSpell::GetPowerCost },
+         { "GetTargetDest", &LuaSpell::GetTargetDest },
+         { "GetTarget", &LuaSpell::GetTarget },
++        { "GetOriginalCaster", &LuaSpell::GetOriginalCaster },
++        { "GetState", &LuaSpell::GetState },
++        { "CalculateDamage", &LuaSpell::CalculateDamage },
+ 
+         // Setters
+         { "SetAutoRepeat", &LuaSpell::SetAutoRepeat },
+ 
+         // Boolean
+         { "IsAutoRepeat", &LuaSpell::IsAutoRepeat },
++        { "IsTriggered", &LuaSpell::IsTriggered },
++        { "IsPositive", &LuaSpell::IsPositive },
++        { "IsInterruptable", &LuaSpell::IsInterruptable },
++        { "IsChannelActive", &LuaSpell::IsChannelActive },
+ 
+         // Other
+         { "Cancel", &LuaSpell::Cancel },
+diff --git a/methods/VMangos/WorldObjectMethods.h b/methods/VMangos/WorldObjectMethods.h
+index 367cc2d..e62c11c 100644
+--- a/methods/VMangos/WorldObjectMethods.h
++++ b/methods/VMangos/WorldObjectMethods.h
+@@ -1078,6 +1078,35 @@ namespace LuaWorldObject
+         return 0;
+     }
+     
++    /**
++     * Returns a handle to the Lua data of this [WorldObject]: a table kept by the core with the object
++     * (it survives a script reload, and it is carried along when the object changes map).
++     * Returns nil for a ship or zeppelin, which moves between maps.
++     *
++     * Do not keep the handle across hooks or timers: call `Data()` again each time. A handle kept
++     * after the object left this map points at a detached copy.
++     *
++     * <pre>
++     * WorldObject:Data():Set("key", val)
++     * local val = WorldObject:Data():Get("key")
++     * WorldObject:Data():Set("key", nil)
++     * local table = WorldObject:Data():AsTable()
++     * </pre>
++     *
++     * Storing a handle (or any table) in the data copies it.
++     *
++     * @return LuaVal data
++     */
++    int Data(Eluna* E, WorldObject* obj)
++    {
++        if (obj->GetTypeId() == TYPEID_GAMEOBJECT && static_cast<GameObject*>(obj)->ToTransport())
++        {
++            E->Push();
++            return 1;
++        }
++        return LuaVal::PushLuaVal(E->L, obj->lua_data);
++    }
++
+     ElunaRegister<WorldObject> WorldObjectMethods[] =
+     {
+         // Getters
+@@ -1130,6 +1159,7 @@ namespace LuaWorldObject
+         { "PlayMusic", &LuaWorldObject::PlayMusic },
+         { "PlayDirectSound", &LuaWorldObject::PlayDirectSound },
+         { "PlayDistanceSound", &LuaWorldObject::PlayDistanceSound },
++        { "Data", &LuaWorldObject::Data },
+ 
+         // Not in VMaNGOS
+         { "GetPhaseMask", METHOD_REG_NONE  },

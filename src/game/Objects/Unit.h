@@ -1067,6 +1067,10 @@ class Unit : public WorldObject
         ThreatManager m_ThreatManager; // Manage all Units threatening us
         HostileRefManager m_HostileRefManager; // Manage all Units that are threatened by us (has list of creatures that have us in their threat list)
         std::vector<ObjectGuid> m_tauntGuids;
+#ifdef ENABLE_ELUNA
+        // Lua Creature:FixateTarget: checked first by GetTauntTarget (a permanent taunt by that unit).
+        ObjectGuid m_elunaFixateGuid;
+#endif
     protected:
         uint32 m_attackTimer[MAX_ATTACK];
         AttackerSet m_attackers;
@@ -1428,6 +1432,8 @@ class Unit : public WorldObject
         bool IsCharmed() const { return !GetCharmerGuid().IsEmpty(); }
         bool IsCharmerOrOwnerPlayerOrPlayerItself() const final { return IsPlayer() || GetCharmerOrOwnerGuid().IsPlayer(); }
 #ifdef ENABLE_ELUNA
+        void SetElunaFixateTarget(ObjectGuid guid) { m_elunaFixateGuid = guid; }
+        ObjectGuid const& GetElunaFixateTarget() const { return m_elunaFixateGuid; }
         bool isAttackingPlayer() const;
         bool IsTargetableBy(WorldObject const* caster, bool forAoE = false, bool checkAlive = true, bool helpful = false) const;
 #endif

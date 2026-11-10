@@ -40,6 +40,9 @@
 #include "Chat.h"
 #include "Logging/DatabaseLogger.hpp"
 #include "ScriptObjects.h"
+#ifdef ENABLE_ELUNA
+#include "LuaEngine.h"
+#endif
 
 #include <array>
 
@@ -854,7 +857,9 @@ void Group::GroupLoot(Creature *creature, Loot* loot)
     for (uint8 itemSlot = 0; itemSlot < loot->items.size(); ++itemSlot)
     {
         LootItem& lootItem = loot->items[itemSlot];
-        if (lootItem.freeforall)
+        // An item a script marked looted (Loot:SetItemLooted) gets no roll: the winner would
+        // receive it a second time.
+        if (lootItem.freeforall || lootItem.is_looted)
             continue;
 
         ItemPrototype const *itemProto = sObjectMgr.GetItemPrototype(lootItem.itemid);
@@ -877,7 +882,9 @@ void Group::NeedBeforeGreed(Creature *creature, Loot* loot)
     for (uint8 itemSlot = 0; itemSlot < loot->items.size(); ++itemSlot)
     {
         LootItem& lootItem = loot->items[itemSlot];
-        if (lootItem.freeforall)
+        // An item a script marked looted (Loot:SetItemLooted) gets no roll: the winner would
+        // receive it a second time.
+        if (lootItem.freeforall || lootItem.is_looted)
             continue;
 
         ItemPrototype const *itemProto = sObjectMgr.GetItemPrototype(lootItem.itemid);
@@ -1123,6 +1130,16 @@ void Group::CountTheRoll(Rolls::iterator& rollI)
         return;
     }
 
+#ifdef ENABLE_ELUNA
+    // The roll event is fired at the very end, after the roll has left RollId: a handler that
+    // changes the group (or anything that walks the rolls) can then no longer count this roll
+    // a second time or free it under this function. The data is kept here meanwhile.
+    Player* elunaRewardPlayer = nullptr;
+    Item* elunaRewardItem = nullptr;
+    uint32 elunaRewardCount = 0;
+    uint32 elunaRewardVote = 0;
+#endif
+
     // Turtle:: Make raid looted items not appear soul bound.
     const auto CheckSoulboundException = [this](Player* player, const LootItem& lootItem, Item* newitem, Creature* creature, bool isGameObjectLoot)
     {
@@ -1190,7 +1207,8 @@ void Group::CountTheRoll(Rolls::iterator& rollI)
                 {
                     item->is_looted = true;
                     roll->getLoot()->NotifyItemRemoved(roll->itemSlot);
-                    --roll->getLoot()->unlootedCount;
+                    if (roll->getLoot()->unlootedCount)
+                        --roll->getLoot()->unlootedCount;
                     sLog.out(LOG_LOOTS, "%s wins need roll for %ux%u [loot from %s]",
                              player->GetShortDescription().c_str(), item->count, item->itemid, roll->lootedTargetGUID.GetString().c_str());
 
@@ -1214,6 +1232,12 @@ void Group::CountTheRoll(Rolls::iterator& rollI)
                     {
                         CheckSoulboundException(player, *item, newItem, roll->lootedTargetGUID.IsCreature() ? player->GetMap()->GetCreature(roll->lootedTargetGUID) : nullptr, roll->lootedTargetGUID.IsGameObject());
                         player->OnReceivedItem(newItem);
+#ifdef ENABLE_ELUNA
+                        elunaRewardPlayer = player;
+                        elunaRewardItem = newItem;
+                        elunaRewardCount = item->count;
+                        elunaRewardVote = ROLL_NEED;
+#endif
                     }
                 }
                 else
@@ -1261,7 +1285,8 @@ void Group::CountTheRoll(Rolls::iterator& rollI)
                 {
                     item->is_looted = true;
                     roll->getLoot()->NotifyItemRemoved(roll->itemSlot);
-                    --roll->getLoot()->unlootedCount;
+                    if (roll->getLoot()->unlootedCount)
+                        --roll->getLoot()->unlootedCount;
                     sLog.out(LOG_LOOTS, "%s wins greed roll for %ux%u [loot from %s]",
                              player->GetShortDescription().c_str(), item->count, item->itemid, roll->lootedTargetGUID.GetString().c_str());
 
@@ -1284,6 +1309,12 @@ void Group::CountTheRoll(Rolls::iterator& rollI)
                     {
                         CheckSoulboundException(player, *item, newItem, roll->lootedTargetGUID.IsCreature() ? player->GetMap()->GetCreature(roll->lootedTargetGUID) : nullptr, roll->lootedTargetGUID.IsGameObject());
                         player->OnReceivedItem(newItem);
+#ifdef ENABLE_ELUNA
+                        elunaRewardPlayer = player;
+                        elunaRewardItem = newItem;
+                        elunaRewardCount = item->count;
+                        elunaRewardVote = ROLL_GREED;
+#endif
                     }
                 }
                 else
@@ -1302,6 +1333,21 @@ void Group::CountTheRoll(Rolls::iterator& rollI)
         if (item) item->is_blocked = false;
     }
     rollI = RollId.erase(rollI);
+#ifdef ENABLE_ELUNA
+    if (elunaRewardPlayer)
+        if (Eluna* e = elunaRewardPlayer->GetEluna())
+        {
+            // StartGroupLootRoll refuses while this is set (IsInRollEvent).
+            struct RollEventGuard
+            {
+                bool& flag;
+                bool const previous;                // a nested event 56 (via Disband) restores, not clears
+                explicit RollEventGuard(bool& f) : flag(f), previous(f) { flag = true; }
+                ~RollEventGuard() { flag = previous; }
+            } rollEventGuard(m_inRollEvent);
+            e->OnGroupRollRewardItem(elunaRewardPlayer, elunaRewardItem, elunaRewardCount, elunaRewardVote, roll);
+        }
+#endif
     delete roll;
 }
 
@@ -1800,7 +1846,13 @@ void Group::_removeRolls(ObjectGuid guid)
 
         roll->playerVote.erase(itr2);
 
-        if (!CountRollVote(guid, it, ROLL_NOT_EMITED_YET))
+        // The leaver's vote is erased above, so CountRollVote takes its early return (no vote
+        // found) and does not count a roll here. The rescan is defensive: if it ever ended a roll,
+        // the roll event (fired last in CountTheRoll) can change RollId, and the iterator is not
+        // trusted after that.
+        if (CountRollVote(guid, it, ROLL_NOT_EMITED_YET))
+            it = RollId.begin();
+        else
             ++it;
     }
 }

@@ -4787,11 +4787,14 @@ void World::ProcessElunaWorldEventsReleases()
             release.mgr->FlagObjectProcessorForDeletion(release.processorId);
 }
 
-bool World::OnElunaCommand(Player* player, char const* text)
+bool World::OnElunaCommand(ChatHandler& handler, char const* text)
 {
     Eluna* eluna = GetEluna();
     if (!eluna)
         return true;
+
+    // Null for the console (CliHandler, NullChatHandler): they have no session.
+    Player* player = handler.GetSession() ? handler.GetSession()->GetPlayer() : nullptr;
 
     // Eluna's own ".reload eluna" starts its script cache reload on a thread
     // of its own and returns; map threads would then make new states (Map's
@@ -4815,7 +4818,7 @@ bool World::OnElunaCommand(Player* player, char const* text)
         }
     }
 
-    return eluna->OnCommand(player, text);
+    return eluna->OnCommand(handler, text);
 }
 
 void World::ProcessElunaReload()

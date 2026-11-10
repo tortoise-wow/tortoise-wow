@@ -1786,9 +1786,19 @@ CreatureAI* ScriptMgr::GetCreatureAI(Creature* pCreature)
         });
 
 #ifdef ENABLE_ELUNA
+        // The creature's own map, not pCreature->GetEluna(): a TemporarySummon runs
+        // AIM_Initialize (Summon, WorldObject::SummonCreature) BEFORE it is added to
+        // the map, so IsInWorld() is false and GetEluna() would be null, the summon
+        // would keep the native AI for good (AddToWorld only initialises a missing
+        // AI) and its Lua hooks would never run. SetMap ran in Create, so GetMap()
+        // is valid. A summon is created on its summoner's map, which the summoning
+        // thread updates (or the world thread between updates), so Map::GetEluna's
+        // thread check passes; if it ever refused, it returns nullptr and the
+        // creature keeps the native AI, as before.
         if (!ai)
-            if (Eluna* e = pCreature->GetEluna())
-                ai = e->GetAI(pCreature);
+            if (Map* map = pCreature->FindMap())
+                if (Eluna* e = map->GetEluna())
+                    ai = e->GetAI(pCreature);
 #endif
         return ai;
     }

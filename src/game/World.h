@@ -55,6 +55,7 @@
 #endif
 class Object;
 class WorldSession;
+class ChatHandler;
 class Player;
 class SqlResultQueue;
 class QueryResult;
@@ -1305,7 +1306,7 @@ class World
         // A command for Lua (OnCommand). ".reload eluna [mapId]" is taken over
         // here and queued (see ProcessElunaReload). Returns false when the
         // command was handled, as Eluna::OnCommand.
-        bool OnElunaCommand(Player* player, char const* text);
+        bool OnElunaCommand(ChatHandler& handler, char const* text);
 #endif
     protected:
         void _UpdateGameTime();

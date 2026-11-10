@@ -57,6 +57,9 @@
 #include "MountManager.hpp"
 #include "CompanionManager.hpp"
 #include "ScriptObjects.h"
+#ifdef ENABLE_ELUNA
+#include "LuaEngine.h"
+#endif
 
 #include <memory>
 
@@ -1297,6 +1300,11 @@ void Spell::DoAllEffectOnTarget(TargetInfo *target)
         m_damage += target->damage;
     }
 
+#ifdef ENABLE_ELUNA
+    if (Eluna* e = m_caster->GetEluna())
+        e->OnBeforeSpellHit(this, uint8(missInfo), unit);
+#endif
+
     if (missInfo == SPELL_MISS_NONE)                        // In case spell hit target, do all effect on that target
         DoSpellHitOnUnit(unit, mask);
     if (missInfo == SPELL_MISS_REFLECT && target->reflectResult == SPELL_MISS_NONE)
@@ -1399,6 +1407,21 @@ void Spell::DoAllEffectOnTarget(TargetInfo *target)
             m_spellScript->OnBeforeProc(this, unitTarget, missInfo, procAttacker, procVictim, procEx, triggerWeaponProcs);
     };
 
+#ifdef ENABLE_ELUNA
+    // SPELL_EVENT_ON_HIT fires once per successful target hit, whatever the hit did (heal, damage,
+    // proc only, or none of those); the branches below fire it at their usual point, the code after
+    // them fires it for the hits that took no branch.
+    bool elunaSpellHitSent = false;
+    auto elunaSpellHit = [&]()
+    {
+        if (missInfo != SPELL_MISS_NONE || elunaSpellHitSent)
+            return;
+        elunaSpellHitSent = true;
+        if (Eluna* e = m_caster->GetEluna())
+            e->OnSpellHit(this, unitTarget);
+    };
+#endif
+
     // All calculated do it!
     // Do healing and triggers
     if (m_healing && unitTarget->IsAlive())
@@ -1416,6 +1439,10 @@ void Spell::DoAllEffectOnTarget(TargetInfo *target)
         m_healing = addhealth;
         if (m_spellScript)
             m_spellScript->OnHit(this, missInfo);
+
+#ifdef ENABLE_ELUNA
+        elunaSpellHit();
+#endif
 
         // Do triggers for unit (reflect triggers passed on hit phase for correct drop charge)
         if (m_canTrigger)
@@ -1511,6 +1538,10 @@ void Spell::DoAllEffectOnTarget(TargetInfo *target)
         if (m_spellScript)
             m_spellScript->OnHit(this, missInfo);
 
+#ifdef ENABLE_ELUNA
+        elunaSpellHit();
+#endif
+
         // Send log damage message to client
         pCaster->SendSpellNonMeleeDamageLog(&damageInfo);
 
@@ -1564,6 +1595,10 @@ void Spell::DoAllEffectOnTarget(TargetInfo *target)
     {
         if (m_spellScript)
             m_spellScript->OnHit(this, missInfo);
+
+#ifdef ENABLE_ELUNA
+        elunaSpellHit();
+#endif
 
         // TODO: Allow all procs, and explicitly deny some rather than denying all and
         // explicitly allowing some
@@ -1642,11 +1677,20 @@ void Spell::DoAllEffectOnTarget(TargetInfo *target)
             m_casterUnit->TriggerDamageShields(unitTarget);
     }
 
+#ifdef ENABLE_ELUNA
+    elunaSpellHit();
+#endif
+
     if (missInfo != SPELL_MISS_NONE)
         return;
 
     if (m_spellScript)
         m_spellScript->OnAfterHit(this);
+
+#ifdef ENABLE_ELUNA
+    if (Eluna* e = m_caster->GetEluna())
+        e->OnAfterSpellHit(this, unitTarget);
+#endif
 
     // Call scripted function for AI if this spell is casted upon a creature
     if (unit->IsCreature())
@@ -3869,6 +3913,11 @@ void Spell::cast(bool skipCheck)
         return;
     }
 
+#ifdef ENABLE_ELUNA
+    if (Eluna* e = m_caster->GetEluna())
+        e->OnBeforeCast(this);
+#endif
+
     if (m_spellScript)
         m_spellScript->OnCast(this);
 
@@ -3879,6 +3928,11 @@ void Spell::cast(bool skipCheck)
             script->OnSpellCast(playerCaster, this, skipCheck);
         });
     }
+
+#ifdef ENABLE_ELUNA
+    if (Eluna* e = m_caster->GetEluna())
+        e->OnSpellCast(this, skipCheck);
+#endif
 
     // CAST SPELL
     // Remove any remaining invis auras on cast completion, should only be gnomish cloaking device
@@ -3979,6 +4033,11 @@ void Spell::cast(bool skipCheck)
         if (m_casterUnit->HaveOffhandWeapon())
             m_casterUnit->ResetAttackTimer(OFF_ATTACK);
     }
+
+#ifdef ENABLE_ELUNA
+    if (Eluna* e = m_caster->GetEluna())
+        e->OnAfterCast(this);
+#endif
 
     m_caster->DecreaseCastCounter();
     SetExecutedCurrently(false);
@@ -5471,6 +5530,19 @@ void Spell::HandleEffects(Unit *pUnitTarget, Item *pItemTarget, GameObject *pGOT
 
     if (eff < TOTAL_SPELL_EFFECTS)
     {
+#ifdef ENABLE_ELUNA
+        // Lua SPELL_EVENT_ON_EFFECT_HIT_TARGET (mode 3, an effect with a unit, item or game object target)
+        // and SPELL_EVENT_ON_EFFECT_HIT (mode 2, an effect without): true prevents the default effect.
+        if (Eluna* e = m_caster->GetEluna())
+        {
+            bool const hasTarget = pUnitTarget || pItemTarget || pGOTarget;
+            bool const prevent = hasTarget ? e->OnEffectHitTarget(this, uint8(i), 3, false, pUnitTarget)
+                                           : e->OnEffectHit(this, uint8(i), 2, false, pUnitTarget);
+            if (prevent)
+                return;
+        }
+#endif
+
         if (m_spellScript)
             if (!m_spellScript->OnEffectExecute(this, i))
                 return;
@@ -6772,6 +6844,16 @@ SpellCastResult Spell::CheckCast(bool strict)
             return SPELL_FAILED_DONT_REPORT;
         }
     }
+
+#ifdef ENABLE_ELUNA
+    // Lua SPELL_EVENT_ON_CHECK_CAST: a SPELL_FAILED_* result cancels the cast.
+    if (Eluna* e = m_caster->GetEluna())
+    {
+        uint32 luaResult = e->OnCheckCast(this, strict);
+        if (luaResult != SPELL_CAST_OK)
+            return SpellCastResult(luaResult);
+    }
+#endif
 
     if (m_spellScript)
         return m_spellScript->OnCheckCast(this, strict);
