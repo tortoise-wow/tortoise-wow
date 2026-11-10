@@ -42,6 +42,11 @@ WorldDatabase.Info = "127.0.0.1;3306;mangos;mangos;tw_world"
 CharacterDatabase.Info = "127.0.0.1;3306;mangos;mangos;tw_char"
 LogsDatabase.Info = "127.0.0.1;3306;mangos;mangos;tw_logs"
 
+# Refuse player logins when active character tables cannot roll back a failed save.
+# Requires an offline, backed-up engine migration for an existing MyISAM database.
+# Five historical archival copies are excluded; runtime transactions must not use them.
+CharacterDatabase.RequireTransactionalTables = 1
+
 # DB Auto-updater
 
 Database.AutoUpdate.Enabled = 1

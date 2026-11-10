@@ -25,6 +25,8 @@
 #include "DatabaseImpl.h"
 #include "Timer.h"
 #include "ThreadPool.h"
+#include <chrono>
+#include <thread>
 
 #define LOCK_DB_CONN(conn) SqlConnection::Lock guard(conn)
 
@@ -59,21 +61,34 @@ bool SqlTransaction::Execute(SqlConnection *conn)
 
     LOCK_DB_CONN(conn);
 
-    conn->BeginTransaction();
-
-    const int nItems = m_queue.size();
-    for (int i = 0; i < nItems; ++i)
+    uint32 retries = 0;
+    for (;;)
     {
-        SqlOperation * pStmt = m_queue[i];
-
-        if(!pStmt->Execute(conn))
-        {
-            conn->RollbackTransaction();
+        if (!conn->BeginTransaction())
             return false;
-        }
-    }
 
-    return conn->CommitTransaction();
+        bool retry = false;
+        for (SqlOperation* statement : m_queue)
+        {
+            if (!statement->Execute(conn))
+            {
+                // Only the backend can positively identify a known full abort.
+                // Never infer safety from a generic statement/connection error.
+                bool knownAbort = conn->CanRetryTransaction();
+                bool rolledBack = conn->RollbackTransaction();
+                if (!knownAbort || !rolledBack || retries >= m_knownAbortRetries)
+                    return false;
+
+                ++retries;
+                uint32 backoffMs = retries < 4 ? retries * 5 : 20;
+                std::this_thread::sleep_for(std::chrono::milliseconds(backoffMs));
+                retry = true;
+                break;
+            }
+        }
+        if (!retry)
+            return conn->CommitTransaction();
+    }
 }
 
 SqlPreparedRequest::SqlPreparedRequest(int nIndex, SqlStmtParameters * arg ) : m_nIndex(nIndex), m_param(arg)

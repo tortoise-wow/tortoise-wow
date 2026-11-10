@@ -60,6 +60,7 @@ class SqlConnection
         //public methods for making requests
         virtual bool Execute(const char *sql) = 0;
         virtual bool ExecuteMultiline(const char* sql) = 0;
+        virtual bool ExecuteMigrationBatch(const std::vector<std::string>& statements);
 
         //escape string generation
         virtual unsigned long escape_string(char *to, const char *from, unsigned long length) { strncpy(to,from,length); return length; }
@@ -69,9 +70,10 @@ class SqlConnection
         virtual bool CommitTransaction() { return true; }
         // can't rollback without transaction support
         virtual bool RollbackTransaction() { return true; }
+        virtual bool CanRetryTransaction() const { return false; }
 
         //methods to work with prepared statements
-        bool ExecuteStmt(int nIndex, const SqlStmtParameters& id);
+        virtual bool ExecuteStmt(int nIndex, const SqlStmtParameters& id);
 
         //SqlConnection object lock
         class Lock
@@ -251,6 +253,10 @@ class Database
         bool RollbackTransaction();
         //for sync transaction execution
         bool CommitTransactionDirect();
+        // Startup-only scripts may contain DDL that cannot be made atomic by START TRANSACTION.
+        bool ExecuteMigrationBatch(const std::vector<std::string>& statements);
+        // Enable only after verifying that every runtime save table is transactional.
+        void EnableKnownAbortRetries(uint32 retries) { m_knownAbortRetries = retries > 3 ? 3 : retries; }
 
         //PREPARED STATEMENT API
 
@@ -296,7 +302,8 @@ class Database
     protected:
         Database() : m_nQueryConnPoolSize(1), m_delayQueue(new SqlQueue()), m_pAsyncConn(nullptr),
                      m_pResultQueue(nullptr), m_numAsyncWorkers(0),
-                     m_bAllowAsyncTransactions(false), m_iStmtIndex(-1), m_logSQL(false), m_pingIntervallms(0)
+                     m_bAllowAsyncTransactions(false), m_iStmtIndex(-1), m_logSQL(false), m_pingIntervallms(0),
+                     m_knownAbortRetries(0)
         {
             m_nQueryCounter = -1;
         }
@@ -311,7 +318,7 @@ class Database
                 ~TransHelper();
 
                 //initializes new SqlTransaction object
-                SqlTransaction * init(uint32 serialId);
+                SqlTransaction * init(uint32 serialId, uint32 knownAbortRetries = 0);
                 //gets pointer on current transaction object. Returns nullptr if transaction was not initiated
                 SqlTransaction * get() const { return m_pTrans; }
                 //detaches SqlTransaction object allocated by init() function
@@ -377,5 +384,6 @@ class Database
         bool m_logSQL;
         std::string m_logsDir;
         uint32 m_pingIntervallms;
+        uint32 m_knownAbortRetries;
 };
 #endif

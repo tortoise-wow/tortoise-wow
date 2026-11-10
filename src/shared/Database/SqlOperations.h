@@ -86,9 +86,11 @@ class SqlTransaction : public SqlOperation
 {
     private:
         std::vector<SqlOperation * > m_queue;
+        const uint32 m_knownAbortRetries;
 
     public:
-        SqlTransaction(uint32 serialId) : SqlOperation(serialId) {}
+        SqlTransaction(uint32 serialId, uint32 knownAbortRetries = 0) :
+            SqlOperation(serialId), m_knownAbortRetries(knownAbortRetries) {}
         ~SqlTransaction();
 
         void DelayExecute(SqlOperation * sql)   {   m_queue.push_back(sql); }
