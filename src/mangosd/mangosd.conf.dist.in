@@ -55,11 +55,22 @@ Database.AutoUpdate.WorldUpdateName = "world"
 
 Database.AutoUpdate.AllowedModules = "all"
 
-# Database.AutoUpdate.SortByName. Controls the order in which SQL migration files are applied.  
-#   0 = Sort by file modification time ascending (oldest first); alphabetical name as tiebreaker. (Default)  
-#   1 = Sort alphabetically by file name ascending; modification time as tiebreaker.  
+# Database.AutoUpdate.SortByName. Controls the order in which SQL migration files are applied.
+#   0 = Sort by file modification time ascending (oldest first); alphabetical name as tiebreaker.
+#   1 = Sort alphabetically by file name ascending; modification time as tiebreaker. (Default)
+# Name order is the default because mtimes skew on copy/restore/checkout, which
+# is exactly how out-of-order application happens.
   
 Database.AutoUpdate.SortByName = 1
+
+# Database.AutoUpdate.AllowOutOfOrder. Guards against applying stale migrations
+# out of order (e.g. a stale checkout replayed after a host restart applies old
+# files that DROP+recreate tables and wipe newer rows).
+#   0 = Skip any pending migration whose name sorts before the newest already-
+#       applied migration for that module/database, and log an error. (Default)
+#   1 = Apply pending migrations regardless of order.
+
+Database.AutoUpdate.AllowOutOfOrder = 0
 
 # Automatically committing world changes to github. Set to 0 to disable.
 

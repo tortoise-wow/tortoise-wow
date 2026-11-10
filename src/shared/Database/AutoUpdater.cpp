@@ -177,7 +177,21 @@ namespace DBUpdater
         auto fileMigrations = LoadFileMigrations(targetPath, moduleName);
         auto dbMigrations = LoadDatabaseMigrations(targetDatabase);
 
+        // Newest migration already applied for this module/db. Any pending file
+        // sorting before it is out of order (e.g. stale checkout replayed after
+        // a host restart) and must not run: such files can DROP+recreate tables
+        // and wipe newer rows. Gated by Database.AutoUpdate.AllowOutOfOrder.
+        std::string newestApplied;
+        for (auto const& dbMigrationPair : dbMigrations)
+        {
+            auto const& applied = dbMigrationPair.second;
+            if (applied.Module == moduleName && applied.Name > newestApplied)
+                newestApplied = applied.Name;
+        }
+        bool allowOutOfOrder = sConfig.GetBoolDefault("Database.AutoUpdate.AllowOutOfOrder", false);
+
         std::vector<FileMigration> updates;
+        std::vector<std::string> skippedOutOfOrder;
 
         for (auto& fileMigrationPair : fileMigrations)
         {
@@ -194,8 +208,30 @@ namespace DBUpdater
                 continue;
             }
 
+            if (!allowOutOfOrder && !newestApplied.empty() && migration.Name < newestApplied)
+            {
+                skippedOutOfOrder.push_back(migration.Name);
+                dbMigrations.erase(migrationKey);
+                continue;
+            }
+
             updates.push_back(std::move(fileMigrationPair.second));
             dbMigrations.erase(migrationKey);
+        }
+
+        if (!skippedOutOfOrder.empty())
+        {
+            std::sort(skippedOutOfOrder.begin(), skippedOutOfOrder.end());
+            std::string skippedList;
+            for (size_t i = 0; i < skippedOutOfOrder.size(); ++i)
+            {
+                if (i > 0)
+                    skippedList += ", ";
+                skippedList += skippedOutOfOrder[i];
+            }
+            sLog.outError("[DB Auto-Updater] Skipped %u out-of-order migration%s%s older than newest applied migration %s: %s. Set Database.AutoUpdate.AllowOutOfOrder = 1 to apply anyway.",
+                skippedOutOfOrder.size(), skippedOutOfOrder.size() != 1 ? "s" : "",
+                ModuleLogSuffix(moduleName).c_str(), newestApplied.c_str(), skippedList.c_str());
         }
 
 
@@ -209,10 +245,12 @@ namespace DBUpdater
             }
         }
 
-        //sort by modified-at ascending for oldest -> newest updates
-        // sort order controlled by Database.AutoUpdate.SortByName config  
-        // false (default): sort by modification time ascending, alphabetical name as tiebreaker  
-        // true: sort alphabetically by name ascending, modification time as tiebreaker  
+        //sort by name ascending for oldest -> newest updates by default: file
+        // modification times skew on copy/restore/checkout, which is exactly how
+        // out-of-order application happens; name order is stable across copies.
+        // sort order controlled by Database.AutoUpdate.SortByName config
+        // true (default): sort alphabetically by name ascending, modification time as tiebreaker
+        // false: sort by modification time ascending, alphabetical name as tiebreaker
         std::sort(updates.begin(), updates.end(), [sortByName](const FileMigration& e1, const FileMigration& e2)
             {
                 if (sortByName)
@@ -498,7 +536,7 @@ namespace DBUpdater
         auto authUpdateFolder = sConfig.GetStringDefault("Database.AutoUpdate.AuthUpdateName", "Logon");
         auto charUpdateFolder = sConfig.GetStringDefault("Database.AutoUpdate.CharUpdateName", "Char");
         auto worldUpdateFolder = sConfig.GetStringDefault("Database.AutoUpdate.WorldUpdateName", "World");
-        bool sortByName = sConfig.GetBoolDefault("Database.AutoUpdate.SortByName", false);
+        bool sortByName = sConfig.GetBoolDefault("Database.AutoUpdate.SortByName", true);
         path folderPath{ pathString };
 #ifdef TW_SOURCE_MODULES_DIR
         path modulesPath{ TW_SOURCE_MODULES_DIR };
