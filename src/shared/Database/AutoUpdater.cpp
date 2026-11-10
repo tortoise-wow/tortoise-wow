@@ -245,10 +245,12 @@ namespace DBUpdater
             }
         }
 
-        //sort by modified-at ascending for oldest -> newest updates
-        // sort order controlled by Database.AutoUpdate.SortByName config  
-        // false (default): sort by modification time ascending, alphabetical name as tiebreaker  
-        // true: sort alphabetically by name ascending, modification time as tiebreaker  
+        //sort by name ascending for oldest -> newest updates by default: file
+        // modification times skew on copy/restore/checkout, which is exactly how
+        // out-of-order application happens; name order is stable across copies.
+        // sort order controlled by Database.AutoUpdate.SortByName config
+        // true (default): sort alphabetically by name ascending, modification time as tiebreaker
+        // false: sort by modification time ascending, alphabetical name as tiebreaker
         std::sort(updates.begin(), updates.end(), [sortByName](const FileMigration& e1, const FileMigration& e2)
             {
                 if (sortByName)
@@ -534,7 +536,7 @@ namespace DBUpdater
         auto authUpdateFolder = sConfig.GetStringDefault("Database.AutoUpdate.AuthUpdateName", "Logon");
         auto charUpdateFolder = sConfig.GetStringDefault("Database.AutoUpdate.CharUpdateName", "Char");
         auto worldUpdateFolder = sConfig.GetStringDefault("Database.AutoUpdate.WorldUpdateName", "World");
-        bool sortByName = sConfig.GetBoolDefault("Database.AutoUpdate.SortByName", false);
+        bool sortByName = sConfig.GetBoolDefault("Database.AutoUpdate.SortByName", true);
         path folderPath{ pathString };
 #ifdef TW_SOURCE_MODULES_DIR
         path modulesPath{ TW_SOURCE_MODULES_DIR };
