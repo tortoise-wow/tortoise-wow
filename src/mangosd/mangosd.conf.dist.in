@@ -61,6 +61,15 @@ Database.AutoUpdate.AllowedModules = "all"
   
 Database.AutoUpdate.SortByName = 1
 
+# Database.AutoUpdate.AllowOutOfOrder. Guards against applying stale migrations
+# out of order (e.g. a stale checkout replayed after a host restart applies old
+# files that DROP+recreate tables and wipe newer rows).
+#   0 = Skip any pending migration whose name sorts before the newest already-
+#       applied migration for that module/database, and log an error. (Default)
+#   1 = Apply pending migrations regardless of order.
+
+Database.AutoUpdate.AllowOutOfOrder = 0
+
 # Automatically committing world changes to github. Set to 0 to disable.
 
 AutoCommit.Minutes = 0

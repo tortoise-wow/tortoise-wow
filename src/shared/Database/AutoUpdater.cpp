@@ -177,7 +177,21 @@ namespace DBUpdater
         auto fileMigrations = LoadFileMigrations(targetPath, moduleName);
         auto dbMigrations = LoadDatabaseMigrations(targetDatabase);
 
+        // Newest migration already applied for this module/db. Any pending file
+        // sorting before it is out of order (e.g. stale checkout replayed after
+        // a host restart) and must not run: such files can DROP+recreate tables
+        // and wipe newer rows. Gated by Database.AutoUpdate.AllowOutOfOrder.
+        std::string newestApplied;
+        for (auto const& dbMigrationPair : dbMigrations)
+        {
+            auto const& applied = dbMigrationPair.second;
+            if (applied.Module == moduleName && applied.Name > newestApplied)
+                newestApplied = applied.Name;
+        }
+        bool allowOutOfOrder = sConfig.GetBoolDefault("Database.AutoUpdate.AllowOutOfOrder", false);
+
         std::vector<FileMigration> updates;
+        std::vector<std::string> skippedOutOfOrder;
 
         for (auto& fileMigrationPair : fileMigrations)
         {
@@ -194,8 +208,30 @@ namespace DBUpdater
                 continue;
             }
 
+            if (!allowOutOfOrder && !newestApplied.empty() && migration.Name < newestApplied)
+            {
+                skippedOutOfOrder.push_back(migration.Name);
+                dbMigrations.erase(migrationKey);
+                continue;
+            }
+
             updates.push_back(std::move(fileMigrationPair.second));
             dbMigrations.erase(migrationKey);
+        }
+
+        if (!skippedOutOfOrder.empty())
+        {
+            std::sort(skippedOutOfOrder.begin(), skippedOutOfOrder.end());
+            std::string skippedList;
+            for (size_t i = 0; i < skippedOutOfOrder.size(); ++i)
+            {
+                if (i > 0)
+                    skippedList += ", ";
+                skippedList += skippedOutOfOrder[i];
+            }
+            sLog.outError("[DB Auto-Updater] Skipped %u out-of-order migration%s%s older than newest applied migration %s: %s. Set Database.AutoUpdate.AllowOutOfOrder = 1 to apply anyway.",
+                skippedOutOfOrder.size(), skippedOutOfOrder.size() != 1 ? "s" : "",
+                ModuleLogSuffix(moduleName).c_str(), newestApplied.c_str(), skippedList.c_str());
         }
 
 
