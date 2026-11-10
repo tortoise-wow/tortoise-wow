@@ -66,4 +66,18 @@ bool ExtractSingleModel(std::string& origPath, std::string& fixedName, StringSet
 
 void ExtractGameobjectModels();
 
+/* Turtle's patches add models whose file name is already used by a different
+ * stock model (world\custom\farm\farm.wmo next to the stock human_farm\farm.wmo).
+ * Buildings/ is flat, so both were written to Buildings/Farm.wmo and every
+ * placement of either model got whichever one was extracted first.
+ *
+ * FindModelNameCollisions() scans every archive's file list once and remembers
+ * the file names that belong to more than one path. AddCollisionSuffix() then
+ * gives those models a name unique to their path, e.g. Farm_h1a2b3c4d.wmo.
+ * Every other model keeps the name it always had.
+ */
+void FindModelNameCollisions();
+std::string NormalizeModelPath(std::string const& path);
+std::string AddCollisionSuffix(std::string name, std::string const& fullPath);
+
 #endif
