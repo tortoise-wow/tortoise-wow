@@ -1637,9 +1637,25 @@ class Player final: public Unit
         /***                   SAVE SYSTEM                     ***/
         /*********************************************************/
         
+    public:
+        // Stack-only capture; completion runs on the same actor after synchronous COMMIT.
+        class InventorySaveBatch
+        {
+            friend class Player;
+        public:
+            InventorySaveBatch() = default;
+            InventorySaveBatch(InventorySaveBatch const&) = delete;
+            InventorySaveBatch& operator=(InventorySaveBatch const&) = delete;
+        private:
+            Player* owner = nullptr;
+            std::vector<Item*> queue;
+            bool prepared = false;
+        };
+
     private:
         void _SaveAuras();
         void _SaveInventory();
+        bool _SaveInventory(InventorySaveBatch* batch);
         void _SaveQuestStatus();
         void _SaveSkills();
         void _SaveSpells();
@@ -1650,6 +1666,9 @@ class Player final: public Unit
         void _SetUpdateBits(UpdateMask* updateMask, Player* target) const override;
         uint32 m_nextSave;
     public:
+        bool AppendInventoryAndGoldToDB(InventorySaveBatch& batch);
+        bool CompleteInventoryAndGoldSave(InventorySaveBatch& batch);
+        bool IsInventorySaveEnabled() const { return !m_DbSaveDisabled && !m_itemUpdateQueueBlocked; }
         bool SaveToDB(bool online = true, bool force = false, bool direct = false);
         void SaveInventoryAndGoldToDB();                    // fast save function for item/money cheating preventing
         void SaveGoldToDB();

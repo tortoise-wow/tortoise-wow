@@ -32,6 +32,299 @@
 #define MIN_CONNECTION_POOL_SIZE 1
 #define MAX_CONNECTION_POOL_SIZE 16
 
+namespace
+{
+thread_local Database* orderedExecutor = nullptr;
+
+class SynchronousSqlOperation : public SqlOperation
+{
+    std::function<bool(SqlConnection*)> m_execute;
+    bool m_write;
+public:
+    SynchronousSqlOperation(bool write, std::function<bool(SqlConnection*)> execute) :
+        m_execute(std::move(execute)), m_write(write) {}
+    bool Execute(SqlConnection* connection) override
+    {
+        SqlConnection::Lock guard(connection);
+        return m_execute(connection);
+    }
+    bool IsWriteOperation() const override { return m_write; }
+};
+}
+
+bool Database::ConfigureOrderedPersistence()
+{
+    if (m_pAsyncConn || !m_pQueryConnections.empty() || !m_threadsBodies.empty())
+        return false;
+    m_openNormalBuilders = std::make_shared<std::atomic<uint32>>(0);
+    m_orderedPersistence = true;
+    return true;
+}
+
+bool Database::EnableOwnedTransactions()
+{
+    if (!m_orderedPersistence || !m_pAsyncConn || m_threadsBodies.size() != 1 ||
+        m_orderedStopping || m_orderedFault)
+        return false;
+    m_ownedTransactionsEnabled = true;
+    return true;
+}
+
+void Database::MarkOrderedPersistenceFault()
+{
+    if (m_orderedPersistence && !m_orderedFault.exchange(true))
+        sLog.outError("Ordered database persistence failed; later work is fenced until operator recovery.");
+}
+
+bool Database::IsOrderedExecutorThread() const
+{
+    return m_orderedPersistence && orderedExecutor == this;
+}
+
+void Database::MarkAppendFailure()
+{
+    if (SqlTransaction* transaction = m_TransStorage->get())
+        transaction->MarkAppendFailure();
+}
+
+bool Database::RejectOwnedBuilder()
+{
+    SqlTransaction* transaction = m_TransStorage->get();
+    if (!transaction || !transaction->IsOwned())
+        return false;
+    transaction->MarkAppendFailure();
+    sLog.outError("Owned transaction builder refused a nested/direct/query operation.");
+    return true;
+}
+
+bool Database::RunOrderedSynchronously(std::unique_ptr<SqlOperation> operation)
+{
+    if (IsOrderedExecutorThread())
+    {
+        // Never wait for this executor from one of its own callbacks.
+        if (operation->IsWriteOperation()) MarkOrderedPersistenceFault();
+        sLog.outError("Synchronous ordered database operation refused on its executor thread.");
+        return false;
+    }
+    if (RejectOwnedBuilder())
+        return false;
+    try
+    {
+        auto completion = std::make_shared<std::promise<bool>>();
+        std::future<bool> result = completion->get_future();
+        operation->SetCompletion(completion);
+        if (!AddToDelayQueue(operation.release()))
+            return false;
+        return result.get();
+    }
+    catch (...)
+    {
+        MarkOrderedPersistenceFault();
+        return false;
+    }
+}
+
+QueryResult* Database::Query(const char* sql)
+{
+    if (RejectOwnedBuilder() || !sql || m_orderedFault || m_orderedStopping)
+        return nullptr;
+    if (m_orderedPersistence && m_bAllowAsyncTransactions)
+    {
+        QueryResult* result = nullptr;
+        std::string request(sql);
+        RunOrderedSynchronously(std::unique_ptr<SqlOperation>(new SynchronousSqlOperation(false,
+            [&result, request](SqlConnection* connection) { result = connection->Query(request.c_str()); return true; })));
+        return result;
+    }
+    SqlConnection::Lock guard(getQueryConnection());
+    return guard->Query(sql);
+}
+
+QueryNamedResult* Database::QueryNamedInternal(const char* sql)
+{
+    if (RejectOwnedBuilder() || !sql || m_orderedFault || m_orderedStopping)
+        return nullptr;
+    if (m_orderedPersistence && m_bAllowAsyncTransactions)
+    {
+        QueryNamedResult* result = nullptr;
+        std::string request(sql);
+        RunOrderedSynchronously(std::unique_ptr<SqlOperation>(new SynchronousSqlOperation(false,
+            [&result, request](SqlConnection* connection) { result = connection->QueryNamed(request.c_str()); return true; })));
+        return result;
+    }
+    SqlConnection::Lock guard(getQueryConnection());
+    return guard->QueryNamed(sql);
+}
+
+#ifdef ENABLE_ELUNA
+std::shared_ptr<QueryNamedResult> Database::QueryNamed(const char* sql)
+{
+    return std::shared_ptr<QueryNamedResult>(QueryNamedInternal(sql));
+}
+#else
+QueryNamedResult* Database::QueryNamed(const char* sql) { return QueryNamedInternal(sql); }
+#endif
+
+bool Database::DirectExecute(const char* sql)
+{
+    if (RejectOwnedBuilder() || !m_pAsyncConn || !sql || m_orderedFault || m_orderedStopping)
+        return false;
+    if (m_orderedPersistence && m_bAllowAsyncTransactions)
+        return RunOrderedSynchronously(std::unique_ptr<SqlOperation>(new SqlPlainRequest(sql)));
+    SqlConnection::Lock guard(m_pAsyncConn);
+    return guard->Execute(sql);
+}
+
+Database::OwnedTransaction::OwnedTransaction(Database& db, SqlTransaction* transaction,
+    std::unique_lock<std::mutex> admission) : m_database(db), m_transaction(transaction), m_admission(std::move(admission)) {}
+
+Database::OwnedTransaction::~OwnedTransaction()
+{
+    if (m_transaction)
+    {
+        // Only this handle may destroy its builder. Abandonment after game-state
+        // mutation cannot safely be followed by an unrelated save.
+        if (m_database.m_TransStorage->get() == m_transaction)
+            m_database.m_TransStorage->reset();
+        m_database.MarkOrderedPersistenceFault();
+    }
+}
+
+bool Database::OwnedTransaction::Commit()
+{
+    if (!m_transaction)
+        return false;
+    if (m_database.m_TransStorage->get() != m_transaction)
+    {
+        m_database.MarkOrderedPersistenceFault();
+        m_transaction = nullptr;
+        m_admission.unlock();
+        return false;
+    }
+    std::unique_ptr<SqlTransaction> transaction(m_database.m_TransStorage->detach());
+    m_transaction = nullptr;
+    if (transaction->Empty() || transaction->HasAppendFailure() || m_database.m_orderedFault || m_database.m_orderedStopping)
+    {
+        m_database.MarkOrderedPersistenceFault();
+        m_admission.unlock();
+        return false;
+    }
+    try
+    {
+        auto completion = std::make_shared<std::promise<bool>>();
+        std::future<bool> result = completion->get_future();
+        transaction->SetCompletion(completion);
+        m_database.m_delayQueue->add(transaction.get());
+        transaction.release();
+        // The worker or its callbacks may need admission. Never wait holding it.
+        m_admission.unlock();
+        return result.get();
+    }
+    catch (...)
+    {
+        m_database.MarkOrderedPersistenceFault();
+        if (m_admission.owns_lock()) m_admission.unlock();
+        return false;
+    }
+}
+
+std::unique_ptr<Database::OwnedTransaction> Database::BeginOwnedTransaction(std::vector<uint32> participants)
+{
+    if (IsOrderedExecutorThread() || RejectOwnedBuilder() || m_TransStorage->get() ||
+        !m_orderedPersistence || !m_ownedTransactionsEnabled || !m_bAllowAsyncTransactions)
+        return nullptr;
+    std::sort(participants.begin(), participants.end());
+    if (participants.size() < 2 || !participants.front() ||
+        std::adjacent_find(participants.begin(), participants.end()) != participants.end())
+        return nullptr;
+    std::unique_lock<std::mutex> admission(m_orderedAdmission);
+    if (m_orderedFault || m_orderedStopping || m_openNormalBuilders->load() != 0)
+        return nullptr;
+    try
+    {
+        SqlTransaction* transaction = m_TransStorage->init(0, m_knownAbortRetries);
+        transaction->SetParticipants(std::move(participants));
+        return std::unique_ptr<OwnedTransaction>(new OwnedTransaction(*this, transaction, std::move(admission)));
+    }
+    catch (...)
+    {
+        m_TransStorage->reset();
+        MarkOrderedPersistenceFault();
+        return nullptr;
+    }
+}
+
+bool Database::IsOwnedTransactionParticipant(uint32 guid)
+{
+    SqlTransaction* transaction = m_TransStorage->get();
+    return transaction && transaction->IsOwned() && !transaction->HasAppendFailure() && transaction->HasParticipant(guid);
+}
+
+bool Database::InOwnedTransaction()
+{
+    SqlTransaction* transaction = m_TransStorage->get();
+    return transaction && transaction->IsOwned();
+}
+
+bool Database::AddToDelayQueue(SqlOperation* op)
+{
+    std::unique_ptr<SqlOperation> operation(op);
+    if (RejectOwnedBuilder() || !op)
+        return false;
+    std::unique_lock<std::mutex> admission(m_orderedAdmission, std::defer_lock);
+    if (m_orderedPersistence)
+    {
+        admission.lock();
+        if (m_orderedFault || m_orderedStopping)
+            return false;
+    }
+    // Release a normal builder's lease before exposing it to the executor:
+    // the worker may pop and destroy it immediately after add().
+    operation->OnAdmission();
+    try { m_delayQueue->add(operation.get()); }
+    catch (const std::bad_alloc&) { MarkOrderedPersistenceFault(); return false; }
+    operation.release();
+    return true;
+}
+
+void Database::ExecuteDelayedOperation(SqlOperation* op, SqlConnection* connection)
+{
+    std::unique_ptr<SqlOperation> operation(op);
+    Database* previousExecutor = orderedExecutor;
+    if (m_orderedPersistence) orderedExecutor = this;
+    bool result = false;
+    try
+    {
+        // Closing admission during a healthy shutdown must not discard queued
+        // logout saves. Drain them on the live worker; only a fault cancels.
+        if (m_orderedPersistence && (m_orderedFault || !connection))
+        {
+            if (operation->IsWriteOperation()) MarkOrderedPersistenceFault();
+            operation->Cancel();
+        }
+        else
+        {
+            result = operation->Execute(connection);
+            if (!result && operation->IsWriteOperation()) MarkOrderedPersistenceFault();
+        }
+    }
+    catch (...)
+    {
+        MarkOrderedPersistenceFault();
+        sLog.outError("Exception in delayed database operation.");
+        try { operation->Cancel(); }
+        catch (...) { sLog.outError("Exception while canceling delayed database operation."); }
+    }
+    try
+    {
+        if (const auto& callback = operation->GetCallback()) (*callback)(result);
+    }
+    catch (...) { MarkOrderedPersistenceFault(); sLog.outError("Exception in delayed database callback."); }
+    try { operation->Complete(result); }
+    catch (...) { MarkOrderedPersistenceFault(); sLog.outError("Exception completing delayed database operation."); }
+    orderedExecutor = previousExecutor;
+}
+
 //////////////////////////////////////////////////////////////////////////
 SqlPreparedStatement * SqlConnection::CreateStatement( const std::string& fmt )
 {
@@ -73,6 +366,7 @@ SqlPreparedStatement * SqlConnection::GetStmt( int nIndex )
         {
             //MANGOS_ASSERT(false && "Unable to prepare SQL statement");
             sLog.outError("Can't prepare %s, statement not executed!", fmt.c_str());
+            delete pStmt;
             return nullptr;
         }
 
@@ -134,14 +428,35 @@ bool SqlConnection::ExecuteStmt(int nIndex, const SqlStmtParameters& id )
     return false;
 }
 
+bool SqlConnection::ExecuteMigrationBatch(const std::vector<std::string>& statements)
+{
+    if (!BeginTransaction())
+        return false;
+    for (const auto& statement : statements)
+    {
+        if (!Execute(statement.c_str()))
+        {
+            RollbackTransaction();
+            return false;
+        }
+    }
+    if (CommitTransaction())
+        return true;
+    RollbackTransaction();
+    return false;
+}
+
 //////////////////////////////////////////////////////////////////////////
 Database::~Database()
 {
     StopServer();
+    delete m_delayQueue;
 }
 
 bool Database::Initialize(const char* name, const char *infoString, int nConns /*= 1*/, int nWorkers /*= 1*/)
 {
+    if (m_orderedPersistence)
+        nWorkers = 1;
     // Enable logging of SQL commands (usually only GM commands)
     // (See method: PExecuteLog)
     m_logSQL = sConfig.GetBoolDefault("LogSQL", false);
@@ -237,8 +552,20 @@ bool Database::InitDelayThread(const char* Name, std::string const& infoString)
 
 void Database::HaltDelayThread()
 {
+    if (m_orderedPersistence)
+    {
+        std::lock_guard<std::mutex> admission(m_orderedAdmission);
+        m_orderedStopping = true;
+    }
     if (m_delayThreads.empty() || m_threadsBodies.empty())
+    {
+        if (m_orderedPersistence)
+        {
+            SqlOperation* operation = nullptr;
+            while (m_delayQueue->next(operation)) ExecuteDelayedOperation(operation, nullptr);
+        }
         return;
+    }
 
     for (uint32 i = 0; i < m_numAsyncWorkers; ++i)
         m_threadsBodies[i]->Stop();
@@ -250,6 +577,11 @@ void Database::HaltDelayThread()
     m_delayThreads.clear();
 
     m_numAsyncWorkers = 0;
+    if (m_orderedPersistence)
+    {
+        SqlOperation* operation = nullptr;
+        while (m_delayQueue->next(operation)) ExecuteDelayedOperation(operation, nullptr);
+    }
 }
 
 void Database::ThreadStart()
@@ -294,6 +626,11 @@ SqlConnection * Database::getQueryConnection()
 
 void Database::Ping()
 {
+    if (m_orderedPersistence && m_bAllowAsyncTransactions)
+    {
+        delete Query("SELECT 1");
+        return;
+    }
     const char * sql = "SELECT 1";
 
     {
@@ -319,8 +656,9 @@ bool Database::PExecuteLog(const char * format,...)
     int res = vsnprintf( szQuery, MAX_QUERY_LEN, format, ap );
     va_end(ap);
 
-    if(res==-1)
+    if(res < 0 || res >= MAX_QUERY_LEN)
     {
+        MarkAppendFailure();
         sLog.outError("SQL Query truncated (and not execute) for format: %s",format);
         return false;
     }
@@ -354,7 +692,7 @@ bool Database::PExecuteLog(const char * format,...)
 
 QueryResult* Database::PQuery(const char *format,...)
 {
-    if(!format) return nullptr;
+    if(!format) { MarkAppendFailure(); return nullptr; }
 
     va_list ap;
     char szQuery [MAX_QUERY_LEN];
@@ -362,8 +700,9 @@ QueryResult* Database::PQuery(const char *format,...)
     int res = vsnprintf( szQuery, MAX_QUERY_LEN, format, ap );
     va_end(ap);
 
-    if(res==-1)
+    if(res < 0 || res >= MAX_QUERY_LEN)
     {
+        MarkAppendFailure();
         sLog.outError("SQL Query truncated (and not execute) for format: %s",format);
         return nullptr;
     }
@@ -377,7 +716,7 @@ std::shared_ptr<QueryNamedResult> Database::PQueryNamed(const char *format,...)
 QueryNamedResult* Database::PQueryNamed(const char *format,...)
 #endif
 {
-    if(!format) return nullptr;
+    if(!format) { MarkAppendFailure(); return nullptr; }
 
     va_list ap;
     char szQuery [MAX_QUERY_LEN];
@@ -385,8 +724,9 @@ QueryNamedResult* Database::PQueryNamed(const char *format,...)
     int res = vsnprintf( szQuery, MAX_QUERY_LEN, format, ap );
     va_end(ap);
 
-    if(res==-1)
+    if(res < 0 || res >= MAX_QUERY_LEN)
     {
+        MarkAppendFailure();
         sLog.outError("SQL Query truncated (and not execute) for format: %s",format);
         return nullptr;
     }
@@ -396,18 +736,26 @@ QueryNamedResult* Database::PQueryNamed(const char *format,...)
 
 bool Database::Execute(const char *sql, bool multiline, std::function<void(bool)>* callback)
 {
-    if (!m_pAsyncConn)
+    if (!m_pAsyncConn || !sql || m_orderedFault || m_orderedStopping)
+    {
+        MarkAppendFailure();
         return false;
+    }
 
     SqlTransaction * pTrans = m_TransStorage->get();
     if(pTrans)
     {
+        if (pTrans->IsOwned() && callback)
+        {
+            pTrans->MarkAppendFailure();
+            return false;
+        }
         if (callback)
             pTrans->SetCallback(callback);
 
 
         //add SQL request to trans queue
-        pTrans->DelayExecute(multiline ? static_cast<SqlOperation*>(new SqlMultilineRequest(sql)) : new SqlPlainRequest(sql));
+        return pTrans->DelayExecute(multiline ? static_cast<SqlOperation*>(new SqlMultilineRequest(sql)) : new SqlPlainRequest(sql));
     }
     else
     {
@@ -421,7 +769,7 @@ bool Database::Execute(const char *sql, bool multiline, std::function<void(bool)
             sqlOperation->SetCallback(callback);
 
         // Simple sql statement
-        AddToDelayQueue(sqlOperation);
+        return AddToDelayQueue(sqlOperation);
     }
 
     return true;
@@ -430,7 +778,10 @@ bool Database::Execute(const char *sql, bool multiline, std::function<void(bool)
 bool Database::PExecute(const char * format, ...)
 {
     if (!format)
+    {
+        MarkAppendFailure();
         return false;
+    }
 
     va_list ap;
     char szQuery [MAX_QUERY_LEN];
@@ -438,8 +789,9 @@ bool Database::PExecute(const char * format, ...)
     int res = vsnprintf( szQuery, MAX_QUERY_LEN, format, ap );
     va_end(ap);
 
-    if(res==-1)
+    if(res < 0 || res >= MAX_QUERY_LEN)
     {
+        MarkAppendFailure();
         sLog.outError("SQL Query truncated (and not execute) for format: %s",format);
         return false;
     }
@@ -450,7 +802,10 @@ bool Database::PExecute(const char * format, ...)
 bool Database::PExecuteCallback(const char* format, std::function<void(bool)>* callback, ...)
 {
     if (!format)
+    {
+        MarkAppendFailure();
         return false;
+    }
 
     va_list ap;
     char szQuery[MAX_QUERY_LEN];
@@ -458,8 +813,9 @@ bool Database::PExecuteCallback(const char* format, std::function<void(bool)>* c
     int res = vsnprintf(szQuery, MAX_QUERY_LEN, format, ap);
     va_end(ap);
 
-    if (res == -1)
+    if (res < 0 || res >= MAX_QUERY_LEN)
     {
+        MarkAppendFailure();
         sLog.outError("SQL Query truncated (and not execute) for format: %s", format);
         return false;
     }
@@ -470,7 +826,10 @@ bool Database::PExecuteCallback(const char* format, std::function<void(bool)>* c
 bool Database::DirectPExecute(const char * format,...)
 {
     if (!format)
+    {
+        MarkAppendFailure();
         return false;
+    }
 
     va_list ap;
     char szQuery [MAX_QUERY_LEN];
@@ -478,8 +837,9 @@ bool Database::DirectPExecute(const char * format,...)
     int res = vsnprintf( szQuery, MAX_QUERY_LEN, format, ap );
     va_end(ap);
 
-    if(res==-1)
+    if(res < 0 || res >= MAX_QUERY_LEN)
     {
+        MarkAppendFailure();
         sLog.outError("SQL Query truncated (and not execute) for format: %s",format);
         return false;
     }
@@ -489,6 +849,8 @@ bool Database::DirectPExecute(const char * format,...)
 
 bool Database::BeginTransaction(uint32 serialId)
 {
+    if (RejectOwnedBuilder() || m_orderedFault || m_orderedStopping)
+        return false;
     if (!m_pAsyncConn)
     {
         sLog.outError("Cant begin transaction.");
@@ -501,8 +863,18 @@ bool Database::BeginTransaction(uint32 serialId)
         return false;
     }
 
-    //initiate transaction on current thread
-    m_TransStorage->init(serialId);
+    // Register before any SQL snapshot capture. Owned groups refuse admission
+    // while an older normal builder is still staging, but legacy reads need not
+    // hold this gate and can still use ordinary FIFO query barriers.
+    std::unique_lock<std::mutex> admission(m_orderedAdmission, std::defer_lock);
+    if (m_orderedPersistence && m_bAllowAsyncTransactions)
+    {
+        admission.lock();
+        if (m_orderedFault || m_orderedStopping)
+            return false;
+    }
+    SqlTransaction* transaction = m_TransStorage->init(serialId, m_knownAbortRetries);
+    if (admission.owns_lock()) transaction->HoldBuilderLease(m_openNormalBuilders);
     return true;
 }
 
@@ -521,6 +893,8 @@ uint32 Database::GetTransactionSerialId()
 
 bool Database::CommitTransaction(std::function<void(bool)>* callback)
 {
+    if (RejectOwnedBuilder())
+        return false;
     if (!m_pAsyncConn)
     {
         sLog.outError("Cant commit transaction.");
@@ -551,30 +925,48 @@ bool Database::CommitTransaction(std::function<void(bool)>* callback)
         trans->SetCallback(callback);
 
     if (trans->GetSerialId() > 0)
-        AddToSerialDelayQueue(trans);
+        return AddToSerialDelayQueue(trans);
     else
-        AddToDelayQueue(trans);
-    return true;
+        return AddToDelayQueue(trans);
 }
 
 bool Database::CommitTransactionDirect()
 {
-    if (!m_pAsyncConn)
+    if (RejectOwnedBuilder() || !m_pAsyncConn)
         return false;
 
     //check if we have pending transaction
-    ASSERT (m_TransStorage->get());
+    if (!m_TransStorage->get())
+        return false;
 
     //directly execute SqlTransaction
     SqlTransaction * pTrans = m_TransStorage->detach();
+    if (m_orderedPersistence && m_bAllowAsyncTransactions)
+        return RunOrderedSynchronously(std::unique_ptr<SqlOperation>(pTrans));
     bool res = pTrans->Execute(m_pAsyncConn);
     delete pTrans;
 
     return res;
 }
 
+bool Database::ExecuteMigrationBatch(const std::vector<std::string>& statements)
+{
+    if (RejectOwnedBuilder())
+        return false;
+    // The updater owns this connection only before runtime writers are enabled.
+    if (!m_pAsyncConn || m_bAllowAsyncTransactions || InTransaction())
+    {
+        sLog.outError("Database migrations require startup with no pending runtime transaction.");
+        return false;
+    }
+    SqlConnection::Lock guard(m_pAsyncConn);
+    return guard->ExecuteMigrationBatch(statements);
+}
+
 bool Database::RollbackTransaction()
 {
+    if (RejectOwnedBuilder())
+        return false;
     if (!m_pAsyncConn)
         return false;
 
@@ -587,19 +979,31 @@ bool Database::RollbackTransaction()
     return true;
 }
 
-void Database::AddToSerialDelayQueue(SqlOperation *op)
+bool Database::AddToSerialDelayQueue(int workerId, SqlOperation* op)
 {
-    if (op->GetSerialId() == 0 || m_numAsyncWorkers == 0)
+    if (m_orderedPersistence)
+        return AddToDelayQueue(op);
+    if (!op || workerId < 0 || size_t(workerId) >= m_threadsBodies.size())
     {
-        AddToDelayQueue(op);
-        return;
+        delete op;
+        return false;
+    }
+    m_threadsBodies[workerId]->addSerialOperation(op);
+    return true;
+}
+
+bool Database::AddToSerialDelayQueue(SqlOperation *op)
+{
+    if (!op || m_orderedPersistence || op->GetSerialId() == 0 || m_numAsyncWorkers == 0)
+    {
+        return AddToDelayQueue(op);
     }
 
     // This is a very naive way of doing this. No load balancing.
     // TODO: Load balance, must maintain mapping of serial ID so queries are
     // executed sequentially, however
     int worker = op->GetSerialId() % m_numAsyncWorkers;
-    m_threadsBodies[worker]->addSerialOperation(op);
+    return AddToSerialDelayQueue(worker, op);
 }
 
 bool Database::HasAsyncQuery()
@@ -614,23 +1018,27 @@ bool Database::HasAsyncQuery()
 
 bool Database::ExecuteStmt(const SqlStatementID& id, SqlStmtParameters * params)
 {
-    if (!m_pAsyncConn)
+    std::unique_ptr<SqlStmtParameters> owner(params);
+    if (!m_pAsyncConn || !params || m_orderedFault || m_orderedStopping)
+    {
+        MarkAppendFailure();
         return false;
+    }
 
     SqlTransaction * pTrans = m_TransStorage->get();
     if(pTrans)
     {
         //add SQL request to trans queue
-        pTrans->DelayExecute(new SqlPreparedRequest(id.ID(), params));
+        return pTrans->DelayExecute(new SqlPreparedRequest(id.ID(), owner.release()));
     }
     else
     {
         //if async execution is not available
         if(!m_bAllowAsyncTransactions)
-            return DirectExecuteStmt(id, params);
+            return DirectExecuteStmt(id, owner.release());
 
         // Simple sql statement
-        AddToDelayQueue(new SqlPreparedRequest(id.ID(), params));
+        return AddToDelayQueue(new SqlPreparedRequest(id.ID(), owner.release()));
     }
 
     return true;
@@ -640,6 +1048,10 @@ bool Database::DirectExecuteStmt( const SqlStatementID& id, SqlStmtParameters * 
 {
     MANGOS_ASSERT(params);
     std::unique_ptr<SqlStmtParameters> p(params);
+    if (RejectOwnedBuilder() || m_orderedFault || m_orderedStopping || !m_pAsyncConn)
+        return false;
+    if (m_orderedPersistence && m_bAllowAsyncTransactions)
+        return RunOrderedSynchronously(std::unique_ptr<SqlOperation>(new SqlPreparedRequest(id.ID(), p.release())));
     //execute statement
     SqlConnection::Lock _guard(getAsyncConnection());
     return _guard->ExecuteStmt(id.ID(), *params);
@@ -696,10 +1108,10 @@ Database::TransHelper::~TransHelper()
     reset();
 }
 
-SqlTransaction * Database::TransHelper::init(uint32 serialId)
+SqlTransaction * Database::TransHelper::init(uint32 serialId, uint32 knownAbortRetries)
 {
     MANGOS_ASSERT(!m_pTrans);   //if we will get a nested transaction request - we MUST fix code!!!
-    m_pTrans = new SqlTransaction(serialId);
+    m_pTrans = new SqlTransaction(serialId, knownAbortRetries);
 
     return m_pTrans;
 }
