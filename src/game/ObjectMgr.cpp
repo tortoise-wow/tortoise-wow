@@ -2867,15 +2867,11 @@ void ObjectMgr::LoadPetLevelInfo()
 
 ItemPrototype const* ObjectMgr::GetItemPrototype(uint32 id) const
 {
-    const ItemPrototype* transmogrifyProto = sObjectMgr.GetItemTransmogrifyTemplate(id);
-    if (transmogrifyProto)
-        return transmogrifyProto;
-
     auto iter = m_itemPrototypesMap.find(id);
-    if (iter == m_itemPrototypesMap.end())
-        return nullptr;
+    if (iter != m_itemPrototypesMap.end())
+        return &iter->second;
 
-    return &iter->second;
+    return GetItemTransmogrifyTemplate(id);
 }
 
 PetLevelInfo const* ObjectMgr::GetPetLevelInfo(uint32 creature_id, uint32 level) const
@@ -9744,6 +9740,7 @@ void ObjectMgr::LoadShop()
 void ObjectMgr::LoadItemTransmogrifyTemplates()
 {
     m_itemTransmogs.clear();
+    m_transmogId = TRANSMOG_FIRST_ID - 1;
 
     std::unique_ptr<QueryResult> result(CharacterDatabase.Query("SELECT `ID`, `ItemID`, `DisplayID`, `SourceID` FROM `item_transmogs` ORDER BY `ID` DESC"));
 
@@ -9759,16 +9756,15 @@ void ObjectMgr::LoadItemTransmogrifyTemplates()
         uint32 DisplayID = fields[2].GetUInt32();
         uint32 SourceID = fields[3].GetUInt32();
 
-        ItemPrototype* copy = new ItemPrototype;
         ItemPrototype const* base = GetItemPrototype(ItemID);
 
-        if (!m_transmogId)
+        if (ID > m_transmogId)
             m_transmogId = ID;
 
         if (!base)
             continue;
 
-        *copy = *base;
+        ItemPrototype* copy = new ItemPrototype(*base);
 
         copy->ItemId = ID;
         copy->DisplayInfoID = DisplayID;
@@ -9782,16 +9778,27 @@ void ObjectMgr::LoadItemTransmogrifyTemplates()
 
 uint32 ObjectMgr::CreateItemTransmogrifyTemplate(uint32 destItemId, uint32 sourceDisplayId, uint32 sourceItemId)
 {
-    uint32 destId = ++m_transmogId;
+    // Skip real item IDs, which get resolved by `GetItemPrototype` before the
+    // templates.
+    uint32 destId;
+    do
+    {
+        destId = ++m_transmogId;
+    } while (m_itemPrototypesMap.find(destId) != m_itemPrototypesMap.end());
 
-    ItemPrototype* copy = new ItemPrototype;
     ItemPrototype const* base = GetItemPrototype(destItemId);
     ItemPrototype const* source = GetItemPrototype(sourceItemId);
 
     if (!base)
-        return false;
+        return 0;
 
-    *copy = *base;
+    // Insert the template synchronously, so a failed insert is caught before
+    // any item uses it.
+    if (!CharacterDatabase.DirectPExecute("INSERT INTO `item_transmogs` (`ID`, `ItemID`, `DisplayID`, `SourceID`) VALUES ('%u','%u','%u', '%u')",
+        destId, destItemId, sourceDisplayId, sourceItemId))
+        return 0;
+
+    ItemPrototype* copy = new ItemPrototype(*base);
 
     copy->ItemId = destId;
     copy->DisplayInfoID = sourceDisplayId;
@@ -9805,8 +9812,6 @@ uint32 ObjectMgr::CreateItemTransmogrifyTemplate(uint32 destItemId, uint32 sourc
 
     //Whoever wrote this should be burned at the stake.
     //sWorld.SendUpdateSingleItem(destId);
-    CharacterDatabase.PExecuteLog("INSERT INTO `item_transmogs` (`ID`, `ItemID`, `DisplayID`, `SourceID`) VALUES ('%u','%u','%u', '%u')", 
-        destId, destItemId, sourceDisplayId, sourceItemId);
 
     return destId;
 }
@@ -9817,6 +9822,8 @@ void ObjectMgr::DeleteItemTransmogrifyTemplate(uint32 transmogrifyId)
     if (itr == m_itemTransmogs.end())
         return;
 
+    // The template is not freed, because other threads (item queries) may
+    // still hold a pointer to it.
     m_itemTransmogs.erase(transmogrifyId);
     sWorld.SendSingleItemInvalidate(transmogrifyId);
     CharacterDatabase.PExecuteLog("DELETE FROM `item_transmogs` WHERE `ID`=%u", transmogrifyId);

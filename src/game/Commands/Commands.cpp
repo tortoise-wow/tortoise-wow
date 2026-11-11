@@ -1418,7 +1418,7 @@ bool ChatHandler::HandleAddItemCommand(char* args)
     DETAIL_LOG(GetMangosString(LANG_ADDITEM), itemId, count);
 
     ItemPrototype const *pProto = sObjectMgr.GetItemPrototype(itemId);
-    if (!pProto)
+    if (!pProto || pProto->DestItemId)
     {
         PSendSysMessage(LANG_COMMAND_ITEMIDINVALID, itemId);
         SetSentErrorMessage(true);
@@ -5473,7 +5473,7 @@ bool ChatHandler::HandleSendItemsHelper(MailDraft& draft, char* args)
         }
 
         ItemPrototype const* item_proto = sObjectMgr.GetItemPrototype(item_id);
-        if (!item_proto)
+        if (!item_proto || item_proto->DestItemId)
         {
             PSendSysMessage(LANG_COMMAND_ITEMIDINVALID, item_id);
             SetSentErrorMessage(true);
@@ -10529,10 +10529,16 @@ bool ChatHandler::HandleNpcAddVendorItemCommand(char* args)
         return false;
     }
 
+    ItemPrototype const* pProto = sObjectMgr.GetItemPrototype(itemId);
+    if (pProto->DestItemId)
+    {
+        PSendSysMessage(LANG_ITEM_NOT_FOUND, itemId);
+        SetSentErrorMessage(true);
+        return false;
+    }
+
     sWorld.GetMigration().SetAuthor(m_session->GetUsername());
     sObjectMgr.AddVendorItem(vendor_entry, itemId, maxcount, incrtime, itemflags);
-
-    ItemPrototype const* pProto = sObjectMgr.GetItemPrototype(itemId);
 
     PSendSysMessage(LANG_ITEM_ADDED_TO_LIST, itemId, pProto->Name1.c_str(), maxcount, incrtime);
     return true;

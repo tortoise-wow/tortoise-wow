@@ -724,6 +724,11 @@ DumpReturn PlayerDumpReader::LoadStringDump(std::string const& data, uint32 acco
             ROLLBACK_STR(DUMP_FILE_BROKEN);
     }
 
+    // The dump has no transmog templates, and its IDs may belong to other
+    // items here.
+    if (!CharacterDatabase.PExecute("UPDATE `item_instance` SET `transmogrifyId` = 0 WHERE `owner_guid` = '%u'", guid))
+        ROLLBACK_STR(DUMP_FILE_BROKEN);
+
     CharacterDatabase.CommitTransaction(callback);
 
 
@@ -1014,6 +1019,11 @@ DumpReturn PlayerDumpReader::LoadDump(std::string const& file, uint32 account, s
         if (!CharacterDatabase.Execute(line.c_str()))
             ROLLBACK(DUMP_FILE_BROKEN);
     }
+
+    // The dump has no transmog templates, and its IDs may belong to other
+    // items here.
+    if (!CharacterDatabase.PExecute("UPDATE `item_instance` SET `transmogrifyId` = 0 WHERE `owner_guid` = '%u'", guid))
+        ROLLBACK(DUMP_FILE_BROKEN);
 
     // Commit synchronously: the player cache is loaded from the characters
     // table below, so the rows must be visible before we query them.

@@ -276,14 +276,19 @@ uint8 TransmogMgr::ApplyTransmog(uint8 slot, uint32 sourceItemID, uint32 slotId)
 
 		// create or get item replica
 		newItemId = sObjectMgr.CreateItemTransmogrifyTemplate(destItem->GetProto()->ItemId, srcItemProto->DisplayInfoID, sourceItemID);
+		// Code 4 means "no source item proto" in the client's transmog window.
+		// There are only a few different codes that can be used (others would
+		// raise a Lua error), and this is probably the most appropriate one to
+		// use for a template that could not be created.
+		if (!newItemId)
+			return 4;
 
 		_owner->DestroyItemCount(TRANSMOG_CURRENCY, 1, true);
 	}
-	else
-	{
-		sObjectMgr.DeleteItemTransmogrifyTemplate(destItem->GetTransmogrification());
-	}
+	else if (slot >= EQUIPMENT_SLOT_END)
+		return 2; // bad slot
 
+	sObjectMgr.DeleteItemTransmogrifyTemplate(destItem->GetTransmogrification());
 	destItem->SetTransmogrification(newItemId);
 	if (!destItem->IsSoulBound())
 		destItem->SetBinding(true);
