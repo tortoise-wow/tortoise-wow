@@ -15063,8 +15063,12 @@ void Player::FullQuestComplete(uint32 questId)
 
         if (uint32 spell_id = pQuest->ReqSpell[i])
         {
+            // CastedCreatureOrGO reads the target's kind from the guid and matches the unsigned template id,
+            // so pass a guid of the objective's kind (a negative id is a game object) and the id without its sign.
+            uint32 const targetEntry = uint32(std::abs(creature));
+            ObjectGuid const target(creature > 0 ? HIGHGUID_UNIT : HIGHGUID_GAMEOBJECT, targetEntry, 1u);
             for (uint16 z = 0; z < creaturecount; ++z)
-                CastedCreatureOrGO(creature, ObjectGuid(), spell_id);
+                CastedCreatureOrGO(targetEntry, target, spell_id);
         }
         else if (creature > 0)
         {
