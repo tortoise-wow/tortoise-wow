@@ -525,7 +525,20 @@ bool LFTManager::CompleteOffer(uint32 offerId)
 
     Offer offer = offerItr->second;
     ObjectGuid leaderGuid;
+
+    // A queued party can only be joined through its own group, so its leader must lead the
+    // new group; otherwise a solo member becomes leader and the party members cannot be added.
     for (std::map<ObjectGuid, uint8>::const_iterator itr = offer.roles.begin(); itr != offer.roles.end(); ++itr)
+    {
+        Player* member = GetPlayer(itr->first);
+        if (member && member->GetGroup() && member->GetGroup()->IsLeader(itr->first))
+        {
+            leaderGuid = itr->first;
+            break;
+        }
+    }
+
+    for (std::map<ObjectGuid, uint8>::const_iterator itr = offer.roles.begin(); itr != offer.roles.end() && leaderGuid.IsEmpty(); ++itr)
     {
         QueueMap::const_iterator queued = m_queue.find(itr->first);
         if (queued != m_queue.end() && !queued->second.queueLeaderGuid.IsEmpty())
