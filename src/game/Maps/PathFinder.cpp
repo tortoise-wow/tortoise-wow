@@ -77,18 +77,19 @@ bool PathInfo::calculate(Vector3 const& start, Vector3 dest, bool forceDest, boo
     // A m_navMeshQuery object is not thread safe, but a same PathInfo can be shared between threads.
     // So need to get a new one.
     MMAP::MMapManager* mmap = MMAP::MMapFactory::createOrGetMMapManager();
+    MMAP::NavMeshQueryHandle navMeshQueryHandle;
     if (m_transport)
     {
         if (!offsets)
             m_transport->CalculatePassengerOffset(dest.x, dest.y, dest.z);
 
-        m_navMeshQuery = mmap->GetModelNavMeshQuery(m_transport->GetDisplayId());
+        navMeshQueryHandle = mmap->AcquireModelNavMeshQuery(m_transport->GetDisplayId());
     }
     else
-        m_navMeshQuery = mmap->GetNavMeshQuery(m_sourceUnit->GetMapId());
+        navMeshQueryHandle = mmap->AcquireNavMeshQuery(m_sourceUnit->GetMapId());
 
-    if (m_navMeshQuery)
-        m_navMesh = m_navMeshQuery->getAttachedNavMesh();
+    m_navMeshQuery = navMeshQueryHandle.get();
+    m_navMesh = m_navMeshQuery ? m_navMeshQuery->getAttachedNavMesh() : nullptr;
 
     m_pathPoints.clear();
 
@@ -126,8 +127,13 @@ bool PathInfo::calculate(Vector3 const& start, Vector3 dest, bool forceDest, boo
     }
     else
     {
-        // target moved, so we need to update the poly path
+        // target moved, so we need to update the poly path. The handle keeps
+        // every Detour tile/poly reference stable through the complete build.
         BuildPolyPath(start, dest);
+
+        // Everything below uses copied path/terrain state only. Release the
+        // navmesh reader before calls that are allowed to lazy-load a grid.
+        navMeshQueryHandle = MMAP::NavMeshQueryHandle();
 
         if (m_type & PATHFIND_NOPATH)
         {
