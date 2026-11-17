@@ -10,11 +10,15 @@ struct instance_dragonmaw_retreat : public ScriptedInstance
     }
 
     uint64 m_uiSearistraszGUID;
+    uint64 m_uiReserveGateGUID;
+    bool m_bZuluhedDead;
     std::vector<ObjectGuid> m_vDeadDragonmawEnchanters;
 
     void Initialize() override
     {
         m_uiSearistraszGUID = 0;
+        m_uiReserveGateGUID = 0;
+        m_bZuluhedDead = false;
         m_vDeadDragonmawEnchanters.clear();
     }
 
@@ -22,10 +26,43 @@ struct instance_dragonmaw_retreat : public ScriptedInstance
     {
         if (pCreature->GetEntry() == NPC_SEARISTRASZ)
             m_uiSearistraszGUID = pCreature->GetGUID();
+
+        // A boss killed earlier in a saved instance loads dead: open the gate again.
+        if (pCreature->GetEntry() == NPC_ZULUHED_THE_WHACKED && !pCreature->IsAlive())
+        {
+            m_bZuluhedDead = true;
+            OpenReserveGate();
+        }
+    }
+
+    void OnObjectCreate(GameObject* pGo) override
+    {
+        if (pGo->GetEntry() == GO_DRAGONMAW_RESERVE_GATE)
+        {
+            m_uiReserveGateGUID = pGo->GetGUID();
+
+            // The gate can load after the dead boss.
+            if (m_bZuluhedDead)
+                OpenReserveGate();
+        }
+    }
+
+    // The Reserve Gate leads to the back exit and opens once Zuluhed the Whacked is dead.
+    void OpenReserveGate()
+    {
+        if (GameObject* pGate = instance->GetGameObject(m_uiReserveGateGUID))
+            if (pGate->GetGoState() != GO_STATE_ACTIVE)
+                pGate->SetGoState(GO_STATE_ACTIVE);
     }
 
     void OnCreatureDeath(Creature* pCreature) override
     {
+        if (pCreature->GetEntry() == NPC_ZULUHED_THE_WHACKED)
+        {
+            m_bZuluhedDead = true;
+            OpenReserveGate();
+        }
+
         if (pCreature->GetEntry() == NPC_DRAGONMAW_ENCHANTER)
         {
             MarkDragonmawEnchanterDead(pCreature->GetObjectGuid());
