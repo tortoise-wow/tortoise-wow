@@ -20,6 +20,8 @@ enum
     NPC_ELDER_HOLLOWBLOOD               = 62038,
     NPC_DRAGONMAW_ENCHANTER             = 62453,
 
+    GO_DRAGONMAW_RESERVE_GATE           = 2020251,
+
     SPELL_ENCHANTING_FLAMES             = 52249,
 
     MAX_DRAGONMAW_ENCHANTERS            = 6,
