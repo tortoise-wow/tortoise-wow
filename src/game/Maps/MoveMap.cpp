@@ -24,6 +24,10 @@
 
 namespace MMAP
 {
+// Size of the A* node pool of each navmesh query. Long city paths (e.g. across
+// Stormwind) need more than 2048 nodes and were cut short as partial paths.
+static constexpr int NAVMESH_QUERY_MAX_NODES = 8192;
+
 // ######################## MMapFactory ########################
 // our global singelton copy
 MMapManager *g_MMapManager = nullptr;
@@ -330,7 +334,7 @@ dtNavMeshQuery const* MMapManager::GetNavMeshQuery(uint32 mapId)
         // allocate mesh query
         navMeshQuery = dtAllocNavMeshQuery();
         MANGOS_ASSERT(navMeshQuery);
-        dtStatus dtResult = navMeshQuery->init(mmap->navMesh, 2048);
+        dtStatus dtResult = navMeshQuery->init(mmap->navMesh, NAVMESH_QUERY_MAX_NODES);
         if (dtStatusFailed(dtResult))
         {
             ulock.unlock();
@@ -430,7 +434,7 @@ dtNavMeshQuery const* MMapManager::GetModelNavMeshQuery(uint32 displayId)
             // allocate mesh query
             dtNavMeshQuery* query = dtAllocNavMeshQuery();
             MANGOS_ASSERT(query);
-            if (dtStatusFailed(query->init(mmap->navMesh, 2048)))
+            if (dtStatusFailed(query->init(mmap->navMesh, NAVMESH_QUERY_MAX_NODES)))
             {
                 dtFreeNavMeshQuery(query);
                 sLog.outError("MMAP:GetNavMeshQuery: Failed to initialize dtNavMeshQuery for displayid %03u tid %u", displayId, tid);
