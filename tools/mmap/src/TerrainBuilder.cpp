@@ -17,6 +17,7 @@
  */
 
 #include <cassert>
+#include <set>
 #include "TerrainBuilder.h"
 #include "MMapCommon.h"
 #include "MapBuilder.h"
@@ -589,6 +590,29 @@ namespace MMAP
     {
         m_mapId = mapID;
         VMAPLoadResult result = vmapManager.loadMap("vmaps", mapID, tileX, tileY);
+        // Spawns of this tile's own vmtile (the models with a world model loaded right now).
+        std::set<uint32> ownSpawns;
+        {
+            InstanceTreeMap ownTrees;
+            vmapManager.getInstanceMapTree(ownTrees);
+            ModelInstance* ownModels = nullptr;
+            uint32 ownCount = 0;
+            if (ownTrees[mapID])
+                ownTrees[mapID]->getModelInstances(ownModels, ownCount);
+            for (uint32 i = 0; ownModels && i < ownCount; ++i)
+                if (ownModels[i].getWorldModel())
+                    ownSpawns.insert(ownModels[i].ID);
+        }
+        // A vmtile lists only the spawns that its own ADT references (TileAssembler::readMapSpawns),
+        // but a big WMO can reach into tiles whose ADT does not reference it. Load the neighbouring
+        // vmtiles too, so such WMOs are part of this tile's input; Recast clips them to the tile.
+        for (int dx = -2; dx <= 2; ++dx)
+            for (int dy = -2; dy <= 2; ++dy)
+            {
+                int nx = int(tileX) + dx, ny = int(tileY) + dy;
+                if ((dx || dy) && nx >= 0 && nx < 64 && ny >= 0 && ny < 64)
+                    vmapManager.loadMap("vmaps", mapID, nx, ny);
+            }
         InstanceTreeMap instanceTrees;
         vmapManager.getInstanceMapTree(instanceTrees);
         ModelInstance* models = nullptr;
@@ -599,13 +623,29 @@ namespace MMAP
 
         if (result == VMAP_LOAD_RESULT_ERROR || !instanceTrees[mapID] || !models)
         {
-            vmapManager.unloadMap(mapID, tileX, tileY);
+            unloadVMap(mapID, tileX, tileY);
             return false;
         }
 
         int mapVertsCount = meshData.solidVerts.size();
         int mapTrisCount = meshData.solidTris.size();
         meshData.vmapFirstTriangle = meshData.solidTris.size() / 3;
+
+        // Models of the neighbouring vmtiles are kept only if they are WMOs (spawn flag MOD_M2 not set: the
+        // M2 doodads of a neighbour stay out, so a tile without a WMO gap does not change) and their bound
+        // reaches this tile (vmap internal coords: x runs with tileY, y with tileX; 16 yd margin for the
+        // Recast border). The tile's own spawns are always kept, as before.
+        const float tileMinX = tileY * GRID_SIZE - 16.f, tileMaxX = (tileY + 1) * GRID_SIZE + 16.f;
+        const float tileMinY = tileX * GRID_SIZE - 16.f, tileMaxY = (tileX + 1) * GRID_SIZE + 16.f;
+        auto outsideTile = [&](ModelInstance const& inst)
+        {
+            if (ownSpawns.find(inst.ID) != ownSpawns.end())
+                return false;
+            if (inst.flags & MOD_M2)
+                return true;
+            G3D::AABox const& b = inst.getBounds();
+            return b.high().x < tileMinX || b.low().x > tileMaxX || b.high().y < tileMinY || b.low().y > tileMaxY;
+        };
 
         /// Add models to terrain
         for (uint32 i = 0; i < count; ++i)
@@ -614,7 +654,7 @@ namespace MMAP
 
             // model instances exist in tree even though there are instances of that model in this tile
             std::shared_ptr<WorldModel> worldModel = instance.getWorldModel();
-            if (!worldModel)
+            if (!worldModel || outsideTile(instance))
                 continue;
 
             vector<GroupModel> groupModels;
@@ -741,7 +781,7 @@ namespace MMAP
 
             // model instances exist in tree even though there are instances of that model in this tile
             std::shared_ptr<WorldModel> worldModel = instance.getWorldModel();
-            if (!worldModel)
+            if (!worldModel || outsideTile(instance))
                 continue;
 
             vector<GroupModel> groupModels;
@@ -904,7 +944,13 @@ namespace MMAP
     }
     void TerrainBuilder::unloadVMap(uint32 mapID, uint32 tileX, uint32 tileY)
     {
-        vmapManager.unloadMap(mapID, tileX, tileY);
+        for (int dx = -2; dx <= 2; ++dx)
+            for (int dy = -2; dy <= 2; ++dy)
+            {
+                int nx = int(tileX) + dx, ny = int(tileY) + dy;
+                if (nx >= 0 && nx < 64 && ny >= 0 && ny < 64)
+                    vmapManager.unloadMap(mapID, nx, ny);
+            }
     }
 
     /**************************************************************************/
